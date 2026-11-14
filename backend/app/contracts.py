@@ -20,7 +20,7 @@ are not cited, board items match their source revision, ...) live in ``app.valid
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, TypeVar
 
 from pydantic import (
     AfterValidator,
@@ -29,9 +29,10 @@ from pydantic import (
     ConfigDict,
     Field,
     StringConstraints,
-    field_validator,
     model_validator,
 )
+
+T = TypeVar("T")
 
 SchemaVersion = Literal["1.0"]
 
@@ -98,17 +99,62 @@ EvidenceIds = Annotated[list[NonEmptyStr], Field(min_length=1)]
 UniqueEvidenceIds = Annotated[list[NonEmptyStr], Field(min_length=1), AfterValidator(_unique)]
 
 
-def _reject_null(cls: type, value: object) -> object:
-    """Reusable before-validator: the field may be omitted, but not sent as null."""
+def _reject_null(value: object) -> object:
     if value is None:
         raise ValueError("may be omitted but must not be null")
     return value
+
+
+# Marks a field the schema lets you omit but not set to null. Before-validators only run
+# on supplied values, so omitting the field (default None) is fine; an explicit null fails.
+# ``to_contract_json`` uses this marker to drop such fields when they are None.
+_OMIT_IF_NONE = BeforeValidator(_reject_null)
+Omittable = Annotated[T | None, _OMIT_IF_NONE]
 
 
 class ContractModel(BaseModel):
     """Base for all contract models: no unknown fields, no type coercion."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
+
+    @classmethod
+    def _omit_if_none_fields(cls) -> frozenset[str]:
+        return frozenset(
+            name for name, field in cls.model_fields.items() if _OMIT_IF_NONE in field.metadata
+        )
+
+    def to_contract_json(self) -> dict[str, Any]:
+        """Serialize to a JSON-compatible dict that validates against the shared schema.
+
+        Use this (or ``response_model_exclude_unset=True`` on the route) whenever a contract
+        model leaves the server. Plain ``model_dump()`` is NOT schema-valid: it writes
+        omittable fields such as an edge ``description`` or a node board item's ``status``
+        as explicit ``null``, which ``contracts/*.schema.json`` rejects. This method drops
+        those fields when they are None (at every nesting level) and keeps the fields the
+        schema allows to be null (``parent_analysis_id: null``, ``base_ref_id: null``, ...).
+        """
+        data = self.model_dump(mode="json")
+        _drop_omitted_nones(self, data)
+        return data
+
+
+def to_contract_json(model: ContractModel) -> dict[str, Any]:
+    """Schema-valid JSON dict for a contract model. See ``ContractModel.to_contract_json``."""
+    return model.to_contract_json()
+
+
+def _drop_omitted_nones(model: ContractModel, data: dict[str, Any]) -> None:
+    omit = model._omit_if_none_fields()
+    for name in type(model).model_fields:
+        value = getattr(model, name)
+        if value is None and name in omit:
+            data.pop(name, None)
+        elif isinstance(value, ContractModel):
+            _drop_omitted_nones(value, data[name])
+        elif isinstance(value, list):
+            for item, item_data in zip(value, data[name], strict=True):
+                if isinstance(item, ContractModel):
+                    _drop_omitted_nones(item, item_data)
 
 
 # --- EvidenceRecord -------------------------------------------------------------------
@@ -124,11 +170,9 @@ class EvidenceRecord(ContractModel):
     content: str
     # Evidence timestamps may be partial or approximate, so they stay strings.
     timestamp: str | None = None
-    timestamp_kind: RecordTimestampKind | None = None
+    timestamp_kind: Omittable[RecordTimestampKind] = None
     original_sha256: str | None = None
-    metadata: dict[str, Any] | None = None
-
-    _not_null = field_validator("timestamp_kind", "metadata", mode="before")(_reject_null)
+    metadata: Omittable[dict[str, Any]] = None
 
 
 # --- AnalysisRevision -----------------------------------------------------------------
@@ -145,9 +189,7 @@ class GraphNode(ContractModel):
     id: NonEmptyStr
     label: NonEmptyStr
     type: NodeType
-    evidence_ids: list[NonEmptyStr] | None = None
-
-    _not_null = field_validator("evidence_ids", mode="before")(_reject_null)
+    evidence_ids: Omittable[list[NonEmptyStr]] = None
 
 
 class GraphEdge(ContractModel):
@@ -157,9 +199,7 @@ class GraphEdge(ContractModel):
     type: NonEmptyStr
     evidence_ids: EvidenceIds
     status: EdgeStatus
-    description: str | None = None
-
-    _not_null = field_validator("description", mode="before")(_reject_null)
+    description: Omittable[str] = None
 
 
 class Graph(ContractModel):
@@ -172,14 +212,10 @@ class TimelineEvent(ContractModel):
     description: NonEmptyStr
     # Source-derived and possibly partial, so not parsed as a date-time.
     timestamp: str | None
-    timestamp_precision: TimestampPrecision | None = None
-    timestamp_kind: EventTimestampKind | None = None
+    timestamp_precision: Omittable[TimestampPrecision] = None
+    timestamp_kind: Omittable[EventTimestampKind] = None
     evidence_ids: EvidenceIds
     status: EventStatus
-
-    _not_null = field_validator("timestamp_precision", "timestamp_kind", mode="before")(
-        _reject_null
-    )
 
 
 class AnalysisRevision(ContractModel):
@@ -197,11 +233,9 @@ class AnalysisRevision(ContractModel):
     graph: Graph
     timeline_events: list[TimelineEvent]
     unresolved_questions: list[str]
-    needs_review: bool | None = None
-    validation_errors: list[NonEmptyStr] | None = None
+    needs_review: Omittable[bool] = None
+    validation_errors: Omittable[list[NonEmptyStr]] = None
     created_at: OffsetDateTime
-
-    _not_null = field_validator("needs_review", "validation_errors", mode="before")(_reject_null)
 
 
 # --- InvestigationBoard ---------------------------------------------------------------
@@ -215,10 +249,8 @@ class BoardItem(ContractModel):
     source_analysis_id: NonEmptyStr
     ref_id: NonEmptyStr
     evidence_ids: UniqueEvidenceIds
-    status: BoardItemStatus | None = None
+    status: Omittable[BoardItemStatus] = None
     added_at: OffsetDateTime
-
-    _not_null = field_validator("status", mode="before")(_reject_null)
 
     @model_validator(mode="after")
     def _status_required_unless_node(self) -> BoardItem:
@@ -263,9 +295,7 @@ class ComparisonItem(ContractModel):
     support_status: SupportStatus
     base_evidence_ids: UniqueIds
     compared_evidence_ids: UniqueIds
-    explanation: str | None = None
-
-    _not_null = field_validator("explanation", mode="before")(_reject_null)
+    explanation: Omittable[str] = None
 
     @model_validator(mode="after")
     def _null_ref_means_no_evidence(self) -> ComparisonItem:

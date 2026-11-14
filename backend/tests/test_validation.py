@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 import pytest
-from conftest import FIXTURE_FILES, FIXTURES_DIR
+from _paths import FIXTURE_FILES, FIXTURES_DIR
 from pydantic import ValidationError
 
 from app.contracts import (

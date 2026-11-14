@@ -6,16 +6,26 @@ from copy import deepcopy
 from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
-from conftest import CONTRACTS_DIR, FIXTURE_FILES, FIXTURES_DIR, RAW, load_json
+from _paths import CONTRACTS_DIR, FIXTURE_FILES, FIXTURES_DIR, RAW, load_json
 from jsonschema import Draft202012Validator
 from pydantic import BaseModel, ValidationError
 
 from app.contracts import (
     AnalysisRevision,
+    BoardItem,
+    BoardNote,
+    Claim,
+    ComparisonItem,
+    ContractModel,
     EvidenceRecord,
+    Graph,
+    GraphEdge,
+    GraphNode,
     InvestigationBoard,
     RevisionComparison,
+    TimelineEvent,
     parse_datetime,
+    to_contract_json,
 )
 
 SCHEMAS = {
@@ -78,8 +88,116 @@ def test_fixture_accepted_by_schema_and_model(fixture: str) -> None:
 def test_fixture_round_trips_through_model(fixture: str) -> None:
     model = SCHEMAS[FIXTURE_CONTRACT[fixture]][1]
     for instance in instances(fixture):
-        dumped = model.model_validate(instance).model_dump(mode="json", exclude_unset=True)
-        assert dumped == instance
+        assert to_contract_json(model.model_validate(instance)) == instance
+
+
+# --- Serialization: to_contract_json is the only schema-valid way out ---------------------
+
+
+def _built_in_python() -> dict[str, ContractModel]:
+    """Models built in code (as the server will), leaving every omittable field out."""
+    revision = AnalysisRevision(
+        schema_version="1.0",
+        analysis_id="analysis-1",
+        case_id="case-1",
+        question="Who met whom?",
+        excluded_record_ids=[],
+        retrieved_record_ids=["rec-1"],
+        answer="",
+        claims=[Claim(id="c1", text="A met B.", evidence_ids=["rec-1"], status="reported")],
+        graph=Graph(
+            nodes=[GraphNode(id="a", label="A", type="person")],
+            edges=[
+                GraphEdge(
+                    id="e1",
+                    source="a",
+                    target="a",
+                    type="met",
+                    evidence_ids=["rec-1"],
+                    status="reported",
+                )
+            ],
+        ),
+        timeline_events=[
+            TimelineEvent(
+                id="t1",
+                description="A met B.",
+                timestamp=None,
+                evidence_ids=["rec-1"],
+                status="reported",
+            )
+        ],
+        unresolved_questions=[],
+        created_at=datetime(2026, 11, 14, 20, 0, tzinfo=UTC),
+    )
+    now = datetime(2026, 11, 14, 20, 0, tzinfo=UTC)
+    board = InvestigationBoard(
+        schema_version="1.0",
+        board_id="board-1",
+        case_id="case-1",
+        title="Board",
+        revision=1,
+        active_analysis_id=None,
+        items=[
+            BoardItem(
+                item_id="i1",
+                kind="node",
+                source_analysis_id="analysis-1",
+                ref_id="a",
+                evidence_ids=["rec-1"],
+                added_at=now,
+            )
+        ],
+        notes=[BoardNote(note_id="n1", text="check", author="inv", created_at=now)],
+        created_at=now,
+        updated_at=now,
+    )
+    comparison = RevisionComparison(
+        schema_version="1.0",
+        case_id="case-1",
+        base_analysis_id="analysis-1",
+        compared_analysis_id="analysis-2",
+        excluded_record_ids=[],
+        items=[
+            ComparisonItem(
+                kind="claim",
+                base_ref_id="c1",
+                compared_ref_id="c1",
+                support_status="still_supported",
+                base_evidence_ids=["rec-1"],
+                compared_evidence_ids=["rec-1"],
+            )
+        ],
+        created_at=now,
+    )
+    record = EvidenceRecord(
+        record_id="rec-1", case_id="case-1", source_file="f.txt", source_locator="l1", content=""
+    )
+    return {"revision": revision, "board": board, "comparison": comparison, "evidence": record}
+
+
+@pytest.mark.parametrize("contract", sorted(SCHEMAS))
+def test_to_contract_json_is_schema_valid_but_plain_model_dump_is_not(contract: str) -> None:
+    model = _built_in_python()[contract]
+    errors = list(VALIDATORS[contract].iter_errors(to_contract_json(model)))
+    assert errors == []
+    assert model.to_contract_json() == to_contract_json(model)
+    # Documents the pitfall: plain model_dump writes omittable fields as explicit nulls,
+    # which the shared JSON Schema rejects.
+    assert not schema_accepts(contract, model.model_dump(mode="json"))
+
+
+def test_to_contract_json_keeps_schema_nullable_fields() -> None:
+    board = to_contract_json(_built_in_python()["board"])
+    assert board["active_analysis_id"] is None  # required and nullable: kept
+    assert board["parent_revision"] is None  # optional and nullable: kept
+    assert board["notes"][0]["target_item_id"] is None
+    assert "status" not in board["items"][0]  # omittable, not nullable: dropped
+    revision = to_contract_json(_built_in_python()["revision"])
+    assert revision["timeline_events"][0]["timestamp"] is None
+    assert "evidence_ids" not in revision["graph"]["nodes"][0]
+    assert "description" not in revision["graph"]["edges"][0]
+    assert "needs_review" not in revision
 
 
 def _set(path: str, value: object) -> Callable[[dict], None]:
@@ -262,7 +380,8 @@ def test_variant_accepted_by_schema_and_model(fixture: str, mutate: Callable[[di
     mutate(doc)
     instance = doc[0] if isinstance(doc, list) else doc
     assert list(VALIDATORS[contract].iter_errors(instance)) == []
-    SCHEMAS[contract][1].model_validate(instance)
+    model = SCHEMAS[contract][1].model_validate(instance)
+    assert list(VALIDATORS[contract].iter_errors(to_contract_json(model))) == []
 
 
 # --- Date-times: the models are deliberately stricter than JSON Schema ------------------
