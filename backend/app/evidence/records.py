@@ -32,7 +32,9 @@ def stable_record_id(case_id: str, source_file: str, source_locator: str) -> str
     """Deterministic ID from where the record came from, not from when it was imported.
 
     Importing the same file into the same case again yields the same IDs, so a
-    re-import can be deduplicated instead of creating a second copy.
+    re-import can be deduplicated instead of creating a second copy. That is why
+    this is a hash and not a random `app.ids.new_id("rec")`; it keeps the same
+    `rec_` prefix so record IDs look alike across the codebase.
     """
     key = "\x1f".join((case_id, source_file, source_locator))
-    return "rec-" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+    return "rec_" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
