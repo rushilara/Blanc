@@ -18,7 +18,7 @@ function Pane({ id, title, count, children }: {
 function Sources({ ids }: { ids: string[] }) {
   return (
     <ul aria-label="Source record references" className="flex flex-wrap gap-1.5">
-      {ids.map((id) => <li key={id} className="rounded border border-zinc-200 px-2 py-0.5 font-mono text-xs text-zinc-600 dark:border-zinc-700 dark:text-zinc-400">{id}</li>)}
+      {[...new Set(ids)].map((id) => <li key={id} className="rounded border border-zinc-200 px-2 py-0.5 font-mono text-xs text-zinc-600 dark:border-zinc-700 dark:text-zinc-400">{id}</li>)}
     </ul>
   );
 }
@@ -92,7 +92,8 @@ export function AnalysisWorkspace({ revision }: { revision: AnalysisRevision }) 
           <ol className="space-y-5">
             {revision.timeline_events.map((event) => (
               <li key={event.id} className="space-y-2 border-l-2 border-zinc-200 pl-3 dark:border-zinc-700">
-                {event.timestamp ? <time className="break-words font-mono text-xs" dateTime={event.timestamp}>{event.timestamp}</time> : <p className="text-xs text-zinc-500">Undated</p>}
+                {/* Raw source dates may be approximate. BLA-39 owns normalization. */}
+                <p className="break-words font-mono text-xs">{event.timestamp ?? "Undated"}</p>
                 <p className="text-xs text-zinc-500">{event.timestamp_precision ?? "unknown"} precision · {(event.timestamp_kind ?? "unknown").replaceAll("_", " ")}</p>
                 <p className="text-sm leading-6">{event.description}</p>
                 <Status value={event.status} />
