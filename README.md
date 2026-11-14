@@ -1,4 +1,4 @@
-# CaseLens v2 — Product and Engineering Kickoff
+# Blanc — Product and Engineering Kickoff
 
 **Status:** Proposed / ready for team review  
 **Date:** November 14, 2026  
@@ -6,7 +6,7 @@
 
 ## Product in one sentence
 
-CaseLens is a persistent investigative workspace in which an investigator asks case questions and receives a source-cited answer, a relationship graph, and a timeline; they can save the reconstruction, expand it with follow-up questions, and exclude evidence to see how supported conclusions change.
+Blanc is a persistent investigative workspace in which an investigator asks case questions and receives a source-cited answer, a relationship graph, and a timeline; they can save the reconstruction, expand it with follow-up questions, and exclude evidence to see how supported conclusions change.
 
 **The core innovation is not three separate AI outputs; it is one editable, evidence-backed investigation state with auditable versions.**
 
@@ -54,4 +54,4 @@ All three teammates agree on the schemas before writing endpoint-specific code. 
 
 ## Runnable source-grounding check
 
-Run `cd starter && python validate_fixture.py && python -m unittest -v test_validator.py` to verify the synthetic fixture. This is a **small contract validator only**, not a running CaseLens application.
+Run `cd starter && python validate_fixture.py && python -m unittest -v test_validator.py` to verify the synthetic fixture. This is a **small contract validator only**, not a running Blanc application.

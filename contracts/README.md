@@ -1,4 +1,4 @@
-# CaseLens schemas
+# Blanc schemas
 
 `evidence_record.schema.json` defines a traceable source record.  
 `analysis_revision.schema.json` defines a saved question-specific reconstruction.

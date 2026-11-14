@@ -1,4 +1,4 @@
-"""Minimal cross-reference validator for the synthetic CaseLens fixture.
+"""Minimal cross-reference validator for the synthetic Blanc fixture.
 
 Not a forensic parser, retrieval engine or LLM. Demonstrates invariant checks that
 must be enforced server-side in the actual application.

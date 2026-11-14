@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "CaseLens EvidenceRecord",
+  "title": "Blanc EvidenceRecord",
   "type": "object",
   "additionalProperties": false,
   "required": [

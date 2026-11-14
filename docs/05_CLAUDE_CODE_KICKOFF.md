@@ -3,7 +3,7 @@
 ## Repository structure
 
 ```text
-caselens/
+blanc/
   frontend/       # Next.js React app
   backend/        # FastAPI, models, retrieval and LLM pipeline
   contracts/      # JSON Schemas: evidence + reconstructed analysis
@@ -55,4 +55,4 @@ caselens/
 
 ## AI coding prompt template
 
-> Implement your assigned owner tasks for CaseLens v2 according to `docs/01_PRODUCT_PRD.md`, `docs/02_ARCHITECTURE_AND_DATA_CONTRACTS.md`, and `contracts/*.schema.json`. Keep code case-agnostic. Start by confirming the expected API/schema boundary. Provide real smoke tests. Never generate fake forensic findings or claim that unverified LLM output is ground truth. Preserve source IDs/locators and evidence-exclusion semantics end-to-end. Do not modify files owned by another teammate without coordination.
+> Implement your assigned owner tasks for Blanc according to `docs/01_PRODUCT_PRD.md`, `docs/02_ARCHITECTURE_AND_DATA_CONTRACTS.md`, and `contracts/*.schema.json`. Keep code case-agnostic. Start by confirming the expected API/schema boundary. Provide real smoke tests. Never generate fake forensic findings or claim that unverified LLM output is ground truth. Preserve source IDs/locators and evidence-exclusion semantics end-to-end. Do not modify files owned by another teammate without coordination.

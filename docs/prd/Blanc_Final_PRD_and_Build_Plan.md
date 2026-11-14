@@ -1,4 +1,4 @@
-# CaseLens — Final PRD and 15-Hour Build Plan
+# Blanc — Final PRD and 15-Hour Build Plan
 
 **Product v2 · November 14, 2026 · Proposed for team kickoff**
 
@@ -16,13 +16,13 @@
 **Status:** Product direction agreed in discussion; engineering details proposed for team review.  
 **Primary persona:** Investigator or digital-forensic analyst using exported records from a new case.  
 **Prototype window:** ~15 elapsed hours / three teammates / coding agents.  
-**Background:** Integrates the teammate's *Forensic Reconstruction — Arlequin Track 1* (short hackathon demonstration), the earlier general-purpose CaseLens vision, and the later decision to prioritize persistent investigation workspaces.
+**Background:** Integrates the teammate's *Forensic Reconstruction — Arlequin Track 1* (short hackathon demonstration), the earlier general-purpose Blanc vision, and the later decision to prioritize persistent investigation workspaces.
 
 ### 1. Vision
 
 Help investigators move from unorganized digital evidence to an inspectable, revisable case reconstruction. Investigators ask natural-language questions and receive (1) a short answer with citations, (2) a relationship graph of entities and supported links, and (3) a timeline of recorded and inferred events. They can **save** useful work, **ask follow-up questions that build on it**, **exclude disputed evidence**, and **compare reconstructions**. Every user-visible claim, relationship and event is traceable to a source record.
 
-CaseLens is a **general-purpose software pipeline**, not a Narcos-specific chatbot. Published forensic datasets are development/evaluation cases; no specialized model training is necessary for the first release.
+Blanc is a **general-purpose software pipeline**, not a Narcos-specific chatbot. Published forensic datasets are development/evaluation cases; no specialized model training is necessary for the first release.
 
 ### 2. Product principles
 
