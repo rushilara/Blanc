@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Blanc RevisionComparison",
+  "description": "Compares a base AnalysisRevision with a child revision produced by excluding evidence. Describes what the analysis can still conclude, not what happened.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "case_id",
+    "base_analysis_id",
+    "compared_analysis_id",
+    "excluded_record_ids",
+    "items",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "case_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "base_analysis_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "compared_analysis_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "excluded_record_ids": {
+      "type": "array",
+      "description": "Records excluded in the compared revision but not in the base revision.",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "base_ref_id",
+          "compared_ref_id",
+          "support_status",
+          "base_evidence_ids",
+          "compared_evidence_ids"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "claim",
+              "edge",
+              "event"
+            ]
+          },
+          "base_ref_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Item ID in the base revision; null when the item only exists in the compared revision."
+          },
+          "compared_ref_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Item ID in the compared revision; null when no matching item survives."
+          },
+          "support_status": {
+            "type": "string",
+            "enum": [
+              "still_supported",
+              "weakened",
+              "not_supported",
+              "newly_supported",
+              "unresolved"
+            ]
+          },
+          "base_evidence_ids": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "compared_evidence_ids": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "explanation": {
+            "type": "string",
+            "description": "Cautious, source-referenced wording, e.g. 'no longer supported by the remaining evidence', never 'did not happen'."
+          }
+        }
+      }
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

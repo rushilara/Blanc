@@ -13,33 +13,52 @@ from jsonschema import Draft202012Validator
 
 ROOT = Path(__file__).resolve().parents[1]
 
+SCHEMAS = {
+    "evidence": "contracts/evidence_record.schema.json",
+    "revision": "contracts/analysis_revision.schema.json",
+    "board": "contracts/investigation_board.schema.json",
+    "comparison": "contracts/revision_comparison.schema.json",
+}
+
+# (fixture path, schema key, is the fixture a list of instances?)
+FIXTURES = [
+    ("fixtures/synthetic_records.json", "evidence", True),
+    ("fixtures/synthetic_analysis_revision.json", "revision", False),
+    ("fixtures/synthetic_analysis_revision_excluded.json", "revision", False),
+    ("fixtures/synthetic_board.json", "board", False),
+    ("fixtures/synthetic_revision_comparison.json", "comparison", False),
+]
+
 
 def load(rel: str):
     return json.loads((ROOT / rel).read_text())
 
 
 def main() -> int:
-    evidence_schema = load("contracts/evidence_record.schema.json")
-    revision_schema = load("contracts/analysis_revision.schema.json")
-
-    # Fails loudly if a schema itself is malformed.
-    Draft202012Validator.check_schema(evidence_schema)
-    Draft202012Validator.check_schema(revision_schema)
+    validators = {}
+    for key, rel in SCHEMAS.items():
+        schema = load(rel)
+        # Fails loudly if a schema itself is malformed.
+        Draft202012Validator.check_schema(schema)
+        validators[key] = Draft202012Validator(schema)
 
     errors: list[str] = []
-    for i, record in enumerate(load("fixtures/synthetic_records.json")):
-        for err in Draft202012Validator(evidence_schema).iter_errors(record):
-            errors.append(f"synthetic_records.json[{i}]: {err.message}")
-    revision = load("fixtures/synthetic_analysis_revision.json")
-    for err in Draft202012Validator(revision_schema).iter_errors(revision):
-        errors.append(f"synthetic_analysis_revision.json: {err.message}")
+    for rel, key, is_list in FIXTURES:
+        data = load(rel)
+        instances = list(enumerate(data)) if is_list else [(None, data)]
+        name = Path(rel).name
+        for i, instance in instances:
+            label = f"{name}[{i}]" if i is not None else name
+            for err in validators[key].iter_errors(instance):
+                path = "/".join(str(p) for p in err.absolute_path)
+                errors.append(f"{label} {path}: {err.message}")
 
     if errors:
         print("FAIL: fixtures do not match contracts:")
         for e in errors:
             print(f"  - {e}")
         return 1
-    print("PASS: contracts are valid JSON Schemas and fixtures conform to them")
+    print(f"PASS: {len(SCHEMAS)} contracts are valid JSON Schemas and {len(FIXTURES)} fixtures conform to them")
     return 0
 
 

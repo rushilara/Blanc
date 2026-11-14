@@ -1,0 +1,82 @@
+{
+  "schema_version": "1.0",
+  "case_id": "synthetic-demo",
+  "base_analysis_id": "analysis-synthetic-1",
+  "compared_analysis_id": "analysis-synthetic-2",
+  "excluded_record_ids": [
+    "rec-02"
+  ],
+  "items": [
+    {
+      "kind": "claim",
+      "base_ref_id": "claim-1",
+      "compared_ref_id": "claim-1",
+      "support_status": "still_supported",
+      "base_evidence_ids": [
+        "rec-01"
+      ],
+      "compared_evidence_ids": [
+        "rec-01"
+      ],
+      "explanation": "Still supported by rec-01, which was not excluded."
+    },
+    {
+      "kind": "claim",
+      "base_ref_id": "claim-2",
+      "compared_ref_id": null,
+      "support_status": "not_supported",
+      "base_evidence_ids": [
+        "rec-02"
+      ],
+      "compared_evidence_ids": [],
+      "explanation": "Its only supporting record, rec-02, is excluded, so the active analysis can no longer conclude this. The exclusion does not show it did not happen."
+    },
+    {
+      "kind": "edge",
+      "base_ref_id": "edge-1",
+      "compared_ref_id": "edge-1",
+      "support_status": "still_supported",
+      "base_evidence_ids": [
+        "rec-01"
+      ],
+      "compared_evidence_ids": [
+        "rec-01"
+      ]
+    },
+    {
+      "kind": "edge",
+      "base_ref_id": "edge-2",
+      "compared_ref_id": null,
+      "support_status": "not_supported",
+      "base_evidence_ids": [
+        "rec-02"
+      ],
+      "compared_evidence_ids": [],
+      "explanation": "No remaining permitted record supports a Jordan to Casey link."
+    },
+    {
+      "kind": "event",
+      "base_ref_id": "event-1",
+      "compared_ref_id": "event-1",
+      "support_status": "still_supported",
+      "base_evidence_ids": [
+        "rec-01"
+      ],
+      "compared_evidence_ids": [
+        "rec-01"
+      ]
+    },
+    {
+      "kind": "event",
+      "base_ref_id": "event-2",
+      "compared_ref_id": null,
+      "support_status": "not_supported",
+      "base_evidence_ids": [
+        "rec-02"
+      ],
+      "compared_evidence_ids": [],
+      "explanation": "Its only supporting record, rec-02, is excluded."
+    }
+  ],
+  "created_at": "2026-11-14T20:05:00Z"
+}

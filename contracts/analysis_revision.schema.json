@@ -273,6 +273,18 @@
         "type": "string"
       }
     },
+    "needs_review": {
+      "type": "boolean",
+      "description": "Set by the server when LLM output still failed schema/source validation after one retry and this revision holds a partial result for investigator review. Absent or false means validation passed."
+    },
+    "validation_errors": {
+      "type": "array",
+      "description": "Server-generated validation messages explaining why needs_review is set. Never LLM-authored.",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
     "created_at": {
       "type": "string",
       "format": "date-time"

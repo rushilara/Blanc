@@ -1,0 +1,74 @@
+{
+  "schema_version": "1.0",
+  "analysis_id": "analysis-synthetic-2",
+  "parent_analysis_id": "analysis-synthetic-1",
+  "case_id": "synthetic-demo",
+  "question": "How are Alex and Casey connected?",
+  "excluded_record_ids": [
+    "rec-02"
+  ],
+  "retrieved_record_ids": [
+    "rec-01"
+  ],
+  "answer": "With rec-02 excluded, the remaining evidence shows only that Alex communicated with Jordan. The permitted records do not establish a link between Jordan and Casey.",
+  "claims": [
+    {
+      "id": "claim-1",
+      "text": "Alex communicated with Jordan about a document delivery.",
+      "evidence_ids": [
+        "rec-01"
+      ],
+      "status": "reported"
+    }
+  ],
+  "graph": {
+    "nodes": [
+      {
+        "id": "alex",
+        "label": "Alex",
+        "type": "person",
+        "evidence_ids": [
+          "rec-01"
+        ]
+      },
+      {
+        "id": "jordan",
+        "label": "Jordan",
+        "type": "person",
+        "evidence_ids": [
+          "rec-01"
+        ]
+      }
+    ],
+    "edges": [
+      {
+        "id": "edge-1",
+        "source": "alex",
+        "target": "jordan",
+        "type": "communicated_with",
+        "evidence_ids": [
+          "rec-01"
+        ],
+        "status": "reported",
+        "description": "Email communication"
+      }
+    ]
+  },
+  "timeline_events": [
+    {
+      "id": "event-1",
+      "description": "Alex wrote to Jordan about document delivery.",
+      "timestamp": "2026-04-10T09:15:00Z",
+      "timestamp_precision": "exact",
+      "timestamp_kind": "source_stated",
+      "evidence_ids": [
+        "rec-01"
+      ],
+      "status": "reported"
+    }
+  ],
+  "unresolved_questions": [
+    "Whether Alex and Casey are connected cannot be determined from the permitted evidence."
+  ],
+  "created_at": "2026-11-14T20:05:00Z"
+}
