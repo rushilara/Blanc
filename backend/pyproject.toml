@@ -23,8 +23,9 @@ omit = [
 show_missing = true
 skip_empty = true
 precision = 1
-# No minimum yet: CI only reports. To fail CI below a threshold, uncomment:
-# fail_under = 80
+# Minimum line coverage: pytest --cov (CI and `make coverage`) fails below this.
+# Change the number to raise or lower the floor; comment it out to report only.
+fail_under = 80
 
 [tool.coverage.html]
 directory = "htmlcov"

@@ -62,11 +62,13 @@ jobs:
         run: |
           pip install -r requirements.txt
           if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
-          pip install pytest pytest-cov ruff
+          # TODO: move the pytest-cov pin into requirements-dev.txt in a follow-up.
+          pip install pytest pytest-cov==7.1.0 ruff
       - name: Lint (ruff)
         if: steps.detect.outputs.present == 'true'
         run: ruff check .
-      # Coverage config (source, omit, optional fail_under) is in backend/pyproject.toml.
+      # Coverage config (source, omit, fail_under = 80% floor) is in backend/pyproject.toml.
+      # This step fails below the floor; the report steps below still run.
       - name: Tests (pytest + coverage)
         if: steps.detect.outputs.present == 'true'
         run: |
@@ -81,9 +83,9 @@ jobs:
         run: |
           {
             echo "<!-- blanc-coverage-report -->"
-            echo "## Backend coverage: $(coverage report --format=total)%"
+            echo "## Backend coverage: $(coverage report --format=total --fail-under=0)%"
             echo
-            coverage report --format=markdown
+            coverage report --format=markdown --fail-under=0
             echo
             echo "_Lines covered by \`backend/tests\`. Full HTML report: \`backend-coverage\` artifact on the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})._"
           } > coverage-summary.md

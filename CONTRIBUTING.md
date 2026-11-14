@@ -34,7 +34,7 @@ GitHub Actions runs on every PR and on pushes to `main` (`.github/workflows/ci.y
 | Job | What it checks | When it runs |
 |---|---|---|
 | Contracts + fixtures | Schemas are valid JSON Schema; fixtures conform; source-grounding checks in `starter/` pass | Always |
-| Backend | `ruff check`, then `pytest` with line coverage (report only, no minimum) in `backend/` | Once `backend/requirements.txt` exists |
+| Backend | `ruff check`, then `pytest` with line coverage in `backend/` (fails below 80%) | Once `backend/requirements.txt` exists |
 | Frontend | `npm ci`, then `lint`, `build` and `test` scripts if defined | Once `frontend/package.json` exists |
 
 Backend conventions CI relies on: runtime deps in `backend/requirements.txt`, optional dev deps in `backend/requirements-dev.txt`, tests in `backend/tests/`. Frontend: commit `frontend/package-lock.json`.
@@ -53,7 +53,7 @@ Run it locally from the repo root:
 make coverage   # prints the report; open backend/htmlcov/index.html for line-by-line detail
 ```
 
-There is no minimum yet, so low coverage never fails CI. To enforce one, uncomment `fail_under` under `[tool.coverage.report]` in `backend/pyproject.toml`.
+A minimum of **80% line coverage is enforced**: the Backend job (and `make coverage`) fails if total coverage drops below it. To change the floor, edit `fail_under` under `[tool.coverage.report]` in `backend/pyproject.toml`; commenting it out goes back to report-only.
 
 Frontend coverage will be added once the frontend has tests.
 
