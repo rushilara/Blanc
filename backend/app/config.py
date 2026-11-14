@@ -1,0 +1,70 @@
+"""Application settings, loaded from the environment and the repo-root `.env` file.
+
+Real environment variables take precedence over values in `.env`.
+"""
+
+from functools import lru_cache
+from pathlib import Path
+from typing import Annotated
+
+from pydantic import Field, SecretStr, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+# backend/app/config.py -> repo root is two levels above `app/`.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+class Settings(BaseSettings):
+    """Runtime configuration. API keys are optional so the app starts without them."""
+
+    model_config = SettingsConfigDict(
+        env_file=REPO_ROOT / ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    # LLM provider: Google Gemini API. Override GEMINI_MODEL in .env to switch models.
+    GEMINI_API_KEY: SecretStr | None = None
+    GEMINI_MODEL: str = "gemini-3.5-flash"
+
+    # Embeddings: OpenAI embeddings API.
+    OPENAI_API_KEY: SecretStr | None = None
+    EMBEDDING_MODEL: str = "text-embedding-3-small"
+
+    # Storage.
+    DATABASE_URL: str = "sqlite:///./data/blanc.db"
+    VECTOR_INDEX_PATH: str = "./data/vector_index"
+
+    # Allowed frontend origins, comma-separated in the environment.
+    CORS_ORIGINS: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["http://localhost:3000"]
+    )
+
+    @field_validator("CORS_ORIGINS", mode="before")
+    @classmethod
+    def _split_origins(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [origin.strip() for origin in value.split(",") if origin.strip()]
+        return value
+
+    @field_validator("GEMINI_API_KEY", "OPENAI_API_KEY", mode="before")
+    @classmethod
+    def _empty_key_is_none(cls, value: object) -> object:
+        return None if value == "" else value
+
+    def summary(self) -> dict[str, object]:
+        """Non-secret view of the configuration, safe to expose on /health."""
+        return {
+            "llm_provider": "gemini",
+            "gemini_model": self.GEMINI_MODEL,
+            "gemini_api_key_set": self.GEMINI_API_KEY is not None,
+            "embedding_provider": "openai",
+            "embedding_model": self.EMBEDDING_MODEL,
+            "openai_api_key_set": self.OPENAI_API_KEY is not None,
+            "cors_origins": self.CORS_ORIGINS,
+        }
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
