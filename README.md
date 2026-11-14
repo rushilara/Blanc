@@ -48,6 +48,22 @@ docs/       # PRD, architecture, build plan, datasets, kickoff (full PRD in docs
 
 Copy `.env.example` to `.env` for local config; `.env` is gitignored.
 
+## Run locally
+
+Prerequisites: Python 3.12, Node 20 (20.12+), npm, make.
+
+```bash
+cp .env.example .env   # both backend and frontend read this file; API keys are optional to start
+make backend           # creates backend/.venv, installs deps, runs FastAPI with reload on :8000 (BACKEND_PORT)
+make frontend          # npm install + Next.js dev server on http://localhost:3000
+make test              # backend ruff + pytest, frontend lint
+```
+
+Check the backend at http://localhost:8000/health (also shown in the workspace header). Run `make backend` and `make frontend` in separate terminals. If `python3.12` is not on your PATH, pass it explicitly, e.g. `make backend PYTHON=/path/to/python3.12`.
+
+- LLM: Google Gemini API (`GEMINI_API_KEY`, `GEMINI_MODEL`).
+- Embeddings: OpenAI embeddings API (`OPENAI_API_KEY`, `EMBEDDING_MODEL`).
+
 ## Suggested kickoff
 
 All three teammates agree on the schemas before writing endpoint-specific code. The dataset owner verifies readable case records in the first 90 minutes. Frontend implements against the synthetic example while backend builds retrieval and analysis.
