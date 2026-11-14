@@ -6,6 +6,4 @@ extend-exclude = [".venv"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["."]
+# pytest config lives in pytest.ini.
