@@ -1,14 +1,33 @@
 """FastAPI application entry point. Run with `uvicorn app.main:app` from `backend/`."""
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import Settings, get_settings
+from app.db import init_db, make_engine, make_session_factory
+from app.routers import cases
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
-    app = FastAPI(title="Blanc API", version="0.1.0")
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # The DB is opened at startup, not import, so importing the app never
+        # touches the developer's database.
+        engine = make_engine(settings.DATABASE_URL)
+        init_db(engine)
+        app.state.engine = engine
+        app.state.session_factory = make_session_factory(engine)
+        try:
+            yield
+        finally:
+            engine.dispose()
+
+    app = FastAPI(title="Blanc API", version="0.1.0", lifespan=lifespan)
 
     app.add_middleware(
         CORSMiddleware,
@@ -22,6 +41,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def health() -> dict[str, object]:
         """Liveness check plus a non-secret config summary (never returns keys)."""
         return {"status": "ok", "config": settings.summary()}
+
+    app.include_router(cases.router)
 
     return app
 
