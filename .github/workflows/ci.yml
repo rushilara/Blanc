@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    name: Contracts + fixtures
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install jsonschema
+      - name: Schemas are valid and fixtures conform
+        run: python starter/validate_schemas.py
+      - name: Source-grounding cross-reference checks
+        working-directory: starter
+        run: |
+          python validate_fixture.py
+          python -m unittest -v test_validator.py
+
+  # Backend (FastAPI). Skips until backend/requirements.txt exists (BLA-6).
+  # Convention: runtime deps in backend/requirements.txt, test/lint deps in
+  # backend/requirements-dev.txt (optional), tests under backend/tests/.
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - name: Detect backend
+        id: detect
+        working-directory: .
+        run: |
+          if [ -f backend/requirements.txt ]; then echo "present=true" >> "$GITHUB_OUTPUT"; else echo "present=false" >> "$GITHUB_OUTPUT"; echo "No backend/requirements.txt yet, skipping."; fi
+      - uses: actions/setup-python@v5
+        if: steps.detect.outputs.present == 'true'
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+      - name: Install dependencies
+        if: steps.detect.outputs.present == 'true'
+        run: |
+          pip install -r requirements.txt
+          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+          pip install pytest ruff
+      - name: Lint (ruff)
+        if: steps.detect.outputs.present == 'true'
+        run: ruff check .
+      - name: Tests (pytest)
+        if: steps.detect.outputs.present == 'true'
+        run: |
+          if [ -d tests ]; then pytest -q; else echo "No backend/tests yet."; fi
+
+  # Frontend (Next.js). Skips until frontend/package.json exists (BLA-6).
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - name: Detect frontend
+        id: detect
+        working-directory: .
+        run: |
+          if [ -f frontend/package.json ]; then echo "present=true" >> "$GITHUB_OUTPUT"; else echo "present=false" >> "$GITHUB_OUTPUT"; echo "No frontend/package.json yet, skipping."; fi
+      - uses: actions/setup-node@v4
+        if: steps.detect.outputs.present == 'true'
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        if: steps.detect.outputs.present == 'true'
+        run: npm ci
+      - name: Lint
+        if: steps.detect.outputs.present == 'true'
+        run: npm run lint --if-present
+      - name: Type check / build
+        if: steps.detect.outputs.present == 'true'
+        run: npm run build --if-present
+      - name: Tests
+        if: steps.detect.outputs.present == 'true'
+        run: npm test --if-present
