@@ -1,0 +1,27 @@
+[
+  {
+    "record_id": "rec-01",
+    "case_id": "synthetic-demo",
+    "source_file": "mailbox.eml",
+    "source_locator": "message 1, line 12",
+    "content": "Alex emails Jordan about delivering a document on Friday.",
+    "timestamp": "2026-04-10T09:15:00Z",
+    "timestamp_kind": "sent",
+    "original_sha256": null,
+    "metadata": {
+      "sender": "Alex",
+      "recipient": "Jordan"
+    }
+  },
+  {
+    "record_id": "rec-02",
+    "case_id": "synthetic-demo",
+    "source_file": "chat.json",
+    "source_locator": "messages[7]",
+    "content": "Jordan tells Casey there may be a meeting that afternoon.",
+    "timestamp": "2026-04-10T10:30:00Z",
+    "timestamp_kind": "sent",
+    "original_sha256": null,
+    "metadata": {}
+  }
+]
