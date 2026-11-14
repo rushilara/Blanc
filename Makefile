@@ -44,10 +44,8 @@ test-frontend: install-frontend
 test: test-backend test-frontend
 
 # Same coverage run as CI; fails below fail_under in backend/pyproject.toml.
-# pytest-cov is installed on demand (pin matches ci.yml; not in
-# requirements-dev.txt yet).
+# pytest-cov is pinned in backend/requirements-dev.txt.
 coverage: install-backend
-	$(VENV_PY) -m pip install -q pytest-cov==7.1.0
 	cd backend && .venv/bin/pytest -q --cov --cov-report=term-missing --cov-report=xml --cov-report=html
 	@echo "HTML report: backend/htmlcov/index.html"
 
