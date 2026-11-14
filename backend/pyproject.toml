@@ -7,3 +7,27 @@ extend-exclude = [".venv"]
 select = ["E", "F", "I", "B", "UP"]
 
 # pytest config lives in pytest.ini.
+
+# Coverage (pytest-cov). Run from backend/: `pytest --cov` or `make coverage` at the repo root.
+# Measures the app package and top-level backend modules (e.g. evidence_prompt.py).
+[tool.coverage.run]
+source = ["."]
+branch = false
+omit = [
+    "tests/*",
+    ".venv/*",
+    "venv/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
+precision = 1
+# No minimum yet: CI only reports. To fail CI below a threshold, uncomment:
+# fail_under = 80
+
+[tool.coverage.html]
+directory = "htmlcov"
+
+[tool.coverage.xml]
+output = "coverage.xml"

@@ -21,6 +21,7 @@ venv/
 .ruff_cache/
 .coverage
 htmlcov/
+coverage.xml
 
 # Node / Next.js (frontend)
 node_modules/
