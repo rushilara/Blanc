@@ -1,8 +1,9 @@
 """Provider-independent prompt assembly for BLA-16; no model calls or storage."""
 
 import json
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any
 
 SYSTEM_PROMPT = (Path(__file__).parent / "prompts" / "evidence_analysis.md").read_text(
     encoding="utf-8"
@@ -35,14 +36,24 @@ def build_evidence_messages(
         if not isinstance(record_id, str) or not record_id.strip():
             raise ValueError("Source record needs a nonempty record_id")
         if record_id in excluded:
+            # Excluded records are never sent, so duplicates among them are harmless.
             continue
         if record_id in seen:
             raise ValueError("Duplicate record_id; resolve chunks before prompting")
         for field in ("source_file", "source_locator", "content"):
             if not isinstance(record.get(field), str):
-                raise ValueError(f"Source record needs a string {field}")
+                # Keep malformed input errors consistent for the caller.
+                raise ValueError(f"Source record needs a string {field}")  # noqa: TRY004
         seen.add(record_id)
-        allowed.append(dict(record))
+        source = {field: record[field] for field in (
+            "record_id", "source_file", "source_locator", "content",
+            "timestamp", "timestamp_kind",
+        ) if field in record}
+        if "metadata" in record:
+            if not isinstance(record["metadata"], dict):
+                raise ValueError("Source record metadata must be an object")
+            source["metadata"] = record["metadata"]
+        allowed.append(source)
     payload = {
         "case_id": case_id,
         "investigator_question": question,
@@ -53,7 +64,11 @@ def build_evidence_messages(
             "label": "prior analysis — not evidence",
             "text": prior_analysis,
         }
+    try:
+        encoded_payload = json.dumps(payload, ensure_ascii=False, allow_nan=False)
+    except (TypeError, ValueError) as error:
+        raise ValueError("Prompt data must be JSON serializable") from error
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        {"role": "user", "content": encoded_payload},
     ]

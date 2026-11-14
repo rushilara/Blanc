@@ -11,11 +11,26 @@ The system prompt follows architecture §4 and PRD §10. The current contract us
 Revision IDs, dates and retrieval metadata belong to the backend, not the model.
 Apply schema and citation validation before saving any generated result.
 
-Run deterministic boundary tests from the repository root:
+Run deterministic boundary tests from `backend/`, the same directory CI uses:
 
 ```sh
-python3 -m unittest discover -s backend/tests -v
+python3 -m unittest discover -s tests -v
+# With CI's development tools installed:
+ruff check .
+pytest -q
 ```
+
+`requirements.txt` intentionally has no runtime dependencies yet and enables
+the backend CI job. `pytest.ini` makes the backend module importable with pytest
+from either the repository root or the backend directory.
+
+Only record IDs, source files, locators, content, timestamps, timestamp kinds and
+optional metadata enter the model payload. Keep metadata limited to source
+context; retrieval scores, embeddings and other internal fields are omitted.
+Invalid metadata or non-JSON values raise `ValueError`.
+
+The prompt Markdown file must ship alongside `evidence_prompt.py` when the
+backend is packaged; the loader resolves it relative to that module.
 
 These tests check isolation, encoding, case boundaries and exclusions. They do
 not demonstrate that a real model resists an injection. The following behavior
