@@ -52,6 +52,40 @@
           "base_evidence_ids",
           "compared_evidence_ids"
         ],
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "base_ref_id": {
+                  "type": "null"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "base_evidence_ids": {
+                  "maxItems": 0
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "compared_ref_id": {
+                  "type": "null"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "compared_evidence_ids": {
+                  "maxItems": 0
+                }
+              }
+            }
+          }
+        ],
         "properties": {
           "kind": {
             "type": "string",

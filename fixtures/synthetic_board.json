@@ -50,6 +50,17 @@
       ],
       "status": "reported",
       "added_at": "2026-11-14T20:02:00Z"
+    },
+    {
+      "item_id": "item-5",
+      "kind": "node",
+      "source_analysis_id": "analysis-synthetic-1",
+      "ref_id": "jordan",
+      "evidence_ids": [
+        "rec-01",
+        "rec-02"
+      ],
+      "added_at": "2026-11-14T15:02:30-05:00"
     }
   ],
   "notes": [

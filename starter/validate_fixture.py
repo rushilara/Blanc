@@ -5,6 +5,7 @@ must be enforced server-side in the actual application.
 """
 from __future__ import annotations
 import json
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,6 +44,32 @@ def validate_revision(records: list[dict], analysis: dict) -> list[str]:
     return errors
 
 
+def parse_datetime(value: object) -> datetime | None:
+    """Parse an ISO-8601 date-time with a UTC offset ('Z' or +HH:MM). Returns None if
+    the value is unparseable or naive (no offset), so instants compare correctly."""
+    if not isinstance(value, str):
+        return None
+    text = value[:-1] + '+00:00' if value.endswith(('Z', 'z')) else value
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed
+
+
+def _parse_fields(errors: list[str], fields: list[tuple[str, object]]) -> dict[str, datetime]:
+    parsed: dict[str, datetime] = {}
+    for label, value in fields:
+        dt = parse_datetime(value)
+        if dt is None:
+            errors.append(f"{label} is not an ISO-8601 date-time with an offset: {value!r}")
+        else:
+            parsed[label] = dt
+    return parsed
+
+
 def _revision_items(analysis: dict) -> dict[tuple[str, str], dict]:
     """Index a revision's citable items by (kind, id)."""
     index: dict[tuple[str, str], dict] = {}
@@ -67,8 +94,15 @@ def validate_board(records: list[dict], revisions: list[dict], board: dict) -> l
     parent = board.get('parent_revision')
     if parent is not None and parent >= board['revision']:
         errors.append('parent_revision must be lower than revision (snapshots are append-only)')
-    if board['updated_at'] < board['created_at']:
+    stamps = _parse_fields(errors, [('created_at', board['created_at']), ('updated_at', board['updated_at'])])
+    if len(stamps) == 2 and stamps['updated_at'] < stamps['created_at']:
         errors.append('updated_at is before created_at')
+    updated = stamps.get('updated_at')
+    later = [(f"board item {i['item_id']} added_at", i['added_at']) for i in board['items']]
+    later += [(f"note {n['note_id']} created_at", n['created_at']) for n in board['notes']]
+    for label, dt in _parse_fields(errors, later).items():
+        if updated is not None and dt > updated:
+            errors.append(f"{label} is after the snapshot's updated_at")
     active = board.get('active_analysis_id')
     if active is not None and active not in by_id:
         errors.append(f"active_analysis_id {active} is not a revision of case {case_id}")
@@ -98,8 +132,10 @@ def validate_board(records: list[dict], revisions: list[dict], board: dict) -> l
             continue
         if not cited.issubset(set(ref.get('evidence_ids', []))):
             errors.append(f"{label} cites evidence its source {item['kind']} does not cite")
-        if 'status' in ref and ref['status'] != item['status']:
+        if 'status' in ref and item.get('status') != ref['status']:
             errors.append(f"{label} status differs from its source {item['kind']} (pinning must not change status)")
+        if item['kind'] != 'node' and 'status' not in item:
+            errors.append(f"{label} is a {item['kind']} and needs a status")
 
     note_ids = [n['note_id'] for n in board['notes']]
     if len(note_ids) != len(set(note_ids)):
@@ -119,6 +155,7 @@ def validate_comparison(revisions: list[dict], comparison: dict) -> list[str]:
     compared = by_id.get(comparison['compared_analysis_id'])
     if base is None or compared is None:
         return ['base_analysis_id and compared_analysis_id must both be known revisions']
+    _parse_fields(errors, [('comparison created_at', comparison['created_at'])])
     case_id = comparison['case_id']
     if base['case_id'] != case_id or compared['case_id'] != case_id:
         errors.append('comparison and both revisions must share one case_id')
@@ -148,6 +185,10 @@ def validate_comparison(revisions: list[dict], comparison: dict) -> list[str]:
                 errors.append(f"{label} compared_ref_id {c} is not a {item['kind']} in the compared revision")
             elif set(item['compared_evidence_ids']) != set(ref['evidence_ids']):
                 errors.append(f"{label} compared_evidence_ids do not match the compared revision")
+        if b is None and item['base_evidence_ids']:
+            errors.append(f"{label} has base_evidence_ids but no base_ref_id")
+        if c is None and item['compared_evidence_ids']:
+            errors.append(f"{label} has compared_evidence_ids but no compared_ref_id")
         if set(item['compared_evidence_ids']) & compared_excluded:
             errors.append(f"{label} compared side cites an excluded record")
         if status in ('still_supported', 'weakened') and (b is None or c is None):

@@ -64,9 +64,22 @@
           "source_analysis_id",
           "ref_id",
           "evidence_ids",
-          "status",
           "added_at"
         ],
+        "if": {
+          "properties": {
+            "kind": {
+              "not": {
+                "const": "node"
+              }
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "status"
+          ]
+        },
         "properties": {
           "item_id": {
             "type": "string",
@@ -105,9 +118,10 @@
             "enum": [
               "observed",
               "reported",
-              "inferred"
+              "inferred",
+              "unresolved"
             ],
-            "description": "Copied from the originating item. Pinning does not upgrade it."
+            "description": "Copied from the originating item; pinning never changes it. Required for claim, edge and event items; optional for node items, since graph nodes carry no status."
           },
           "added_at": {
             "type": "string",

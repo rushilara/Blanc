@@ -11,6 +11,12 @@ All schemas are JSON Schema draft 2020-12 with `additionalProperties: false`. Ev
 
 The `../fixtures/` folder contains **synthetic example content only**. It is safe for frontend development, but **must not** be presented as findings extracted from Narcos or any actual forensic dataset. `synthetic_analysis_revision_excluded.json` is the child of `synthetic_analysis_revision.json` with `rec-02` excluded; the board and comparison fixtures reference IDs from those two revisions.
 
+## Date-time fields
+
+Every `*_at` field (`created_at`, `updated_at`, `added_at`) is an ISO-8601 date-time **with a UTC offset**, either `Z` or `+HH:MM`/`-HH:MM` (e.g. `2026-11-14T20:00:00Z` or `2026-11-14T15:00:00-05:00`). There is no UTC-only rule. Naive timestamps (no offset) and unparseable values are rejected. Consumers must parse these values before comparing them, never compare them as strings: `2026-11-14T15:00:00-05:00` and `2026-11-14T20:00:00Z` are the same instant. JSON Schema `format` is not enforced by default, so `starter/validate_fixture.py` parses them.
+
+This rule does not cover evidence `timestamp` fields, which may be null, partial or approximate (see `timestamp_precision` and `timestamp_kind`).
+
 ## AnalysisRevision
 
 Revisions are immutable. A follow-up or an exclusion creates a child revision with `parent_analysis_id` set; the parent stays inspectable.
@@ -26,7 +32,8 @@ The frontend must show a review banner when `needs_review` is `true`.
 
 - Each save writes a new snapshot: same `board_id`, `revision` incremented, `parent_revision` set to the previous snapshot. Older snapshots are never rewritten.
 - Each item pins one finding: `kind` (`claim`, `edge`, `node` or `event`), the originating `source_analysis_id`, the `ref_id` of the item inside that revision, its `evidence_ids` and its `status`.
-- **Saving to the board does not mean verified.** There is no verified flag. `status` is copied from the originating item and pinning never upgrades it (e.g. `reported` stays `reported`).
+- **Saving to the board does not mean verified.** There is no verified flag. `status` (`observed`, `reported`, `inferred` or `unresolved`) is copied from the originating item and pinning never changes it (e.g. `reported` stays `reported`).
+- `status` is required for `claim`, `edge` and `event` items. It is optional for `node` items, because graph nodes carry no status. If the source item has a status, the pinned item's status must match it.
 - `notes[]` are investigator-authored, kept separate from LLM output, and never passed to the model as evidence. `target_item_id` attaches a note to a board item; null or absent means a board-level note.
 
 ## RevisionComparison
@@ -59,9 +66,10 @@ These schemas are minimal cross-team contracts. The server must additionally enf
 6. Revisions and board snapshots are append-only.
 7. Board items reference an existing item of the stated `kind` in their `source_analysis_id`, cite only evidence that item cites, and keep its `status`.
 8. Board note `target_item_id` values reference items on the same board snapshot.
-9. A comparison's `compared_analysis_id` is a child of `base_analysis_id`, both in the same case, and its `excluded_record_ids` equal the exclusions added between them. The compared side never cites an excluded record.
+9. A comparison's `compared_analysis_id` is a child of `base_analysis_id`, both in the same case, and its `excluded_record_ids` equal the exclusions added between them. The compared side never cites an excluded record. When a side's ref ID is present, its evidence IDs exactly match that revision's item; when it is null, its evidence IDs are empty (also enforced in the schema).
 10. User-authored notes remain distinct from LLM-generated conclusions.
+11. Date-time fields are parsed as offset-aware instants before comparison; a board snapshot's `updated_at` is not before its `created_at`, and no item `added_at` or note `created_at` is after its `updated_at`.
 
-`starter/validate_fixture.py` implements cheap versions of checks 1 to 4 and 7 to 9 against the fixtures; CI runs them on every PR.
+`starter/validate_fixture.py` implements cheap versions of checks 1 to 4 and 7 to 9 and 11 against the fixtures; CI runs them on every PR.
 
 For AI generation, prefer a separate subset of the schema containing only answer/claims/graph/events; assign analysis IDs, excluded IDs, retrieved IDs, `needs_review`, `validation_errors` and creation timestamps on the trusted server.
