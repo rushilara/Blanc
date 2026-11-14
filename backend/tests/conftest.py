@@ -1,7 +1,9 @@
 from collections.abc import Iterator
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
+from _paths import RAW
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -26,3 +28,10 @@ def client(app: FastAPI) -> Iterator[TestClient]:
     # Entering the client runs the lifespan, which creates the tables.
     with TestClient(app) as test_client:
         yield test_client
+
+
+@pytest.fixture
+def raw() -> dict[str, object]:
+    """Fresh, mutable copies of the synthetic fixture JSON, keyed by short name
+    (see tests/_paths.py)."""
+    return deepcopy(RAW)
