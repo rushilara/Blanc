@@ -1,3 +1,5 @@
-# Schema and API contract changes need the integrator's review.
-/contracts/ @rushilara
-/fixtures/  @rushilara
+# Schema and API contract changes need a code owner's review.
+# Rushil is the integrator; Bram is a second owner so contract PRs authored
+# by either of them can still get a required code-owner approval.
+/contracts/ @rushilara @BramSimonnet
+/fixtures/  @rushilara @BramSimonnet

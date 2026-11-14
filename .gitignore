@@ -43,3 +43,6 @@ vector_index/
 chroma/
 logs/
 *.log
+
+# Claude Code local state (agent worktrees, settings)
+.claude/
