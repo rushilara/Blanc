@@ -1,4 +1,13 @@
 // View contract. Validate live responses against the shared JSON schema upstream.
+export type EvidenceRecord = {
+  record_id: string;
+  case_id: string;
+  source_file: string;
+  source_locator: string;
+  content: string;
+  timestamp?: string | null;
+  timestamp_kind?: string;
+};
 type SupportedStatus = "observed" | "reported" | "inferred";
 type ClaimStatus = SupportedStatus | "unresolved";
 type NodeType = "person" | "account" | "device" | "location" | "organization" | "document" | "other";
