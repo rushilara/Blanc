@@ -119,8 +119,9 @@ def check_corpus(
 
     patterns = tuple(pattern.lower() for pattern in restricted_patterns)
     for source_file, entries in by_source.items():
-        name = PurePosixPath(source_file).name.lower()
-        if any(fnmatch.fnmatch(name, pattern) for pattern in patterns):
+        # Match every part of the path, as the importer does: `answer_keys/q1.txt` counts.
+        parts = [part.lower() for part in PurePosixPath(source_file).parts]
+        if any(fnmatch.fnmatch(part, pattern) for part in parts for pattern in patterns):
             issues.append(
                 IntegrityIssue(
                     "restricted_source",

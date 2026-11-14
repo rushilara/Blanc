@@ -101,6 +101,14 @@ def test_records_from_an_answer_key_are_flagged(tmp_path: Path) -> None:
     assert issues[0].source_file == "Teacher_Guide_v2.txt"
 
 
+def test_records_from_inside_an_answer_key_folder_are_flagged(tmp_path: Path) -> None:
+    source, records = make_corpus(tmp_path)
+    leaked = {**records[0], "record_id": "rec-leak", "source_file": "answer_keys/q1.txt"}
+    issues = check_corpus([*records, leaked], case_id="case-a", source_root=None)
+    assert kinds(issues) == ["restricted_source"]
+    assert issues[0].source_file == "answer_keys/q1.txt"
+
+
 def test_without_a_source_root_only_record_checks_run(tmp_path: Path) -> None:
     source, records = make_corpus(tmp_path)
     (source / "notes.txt").unlink()
