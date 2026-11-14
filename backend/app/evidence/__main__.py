@@ -3,6 +3,8 @@
 Run from `backend/`:
 
     python -m app.evidence path/to/exports --case-id my-case --out records.json
+    python -m app.evidence path/to/exports/chats/chat.json --source-root path/to/exports \\
+        --case-id my-case --out records.json
 
 Exits nonzero if any file failed to import, so a bad import is never silent.
 """
@@ -24,6 +26,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--case-id", required=True, help="Case these records belong to.")
     parser.add_argument("--out", type=Path, help="Write records here as a JSON array.")
     parser.add_argument(
+        "--source-root",
+        type=Path,
+        help="Top folder of the case export. Defaults to PATH when PATH is a folder; "
+        "required when PATH is a single file, so record IDs stay stable.",
+    )
+    parser.add_argument(
         "--txt-mode",
         choices=("paragraph", "line", "file"),
         default="paragraph",
@@ -34,7 +42,11 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         result = import_path(
-            args.path, args.case_id, txt_mode=args.txt_mode, strict=args.strict
+            args.path,
+            args.case_id,
+            source_root=args.source_root,
+            txt_mode=args.txt_mode,
+            strict=args.strict,
         )
     except EvidenceImportError as error:
         print(f"error: {error}", file=sys.stderr)

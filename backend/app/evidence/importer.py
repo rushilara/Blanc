@@ -8,7 +8,14 @@ Locator conventions:
 - TXT: `line 12`, `lines 12-15` or `entire file` (line numbers are 1-based).
 - JSON: `[3]` for a top-level array, `messages[3]` for an array under a key,
   `$` for a single top-level object (indexes are 0-based, as in JSON).
-- CSV: `row 4`, where row 1 is the first row after the header.
+- CSV: `line 4`, or `lines 4-6` for a row whose quoted cells span several lines.
+  These are physical line numbers in the file, so the header is line 1 and
+  blank lines are counted.
+
+Source root: every `source_file` is the path relative to the case's source
+root, and record IDs are derived from that path. Importing a whole export,
+one of its subfolders or a single file therefore gives the same IDs, as long
+as the same source root is used.
 
 Timestamps are copied as found in the source. This module never invents or
 reinterprets one; normalization happens later in the pipeline.
@@ -22,7 +29,7 @@ import json
 import re
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 from pydantic import ValidationError
@@ -104,53 +111,72 @@ def import_path(
     path: str | Path,
     case_id: str,
     *,
+    source_root: str | Path | None = None,
     txt_mode: TxtMode = "paragraph",
     skip_patterns: Iterable[str] = DEFAULT_SKIP_PATTERNS,
     strict: bool = False,
 ) -> ImportResult:
-    """Import one file or every supported file under a directory.
+    """Import one file or every supported file under a folder.
+
+    `source_root` is the top folder of the case export. It defaults to `path`
+    when `path` is a folder and is required when `path` is a single file, so
+    record IDs never depend on how the import was started.
 
     Files are visited in sorted order so results are deterministic. A file that
     fails is reported in `errors` and never half-imported; with `strict=True`
-    the first failure raises instead. Hidden files and files matching
-    `skip_patterns` are listed in `skipped`.
+    the first failure raises instead. Listed in `skipped`, not `errors`: hidden
+    files and folders, anything under a name matching `skip_patterns`, and, when
+    importing a folder, files in a format the importer does not handle.
     """
     _require_case_id(case_id)
-    root = Path(path)
-    if not root.exists():
-        raise EvidenceImportError(f"Path does not exist: {root}")
+    target = Path(path)
+    if not target.exists():
+        raise EvidenceImportError(f"Path does not exist: {target}")
 
-    if root.is_file():
-        files = [(root, root.name)]
-    else:
+    is_folder = target.is_dir()
+    base = _relative_to_root(target, source_root)
+    if is_folder:
         files = [
-            (candidate, candidate.relative_to(root).as_posix())
-            for candidate in sorted(root.rglob("*"))
+            (candidate, (base / candidate.relative_to(target)).as_posix())
+            for candidate in sorted(target.rglob("*"))
             if candidate.is_file()
         ]
+    else:
+        files = [(target, base.as_posix())]
 
     patterns = tuple(pattern.lower() for pattern in skip_patterns)
     result = ImportResult()
+    seen_ids: set[str] = set()
     for file_path, source_file in files:
-        name = file_path.name
-        if name.startswith("."):
-            result.skipped.append(ImportProblem(source_file, "hidden file"))
+        parts = PurePosixPath(source_file).parts
+        if any(part.startswith(".") for part in parts):
+            result.skipped.append(ImportProblem(source_file, "hidden file or folder"))
             continue
-        if any(fnmatch.fnmatch(name.lower(), pattern) for pattern in patterns):
+        if any(fnmatch.fnmatch(part.lower(), pattern) for part in parts for pattern in patterns):
             result.skipped.append(
                 ImportProblem(source_file, "matches a skip pattern (answer key or case brief)")
             )
             continue
         try:
-            result.records.extend(
-                import_file(file_path, case_id, source_file=source_file, txt_mode=txt_mode)
-            )
+            records = import_file(file_path, case_id, source_file=source_file, txt_mode=txt_mode)
+            clash = next((record for record in records if record.record_id in seen_ids), None)
+            if clash is not None:
+                raise EvidenceImportError(
+                    f"{source_file} repeats record_id {clash.record_id}, which another file "
+                    "already provided; none of this file's records were imported"
+                )
         except EvidenceImportError as error:
+            if is_folder and isinstance(error, UnsupportedFormatError):
+                shown = file_path.suffix.lower() or "(no extension)"
+                result.skipped.append(ImportProblem(source_file, f"unsupported format {shown}"))
+                continue
             if strict:
                 raise
             result.errors.append(ImportProblem(source_file, str(error)))
+            continue
+        seen_ids.update(record.record_id for record in records)
+        result.records.extend(records)
 
-    _reject_duplicate_ids(result.records)
     return result
 
 
@@ -158,13 +184,28 @@ def import_file(
     path: str | Path,
     case_id: str,
     *,
+    source_root: str | Path | None = None,
     source_file: str | None = None,
     txt_mode: TxtMode = "paragraph",
 ) -> list[EvidenceRecord]:
-    """Import a single file. Raises `EvidenceImportError` with a clear reason on failure."""
+    """Import a single file. Raises `EvidenceImportError` with a clear reason on failure.
+
+    Give either `source_root` (the top folder of the case export, from which the
+    file's relative path is taken) or `source_file` (that relative path itself).
+    One of them is required: record IDs are derived from the path, so it must not
+    depend on which folder the import happened to start from.
+    """
     _require_case_id(case_id)
     file_path = Path(path)
-    source = source_file or file_path.name
+    if source_file is not None:
+        source = source_file
+    elif source_root is not None:
+        source = _relative_to_root(file_path, source_root).as_posix()
+    else:
+        raise EvidenceImportError(
+            f"Importing {file_path.name} needs source_root (or source_file), so record IDs "
+            "do not depend on how the import was started"
+        )
     suffix = file_path.suffix.lower()
     if suffix not in SUPPORTED_SUFFIXES:
         shown = suffix or "(no extension)"
@@ -190,6 +231,25 @@ def import_file(
 
     _reject_duplicate_ids(records)
     return records
+
+
+def _relative_to_root(target: Path, source_root: str | Path | None) -> PurePosixPath:
+    """Path of `target` relative to the source root, which must contain it."""
+    if source_root is None:
+        if target.is_dir():
+            return PurePosixPath(".")
+        raise EvidenceImportError(
+            f"Importing the single file {target.name} needs source_root, so record IDs "
+            "do not depend on how the import was started"
+        )
+    root = Path(source_root)
+    if not root.is_dir():
+        raise EvidenceImportError(f"source_root is not a folder: {root}")
+    try:
+        relative = target.resolve().relative_to(root.resolve())
+    except ValueError as error:
+        raise EvidenceImportError(f"{target} is not inside source_root {root}") from error
+    return PurePosixPath(relative.as_posix())
 
 
 # --- shared helpers -----------------------------------------------------------
@@ -421,7 +481,22 @@ def _from_csv(text: str, builder: _RecordBuilder) -> Iterator[EvidenceRecord]:
             raise EvidenceImportError(f"{builder.source_file} has no header row")
         text_key = _find_key(fieldnames, TEXT_KEYS)
         time_key = _find_key((name for name in fieldnames if name != text_key), TIME_KEYS)
-        for row_number, row in enumerate(reader, start=1):
+        rows = iter(reader)
+        while True:
+            try:
+                row = next(rows)
+            except StopIteration:
+                break
+            # DictReader skips blank lines without yielding them, so count physical
+            # lines: `line_num` is the last line of this row, and a quoted cell that
+            # contains newlines makes the row start that many lines earlier.
+            end_line = reader.line_num
+            start_line = end_line - _newlines_in(row)
+            locator = (
+                f"line {start_line}"
+                if start_line == end_line
+                else f"lines {start_line}-{end_line}"
+            )
             cells = {
                 key: value.strip()
                 for key, value in row.items()
@@ -442,7 +517,7 @@ def _from_csv(text: str, builder: _RecordBuilder) -> Iterator[EvidenceRecord]:
             if timestamp is not None:
                 used.add(time_key)
             yield builder.build(
-                locator=f"row {row_number}",
+                locator=locator,
                 content=content,
                 timestamp=timestamp,
                 timestamp_kind=TIME_KEYS[time_key.strip().lower()] if time_key else "unknown",
@@ -450,3 +525,12 @@ def _from_csv(text: str, builder: _RecordBuilder) -> Iterator[EvidenceRecord]:
             )
     except csv.Error as error:
         raise EvidenceImportError(f"{builder.source_file} is not valid CSV: {error}") from error
+
+
+def _newlines_in(row: Mapping[Any, Any]) -> int:
+    """How many line breaks sit inside the cells of one CSV row."""
+    total = 0
+    for value in row.values():
+        cells = value if isinstance(value, list) else [value]
+        total += sum(cell.count("\n") for cell in cells if isinstance(cell, str))
+    return total
