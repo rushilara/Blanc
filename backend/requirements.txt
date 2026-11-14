@@ -7,3 +7,7 @@ pydantic-settings==2.16.2
 google-genai==2.34.0
 # Embeddings: OpenAI embeddings API
 openai==3.41.0
+# Persistence: SQLAlchemy 2.0 ORM over SQLite
+SQLAlchemy==2.0.55
+# Prefixed ULID identifiers (app/ids.py)
+python-ulid==4.1.0

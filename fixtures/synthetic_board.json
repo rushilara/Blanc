@@ -1,0 +1,84 @@
+{
+  "schema_version": "1.0",
+  "board_id": "board-synthetic-1",
+  "case_id": "synthetic-demo",
+  "title": "Synthetic demo: Alex to Casey link",
+  "revision": 2,
+  "parent_revision": 1,
+  "active_analysis_id": "analysis-synthetic-1",
+  "items": [
+    {
+      "item_id": "item-1",
+      "kind": "edge",
+      "source_analysis_id": "analysis-synthetic-1",
+      "ref_id": "edge-1",
+      "evidence_ids": [
+        "rec-01"
+      ],
+      "status": "reported",
+      "added_at": "2026-11-14T20:01:00Z"
+    },
+    {
+      "item_id": "item-2",
+      "kind": "edge",
+      "source_analysis_id": "analysis-synthetic-1",
+      "ref_id": "edge-2",
+      "evidence_ids": [
+        "rec-02"
+      ],
+      "status": "reported",
+      "added_at": "2026-11-14T20:01:00Z"
+    },
+    {
+      "item_id": "item-3",
+      "kind": "claim",
+      "source_analysis_id": "analysis-synthetic-1",
+      "ref_id": "claim-2",
+      "evidence_ids": [
+        "rec-02"
+      ],
+      "status": "reported",
+      "added_at": "2026-11-14T20:02:00Z"
+    },
+    {
+      "item_id": "item-4",
+      "kind": "event",
+      "source_analysis_id": "analysis-synthetic-1",
+      "ref_id": "event-1",
+      "evidence_ids": [
+        "rec-01"
+      ],
+      "status": "reported",
+      "added_at": "2026-11-14T20:02:00Z"
+    },
+    {
+      "item_id": "item-5",
+      "kind": "node",
+      "source_analysis_id": "analysis-synthetic-1",
+      "ref_id": "jordan",
+      "evidence_ids": [
+        "rec-01",
+        "rec-02"
+      ],
+      "added_at": "2026-11-14T15:02:30-05:00"
+    }
+  ],
+  "notes": [
+    {
+      "note_id": "note-1",
+      "text": "Synthetic note: check whether the meeting in rec-02 actually took place.",
+      "target_item_id": "item-3",
+      "author": "investigator-demo",
+      "created_at": "2026-11-14T20:03:00Z"
+    },
+    {
+      "note_id": "note-2",
+      "text": "Synthetic board-level note for frontend development only.",
+      "target_item_id": null,
+      "author": "investigator-demo",
+      "created_at": "2026-11-14T20:03:30Z"
+    }
+  ],
+  "created_at": "2026-11-14T20:01:00Z",
+  "updated_at": "2026-11-14T20:03:30Z"
+}

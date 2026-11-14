@@ -37,6 +37,10 @@ jobs:
   backend:
     name: Backend
     runs-on: ubuntu-latest
+    # pull-requests: write is only used to post the sticky coverage comment.
+    permissions:
+      contents: read
+      pull-requests: write
     defaults:
       run:
         working-directory: backend
@@ -58,14 +62,63 @@ jobs:
         run: |
           pip install -r requirements.txt
           if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
-          pip install pytest ruff
+          # TODO: move the pytest-cov pin into requirements-dev.txt in a follow-up.
+          pip install pytest pytest-cov==7.1.0 ruff
       - name: Lint (ruff)
         if: steps.detect.outputs.present == 'true'
         run: ruff check .
-      - name: Tests (pytest)
+      # Coverage config (source, omit, fail_under = 80% floor) is in backend/pyproject.toml.
+      # This step fails below the floor; the report steps below still run.
+      - name: Tests (pytest + coverage)
         if: steps.detect.outputs.present == 'true'
         run: |
-          if [ -d tests ]; then pytest -q; else echo "No backend/tests yet."; fi
+          if [ -d tests ]; then
+            pytest -q --cov --cov-report=term-missing --cov-report=xml --cov-report=html
+          else
+            echo "No backend/tests yet."
+          fi
+      - name: Coverage summary
+        id: coverage
+        if: always() && steps.detect.outputs.present == 'true' && hashFiles('backend/coverage.xml') != ''
+        run: |
+          {
+            echo "<!-- blanc-coverage-report -->"
+            echo "## Backend coverage: $(coverage report --format=total --fail-under=0)%"
+            echo
+            coverage report --format=markdown --fail-under=0
+            echo
+            echo "_Lines covered by \`backend/tests\`. Full HTML report: \`backend-coverage\` artifact on the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})._"
+          } > coverage-summary.md
+          cat coverage-summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload coverage report
+        if: always() && steps.coverage.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: |
+            backend/coverage.xml
+            backend/htmlcov/
+          retention-days: 14
+      # Sticky PR comment (one comment, updated on each push). Skipped for fork
+      # PRs, whose GITHUB_TOKEN is read-only. Never fails the job.
+      - name: Post coverage comment on PR
+        if: >-
+          always() && steps.coverage.outcome == 'success' &&
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          id=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | contains("<!-- blanc-coverage-report -->"))) | .id' | head -n 1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$id" -F body=@coverage-summary.md > /dev/null
+          else
+            gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@coverage-summary.md > /dev/null
+          fi
 
   # Frontend (Next.js). Skips until frontend/package.json exists (BLA-6).
   frontend:

@@ -1,0 +1,181 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Blanc InvestigationBoard",
+  "description": "One append-only snapshot of an investigator's board. Pinning an item records that the investigator chose to keep it; it never asserts the item is verified or true.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "board_id",
+    "case_id",
+    "title",
+    "revision",
+    "active_analysis_id",
+    "items",
+    "notes",
+    "created_at",
+    "updated_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "board_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "case_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Snapshot number for this board_id. Every save appends a new snapshot with revision + 1; older snapshots are never rewritten."
+    },
+    "parent_revision": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1,
+      "description": "Snapshot this one was derived from; null for the first snapshot."
+    },
+    "active_analysis_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "AnalysisRevision currently shown alongside the board; null if none is selected."
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "item_id",
+          "kind",
+          "source_analysis_id",
+          "ref_id",
+          "evidence_ids",
+          "added_at"
+        ],
+        "if": {
+          "properties": {
+            "kind": {
+              "not": {
+                "const": "node"
+              }
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "status"
+          ]
+        },
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "claim",
+              "edge",
+              "node",
+              "event"
+            ]
+          },
+          "source_analysis_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "AnalysisRevision the pinned item originated from."
+          },
+          "ref_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "ID of the claim, edge, node or event inside source_analysis_id."
+          },
+          "evidence_ids": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "observed",
+              "reported",
+              "inferred",
+              "unresolved"
+            ],
+            "description": "Copied from the originating item; pinning never changes it. Required for claim, edge and event items; optional for node items, since graph nodes carry no status."
+          },
+          "added_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      }
+    },
+    "notes": {
+      "type": "array",
+      "description": "Investigator-authored notes. Kept separate from LLM output and never fed back to the model as evidence.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "note_id",
+          "text",
+          "author",
+          "created_at"
+        ],
+        "properties": {
+          "note_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "target_item_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "item_id on this board the note is attached to; null or absent for a board-level note."
+          },
+          "author": {
+            "type": "string",
+            "minLength": 1
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      }
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}
