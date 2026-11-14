@@ -55,3 +55,7 @@ All three teammates agree on the schemas before writing endpoint-specific code. 
 ## Runnable source-grounding check
 
 Run `cd starter && python validate_fixture.py && python -m unittest -v test_validator.py` to verify the synthetic fixture. This is a **small contract validator only**, not a running Blanc application.
+
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the branch → PR → review → merge workflow and what CI checks.
