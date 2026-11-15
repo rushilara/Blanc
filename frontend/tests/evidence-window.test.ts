@@ -59,8 +59,35 @@ test("skipped records are ids and ranks, with their content never included", () 
     { record_id: "rec-b", rank: 18, reason: "record_limit" },
     { record_id: "rec-a", rank: 3, reason: "budget" },
   ] }));
-  assert.deepEqual(lines, [{ recordId: "rec-a", rank: 3 }, { recordId: "rec-b", rank: 18 }]);
-  assert.deepEqual(Object.keys(lines[0]), ["recordId", "rank"]);
+  assert.deepEqual(lines, [
+    { recordId: "rec-a", rank: 3, why: "didn't fit the character budget" },
+    { recordId: "rec-b", rank: 18, why: "ranked past the record limit" },
+  ]);
+  assert.deepEqual(Object.keys(lines[0]), ["recordId", "rank", "why"]);
+});
+
+test("media skips say why in plain words and name the file type (BLA-73)", () => {
+  const lines = skippedLines(coverage({ skipped: [
+    { record_id: "img-1", rank: 2, reason: "media_limit", modality: "image" },
+    { record_id: "pdf-1", rank: 4, reason: "media_too_large", modality: "pdf" },
+    { record_id: "img-2", rank: 5, reason: "media", modality: "image" },
+  ] }));
+  assert.deepEqual(lines.map(l => [l.recordId, l.why, l.modality]), [
+    ["img-1", "left out: media cap reached", "image"],
+    ["pdf-1", "file too large to send", "pdf"],
+    ["img-2", "file missing or failed integrity check", "image"],
+  ]);
+  const view = mount(createElement(EvidenceWindowNotice, {
+    coverage: coverage({ skipped: [{ record_id: "pdf-1", rank: 4, reason: "media_too_large", modality: "pdf" }] }),
+    busy: false,
+    onExpand: () => {},
+  }));
+  assert.equal(view.querySelector(".blanc-skipped")?.textContent, "pdf-1 (PDF) · rank 4 · file too large to send");
+});
+
+test("an unknown reason from a newer server still gets a line", () => {
+  const odd = coverage({ skipped: [{ record_id: "x", rank: 1, reason: "something_new" as never }] });
+  assert.deepEqual(skippedLines(odd), [{ recordId: "x", rank: 1, why: "left out" }]);
 });
 
 test("the prompt shows every trade-off before Yes, and No changes nothing", () => {
@@ -78,7 +105,7 @@ test("the prompt shows every trade-off before Yes, and No changes nothing", () =
   assert.equal(yes?.getAttribute("type"), "submit");
   assert.equal(yes?.hasAttribute("disabled"), false);
   assert.ok(tradeoffs && yes && (tradeoffs.compareDocumentPosition(yes) & Node.DOCUMENT_POSITION_FOLLOWING));
-  assert.equal(view.querySelector(".blanc-skipped")?.textContent, "rec-hidden-body · rank 17");
+  assert.equal(view.querySelector(".blanc-skipped")?.textContent, "rec-hidden-body · rank 17 · ranked past the record limit");
   assert.equal(view.querySelector(".blanc-skipped button, .blanc-skipped a"), null);
   click(view.querySelector("button.blanc-evidence-no"));
   assert.deepEqual(expanded, []);

@@ -54,13 +54,16 @@ export type AnalysisRevision = {
 // Server-assigned record of what the evidence window left out (BLA-64). Absent on older
 // revisions: treat those as the standard window with no offer.
 export type EvidenceWindow = "standard" | "expanded";
+/** Why a retrieved record was not given to the model (contracts/analysis_revision.schema.json).
+ * The media reasons (BLA-70/71) always carry ``modality``. */
+export type SkipReason = "budget" | "record_limit" | "media" | "media_limit" | "media_too_large";
 export type RetrievalCoverage = {
   evidence_window: EvidenceWindow;
   max_records: number;
   max_excerpt_chars: number;
   // IDs and ranks only, never content, and never citations.
   // reason "media": an image/PDF in the window that was not sent to the model (BLA-70).
-  skipped: { record_id: string; rank: number; reason: "budget" | "record_limit" | "media"; vector_rank?: number; keyword_rank?: number; modality?: "image" | "pdf" }[];
+  skipped: { record_id: string; rank: number; reason: SkipReason; vector_rank?: number; keyword_rank?: number; modality?: "image" | "pdf" }[];
   budget_substituted: boolean;
   // Records one search ranked inside the window but fusion pushed out: "N relevant records were left out".
   left_out_record_ids: string[];

@@ -34,7 +34,7 @@ export function EvidenceWindowNotice({ coverage, busy, onExpand }: {
     {skipped.length > 0 && <div>
       <h3>Records left out</h3>
       <ul className="blanc-skipped" aria-label="Records left out of this answer">
-        {skipped.map(item => <li key={`${item.recordId}-${item.rank}`}>{item.recordId} · rank {item.rank}</li>)}
+        {skipped.map(item => <li key={`${item.recordId}-${item.rank}`}>{item.recordId}{item.modality ? ` (${item.modality === "pdf" ? "PDF" : "image"})` : ""} · rank {item.rank} · {item.why}</li>)}
       </ul>
     </div>}
   </section>;
