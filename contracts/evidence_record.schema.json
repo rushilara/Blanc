@@ -54,6 +54,22 @@
         "null"
       ]
     },
+    "modality": {
+      "type": "string",
+      "enum": [
+        "text",
+        "image",
+        "pdf"
+      ]
+    },
+    "media_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "content_type": {
+      "type": "string",
+      "minLength": 1
+    },
     "metadata": {
       "type": "object"
     }

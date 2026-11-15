@@ -56,6 +56,8 @@ class Settings(BaseSettings):
 
     # Storage: one SQLite file holds tables, the sqlite-vec vector index and the FTS5 index.
     DATABASE_URL: str = "sqlite:///./data/blanc.db"
+    # Case-local media (BLA-68): ``{CASES_DIR}/{case_id}/media/{record_id}.{ext}``.
+    CASES_DIR: Path = Path("./data/cases")
 
     # Allowed frontend origins, comma-separated in the environment.
     CORS_ORIGINS: Annotated[list[str], NoDecode] = Field(
@@ -91,6 +93,7 @@ class Settings(BaseSettings):
             "embedding_provider": "gemini",
             "embedding_model": self.EMBEDDING_MODEL,
             "embedding_dim": self.EMBEDDING_DIM,
+            "cases_dir": str(self.CASES_DIR),
             "cors_origins": self.CORS_ORIGINS,
         }
 

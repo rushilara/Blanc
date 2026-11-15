@@ -46,6 +46,7 @@ NodeType = Literal["person", "account", "device", "location", "organization", "d
 RecordTimestampKind = Literal[
     "sent", "received", "created", "modified", "observed", "stated", "unknown"
 ]
+RecordModality = Literal["text", "image", "pdf"]
 TimestampPrecision = Literal["exact", "day", "month", "approximate", "unknown"]
 EventTimestampKind = Literal["observed", "source_stated", "inferred", "unknown"]
 BoardItemKind = Literal["claim", "edge", "node", "event"]
@@ -175,6 +176,11 @@ class EvidenceRecord(ContractModel):
     timestamp: str | None = None
     timestamp_kind: Omittable[RecordTimestampKind] = None
     original_sha256: str | None = None
+    # Media records (BLA-68): bytes live on disk under the case; these fields describe them.
+    # Text records omit them. ``content`` for media is empty until multimodal embedding.
+    modality: Omittable[RecordModality] = None
+    media_path: Omittable[NonEmptyStr] = None
+    content_type: Omittable[NonEmptyStr] = None
     metadata: Omittable[dict[str, Any]] = None
 
 

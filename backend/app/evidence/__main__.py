@@ -16,9 +16,11 @@ SQLite file the backend uses, and the case becomes `ready` once it holds records
 `--title`, a new case is created in the same transaction and its case_id is printed on
 stdout; if the import or embedding fails, nothing is written, not even the case.
 
-Original files are read where they are and are not copied: each record keeps the file's
-path relative to the source root and the file's SHA-256. Re-running is safe: records
-already stored are skipped and nothing is embedded twice.
+Text source files are read where they are and are not copied: each record keeps the
+file's path relative to the source root and the file's SHA-256. Image and PDF bytes
+are written under ``{CASES_DIR}/{case_id}/media/`` (see BLA-68). Re-running is safe:
+records already stored are skipped and nothing is embedded twice; unchanged media
+files are not rewritten.
 
 Exits nonzero if any file failed to import or any record was rejected, so a bad import
 is never silent.
@@ -33,6 +35,18 @@ from app.embeddings import Embedder
 from app.evidence.importer import EvidenceImportError, ImportResult, import_path
 
 
+def _media_dir_for(args: argparse.Namespace, case_id: str) -> Path | None:
+    """Directory for case media bytes, or None when the caller did not ask for one."""
+    if args.media_dir is not None:
+        return args.media_dir
+    if args.store:
+        from app.case_media import case_media_dir
+        from app.config import get_settings
+
+        return case_media_dir(get_settings().CASES_DIR, case_id)
+    return None
+
+
 def _import(args: argparse.Namespace, case_id: str) -> ImportResult | None:
     """Parse the evidence at ``args.path`` for ``case_id`` and report what happened."""
     try:
@@ -40,6 +54,7 @@ def _import(args: argparse.Namespace, case_id: str) -> ImportResult | None:
             args.path,
             case_id,
             source_root=args.source_root,
+            media_dir=_media_dir_for(args, case_id),
             txt_mode=args.txt_mode,
             strict=args.strict,
         )
@@ -130,8 +145,8 @@ def main(argv: list[str] | None = None, *, embedder: Embedder | None = None) -> 
     """Run the CLI. ``embedder`` replaces the Gemini embedder (tests pass a fake)."""
     parser = argparse.ArgumentParser(
         prog="python -m app.evidence",
-        description="Import TXT, JSON, CSV and EML evidence files as EvidenceRecord objects, "
-        "and optionally store them in the local case database.",
+        description="Import TXT, JSON, CSV, EML, PNG/JPEG and PDF evidence files as "
+        "EvidenceRecord objects, and optionally store them in the local case database.",
     )
     parser.add_argument("path", type=Path, help="A file or a folder of extracted evidence.")
     parser.add_argument("--case-id", help="Case these records belong to.")
@@ -156,6 +171,12 @@ def main(argv: list[str] | None = None, *, embedder: Embedder | None = None) -> 
         type=Path,
         help="Top folder of the case export. Defaults to PATH when PATH is a folder; "
         "required when PATH is a single file, so record IDs stay stable.",
+    )
+    parser.add_argument(
+        "--media-dir",
+        type=Path,
+        help="Directory for image/PDF bytes (written as {record_id}.ext). With --store, "
+        "defaults to {CASES_DIR}/{case_id}/media.",
     )
     parser.add_argument(
         "--txt-mode",
