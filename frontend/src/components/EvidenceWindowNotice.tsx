@@ -18,7 +18,7 @@ export function EvidenceWindowNotice({ coverage, busy, onExpand }: {
   const showOffer = offer !== null && !declined;
   if (!showOffer && !still && !budget && skipped.length === 0) return null;
 
-  return <section className="blanc-evidence-offer" aria-label="Evidence window">
+  return <section className={`blanc-evidence-offer${!showOffer && !still && !budget ? " is-details-only" : ""}`} aria-label="Evidence window">
     {showOffer && offer && <form onSubmit={event => { event.preventDefault(); onExpand(); }}>
       <h2>{offer}</h2>
       <ul>
@@ -31,12 +31,12 @@ export function EvidenceWindowNotice({ coverage, busy, onExpand }: {
     </form>}
     {still && <p>{still}</p>}
     {budget && <p>{budget}</p>}
-    {skipped.length > 0 && <div>
-      <h3>Records left out</h3>
+    {skipped.length > 0 && <details className="blanc-skipped-details">
+      <summary>Evidence coverage · {skipped.length} record{skipped.length === 1 ? "" : "s"} not included</summary>
       <ul className="blanc-skipped" aria-label="Records left out of this answer">
         {skipped.map(item => <li key={`${item.recordId}-${item.rank}`}>{item.recordId}{item.modality ? ` (${item.modality === "pdf" ? "PDF" : "image"})` : ""} · rank {item.rank} · {item.why}</li>)}
       </ul>
-    </div>}
+    </details>}
   </section>;
 }
 
