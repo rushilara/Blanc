@@ -8,7 +8,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import Settings, get_settings
 from app.db import init_db, make_engine, make_session_factory
-from app.routers import cases
+from app.embeddings import make_embedder
+from app.retrieval import RetrievalConfig
+from app.routers import cases, records, search
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -19,9 +21,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # The DB is opened at startup, not import, so importing the app never
         # touches the developer's database.
         engine = make_engine(settings.DATABASE_URL)
-        init_db(engine)
+        init_db(engine, settings.EMBEDDING_DIM)
         app.state.engine = engine
         app.state.session_factory = make_session_factory(engine)
+        # Lazy: no network or key needed until something embeds.
+        app.state.embedder = make_embedder(settings)
+        app.state.retrieval_config = RetrievalConfig.from_settings(settings)
         try:
             yield
         finally:
@@ -43,6 +48,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"status": "ok", "config": settings.summary()}
 
     app.include_router(cases.router)
+    app.include_router(records.router)
+    app.include_router(search.router)
 
     return app
 

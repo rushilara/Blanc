@@ -13,6 +13,9 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 # backend/app/config.py -> repo root is two levels above `app/`.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+DEFAULT_EMBEDDING_MODEL = "gemini-embedding-001"
+DEFAULT_EMBEDDING_DIM = 768
+
 
 class Settings(BaseSettings):
     """Runtime configuration. API keys are optional so the app starts without them."""
@@ -23,17 +26,32 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # LLM provider: Google Gemini API. Override GEMINI_MODEL in .env to switch models.
+    # Google Gemini API key, used for both the LLM and embeddings.
     GEMINI_API_KEY: SecretStr | None = None
+    # LLM model. Override GEMINI_MODEL in .env to switch models.
     GEMINI_MODEL: str = "gemini-3.5-flash"
 
-    # Embeddings: OpenAI embeddings API.
-    OPENAI_API_KEY: SecretStr | None = None
-    EMBEDDING_MODEL: str = "text-embedding-3-small"
+    # Embeddings: Gemini embeddings API. EMBEDDING_DIM is the output_dimensionality requested
+    # from the model and the dimension of the sqlite-vec index; changing either marks stored
+    # chunk vectors stale (see app/evidence_store.py: reembed_stale_chunks).
+    EMBEDDING_MODEL: str = DEFAULT_EMBEDDING_MODEL
+    EMBEDDING_DIM: int = Field(default=DEFAULT_EMBEDDING_DIM, ge=1, le=3072)
 
-    # Storage.
+    # Retrieval (app/retrieval.py). Candidates: chunks pulled from each index per question.
+    # Fusion: reciprocal rank fusion, score = sum(weight / (RRF_K + rank)). Evidence window:
+    # at most RETRIEVAL_MAX_RECORDS records and RETRIEVAL_MAX_EXCERPT_CHARS characters of
+    # excerpt text in total (~4 chars per token, so 32000 chars ~ 8000 tokens).
+    RETRIEVAL_VECTOR_CANDIDATES: int = Field(default=50, ge=1, le=4096)
+    RETRIEVAL_KEYWORD_CANDIDATES: int = Field(default=50, ge=1, le=4096)
+    RETRIEVAL_RRF_K: int = Field(default=60, ge=0)
+    RETRIEVAL_VECTOR_WEIGHT: float = Field(default=1.0, ge=0)
+    RETRIEVAL_KEYWORD_WEIGHT: float = Field(default=1.0, ge=0)
+    RETRIEVAL_MAX_RECORDS: int = Field(default=16, ge=1, le=200)
+    RETRIEVAL_MAX_EXCERPT_CHARS: int = Field(default=32000, ge=1)
+    RETRIEVAL_MAX_EXCERPTS_PER_RECORD: int = Field(default=2, ge=1)
+
+    # Storage: one SQLite file holds tables, the sqlite-vec vector index and the FTS5 index.
     DATABASE_URL: str = "sqlite:///./data/blanc.db"
-    VECTOR_INDEX_PATH: str = "./data/vector_index"
 
     # Allowed frontend origins, comma-separated in the environment.
     CORS_ORIGINS: Annotated[list[str], NoDecode] = Field(
@@ -47,7 +65,7 @@ class Settings(BaseSettings):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
         return value
 
-    @field_validator("GEMINI_API_KEY", "OPENAI_API_KEY", mode="before")
+    @field_validator("GEMINI_API_KEY", mode="before")
     @classmethod
     def _empty_key_is_none(cls, value: object) -> object:
         return None if value == "" else value
@@ -58,9 +76,9 @@ class Settings(BaseSettings):
             "llm_provider": "gemini",
             "gemini_model": self.GEMINI_MODEL,
             "gemini_api_key_set": self.GEMINI_API_KEY is not None,
-            "embedding_provider": "openai",
+            "embedding_provider": "gemini",
             "embedding_model": self.EMBEDDING_MODEL,
-            "openai_api_key_set": self.OPENAI_API_KEY is not None,
+            "embedding_dim": self.EMBEDDING_DIM,
             "cors_origins": self.CORS_ORIGINS,
         }
 

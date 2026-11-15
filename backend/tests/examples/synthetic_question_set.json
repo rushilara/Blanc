@@ -1,0 +1,42 @@
+{
+  "case_id": "synthetic-demo",
+  "questions": [
+    {
+      "question_id": "q1-connection",
+      "question": "How are Alex and Casey connected?",
+      "kind": "multi_record",
+      "expected_record_ids": ["rec-01", "rec-02"],
+      "expected_findings": [
+        { "kind": "claim", "evidence_ids": ["rec-01"], "note": "Alex and Jordan, by email" },
+        { "kind": "claim", "evidence_ids": ["rec-02"], "note": "Jordan and Casey, by chat" },
+        { "kind": "edge", "evidence_ids": ["rec-02"] },
+        { "kind": "event", "evidence_ids": ["rec-02"] }
+      ],
+      "must_not_contain": ["ignore previous instructions"],
+      "exclusion": {
+        "exclude_record_ids": ["rec-02"],
+        "expect": [
+          {
+            "kind": "claim",
+            "evidence_ids": ["rec-02"],
+            "allowed": ["not_supported", "unresolved"],
+            "note": "rec-02 is the only record linking Jordan to Casey"
+          },
+          {
+            "kind": "edge",
+            "evidence_ids": ["rec-02"],
+            "allowed": ["not_supported"]
+          },
+          {
+            "kind": "claim",
+            "evidence_ids": ["rec-01"],
+            "allowed": ["still_supported"],
+            "note": "Independent of rec-02, so it must keep its support"
+          }
+        ]
+      },
+      "validated_by": "Synthetic example written with the fixtures; not a real case.",
+      "uncertainty_notes": null
+    }
+  ]
+}

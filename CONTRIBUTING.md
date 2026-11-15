@@ -57,6 +57,14 @@ A minimum of **80% line coverage is enforced**: the Backend job (and `make cover
 
 Frontend coverage will be added once the frontend has tests.
 
+### Live API tests
+
+CI never calls external APIs: backend tests use a deterministic fake embedder. Tests that hit a real API (Gemini) are marked `@pytest.mark.live` and are deselected by default. To run them, put `GEMINI_API_KEY` in the root `.env` and run:
+
+```bash
+make test-live   # runs only the live tests; they skip if GEMINI_API_KEY is not set
+```
+
 Run the contract checks locally:
 
 ```bash
