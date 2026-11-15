@@ -57,12 +57,22 @@ class Exclusion(_Model):
     expect: list[ExpectedChange] = Field(default_factory=list)
 
 
+class SourceLocator(_Model):
+    """Where an expected record came from, so a human can find it in the original export
+    and the runner can tell when a re-import gave the record ID to different evidence."""
+
+    source_file: str = Field(min_length=1)
+    source_locator: str = Field(min_length=1)
+
+
 class Question(_Model):
     question_id: str = Field(min_length=1)
     question: str = Field(min_length=1)
     kind: QuestionKind = "other"
     # Records a correct answer has to draw on; checked against what was retrieved.
     expected_record_ids: list[str] = Field(default_factory=list)
+    # Source file and locator of each expected record (keys are expected record IDs).
+    expected_locators: dict[str, SourceLocator] = Field(default_factory=dict)
     expected_findings: list[ExpectedFinding] = Field(default_factory=list)
     # For unanswerable or conflicting questions: the analysis must say so, and must
     # not assert any claim (every claim, if any, has status "unresolved").
@@ -73,6 +83,13 @@ class Question(_Model):
     # How a human checked this answer key, and anything they were unsure about.
     validated_by: str | None = None
     uncertainty_notes: str | None = None
+
+    @model_validator(mode="after")
+    def _locators_name_expected_records(self) -> "Question":
+        stray = sorted(set(self.expected_locators) - set(self.expected_record_ids))
+        if stray:
+            raise ValueError(f"expected_locators for records not expected: {', '.join(stray)}")
+        return self
 
 
 class QuestionSet(_Model):

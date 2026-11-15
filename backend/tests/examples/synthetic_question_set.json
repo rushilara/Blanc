@@ -6,6 +6,10 @@
       "question": "How are Alex and Casey connected?",
       "kind": "multi_record",
       "expected_record_ids": ["rec-01", "rec-02"],
+      "expected_locators": {
+        "rec-01": { "source_file": "mailbox.eml", "source_locator": "message 1, line 12" },
+        "rec-02": { "source_file": "chat.json", "source_locator": "messages[7]" }
+      },
       "expected_findings": [
         { "kind": "claim", "evidence_ids": ["rec-01"], "note": "Alex and Jordan, by email" },
         { "kind": "claim", "evidence_ids": ["rec-02"], "note": "Jordan and Casey, by chat" },
