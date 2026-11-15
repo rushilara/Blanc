@@ -233,6 +233,9 @@ def store_records(
                 timestamp=record.timestamp,
                 timestamp_kind=record.timestamp_kind,
                 original_sha256=record.original_sha256,
+                modality=record.modality,
+                media_path=record.media_path,
+                content_type=record.content_type,
                 record_metadata=record.metadata,
                 content_hash=digest,
             )

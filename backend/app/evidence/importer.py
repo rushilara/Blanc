@@ -1,8 +1,9 @@
-"""Import extracted evidence files (TXT, JSON, CSV, EML) as `EvidenceRecord` objects.
+"""Import extracted evidence files (TXT, JSON, CSV, EML, PNG/JPEG, PDF) as records.
 
-Case-agnostic by design: nothing here knows about any particular case. One
-source file can yield many records (one per message, row or paragraph), and
-every record keeps the file it came from and a precise locator inside it.
+Case-agnostic by design: nothing here knows about any particular case beyond its
+id and optional media directory. One source file can yield many records (one per
+message, row or paragraph), and every record keeps the file it came from and a
+precise locator inside it.
 
 Locator conventions:
 - TXT: `line 12`, `lines 12-15` or `entire file` (line numbers are 1-based).
@@ -14,14 +15,25 @@ Locator conventions:
 - EML: `headers` for the message's header block (sender, recipients, date,
   subject), then `body` for a single-part message, or `part 1`, `part 1.2` for
   the parts of a multipart message (IMAP section numbers). A text attachment is a
-  part like any other; other attachments are not imported as text and are listed
-  in the headers record's `metadata.attachments`, never in its content. In a
-  `multipart/alternative`, only the plain-text version is kept (the HTML one if
-  there is no plain text), so the same words are not imported twice. A forwarded
-  message (`message/rfc822`) at section 2 is read like the file's own message:
-  `part 2 headers`, then `part 2.1`, `part 2.2`, ..., with its own Date as their
-  timestamp. An empty `.eml` file gives no records; a non-empty one with none of
-  the usual email headers is an error.
+  part like any other. PNG/JPEG attachments become their own media records (same
+  part locator) with bytes under the case media directory; other binary
+  attachments stay listed in the headers record's `metadata.attachments`, never
+  in its content. In a `multipart/alternative`, only the preferred text version
+  is kept (plain text over HTML) so the same words are not imported twice; when
+  `promote_images` is on, image leaves under a non-preferred alternative (e.g.
+  `multipart/related` with cid inline PNGs) are still walked into media records.
+  A forwarded message (`message/rfc822`) at section 2 is read like the file's
+  own message: `part 2 headers`, then `part 2.1`, `part 2.2`, ..., with its own
+  Date as their timestamp. An empty `.eml` file gives no records; a non-empty
+  one with none of the usual email headers is an error.
+- PNG/JPEG/PDF: one record per file. Images and PDFs both use `entire file`
+  as the locator (page counts wait on a real PDF parser). Bytes are written
+  under `media_dir` as `media/{record_id}.{ext}` relative to the case directory
+  (BLA-68). Without `media_dir`, loose media files are skipped in a folder
+  import (same as other unsupported formats) and fail clearly for a single
+  file; PNG/JPEG email attachments stay metadata-only. Text records are
+  unchanged; other unsupported binary still fails clearly (single file) or is
+  skipped in a folder import. PDF email attachments stay metadata-only.
 
 Source root: every `source_file` is the path relative to the case's source
 root, and record IDs are derived from that path. Importing a whole export,
@@ -54,9 +66,22 @@ from typing import Any, Literal
 
 from pydantic import ValidationError
 
+from app.case_media import (
+    EMAIL_IMAGE_TYPES,
+    MAX_MEDIA_BYTES,
+    MEDIA_SUFFIXES,
+    MediaStoreError,
+    extension_for_content_type,
+    media_type_for_suffix,
+    pdf_locator,
+    remove_media_files,
+    store_media_bytes,
+    verify_media_bytes,
+)
+from app.contracts import RecordModality
 from app.evidence.records import EvidenceRecord, TimestampKind, stable_record_id
 
-SUPPORTED_SUFFIXES = (".txt", ".json", ".csv", ".eml")
+SUPPORTED_SUFFIXES = (".txt", ".json", ".csv", ".eml", *MEDIA_SUFFIXES)
 
 TxtMode = Literal["paragraph", "line", "file"]
 
@@ -121,10 +146,21 @@ class ImportProblem:
 
 
 @dataclass
+class ImportSink:
+    """Mutable side-channel for media writes and soft warnings during one file import."""
+
+    written_media: dict[str, Path] = field(default_factory=dict)
+    warnings: list[ImportProblem] = field(default_factory=list)
+
+
+@dataclass
 class ImportResult:
     records: list[EvidenceRecord] = field(default_factory=list)
     skipped: list[ImportProblem] = field(default_factory=list)
     errors: list[ImportProblem] = field(default_factory=list)
+    warnings: list[ImportProblem] = field(default_factory=list)
+    # record_id -> absolute path for media files this import newly created (not no-ops).
+    written_media: dict[str, Path] = field(default_factory=dict)
 
 
 def import_path(
@@ -132,6 +168,7 @@ def import_path(
     case_id: str,
     *,
     source_root: str | Path | None = None,
+    media_dir: str | Path | None = None,
     txt_mode: TxtMode = "paragraph",
     skip_patterns: Iterable[str] = DEFAULT_SKIP_PATTERNS,
     strict: bool = False,
@@ -142,12 +179,17 @@ def import_path(
     when `path` is a folder and is required when `path` is a single file, so
     record IDs never depend on how the import was started.
 
+    `media_dir` is where PNG/JPEG/PDF bytes are written (`{record_id}.ext`). With
+    `--store` the CLI defaults it under `CASES_DIR`. Without it, loose media is
+    skipped (folder) or rejected as unsupported (single file), and email images
+    stay metadata-only.
+
     Files are visited in sorted order so results are deterministic. A file that
     fails is reported in `errors` and never half-imported; with `strict=True`
     the first failure raises instead. Listed in `skipped`, not `errors`: symbolic
     links, hidden files and folders, anything under a name matching
     `skip_patterns`, and, when importing a folder, files in a format the importer
-    does not handle.
+    does not handle (including media when `media_dir` is absent).
     """
     _require_case_id(case_id)
     target = Path(path)
@@ -181,25 +223,54 @@ def import_path(
                 ImportProblem(source_file, "matches a skip pattern (answer key or case brief)")
             )
             continue
+        sink = ImportSink()
         try:
-            records = import_file(file_path, case_id, source_file=source_file, txt_mode=txt_mode)
+            records = import_file(
+                file_path,
+                case_id,
+                source_file=source_file,
+                media_dir=media_dir,
+                txt_mode=txt_mode,
+                sink=sink,
+            )
             clash = next((record for record in records if record.record_id in seen_ids), None)
             if clash is not None:
                 raise EvidenceImportError(
                     f"{source_file} repeats record_id {clash.record_id}, which another file "
                     "already provided; none of this file's records were imported"
                 )
-        except EvidenceImportError as error:
+        except (EvidenceImportError, ValidationError) as error:
+            # Media may already be on disk for a part that succeeded before a later
+            # part failed; drop those orphans so a failed file never leaves bytes behind.
+            remove_media_files(sink.written_media)
             if is_folder and isinstance(error, UnsupportedFormatError):
                 shown = file_path.suffix.lower() or "(no extension)"
                 result.skipped.append(ImportProblem(source_file, f"unsupported format {shown}"))
                 continue
             if strict:
+                # Earlier files already landed in result.written_media; drop them too so a
+                # hard abort never leaves bytes for a case the CLI will not store.
+                remove_media_files(result.written_media)
+                result.written_media.clear()
                 raise
-            result.errors.append(ImportProblem(source_file, str(error)))
+            reason = (
+                str(error)
+                if isinstance(error, EvidenceImportError)
+                else f"invalid evidence record: {error}"
+            )
+            result.errors.append(ImportProblem(source_file, reason))
             continue
+        except Exception:
+            # Unexpected failure (not EvidenceImportError/ValidationError): same orphan
+            # risk for this file and any earlier successful media writes.
+            remove_media_files(sink.written_media)
+            remove_media_files(result.written_media)
+            result.written_media.clear()
+            raise
         seen_ids.update(record.record_id for record in records)
         result.records.extend(records)
+        result.written_media.update(sink.written_media)
+        result.warnings.extend(sink.warnings)
 
     return result
 
@@ -210,7 +281,9 @@ def import_file(
     *,
     source_root: str | Path | None = None,
     source_file: str | None = None,
+    media_dir: str | Path | None = None,
     txt_mode: TxtMode = "paragraph",
+    sink: ImportSink | None = None,
 ) -> list[EvidenceRecord]:
     """Import a single file. Raises `EvidenceImportError` with a clear reason on failure.
 
@@ -218,6 +291,10 @@ def import_file(
     file's relative path is taken) or `source_file` (that relative path itself).
     One of them is required: record IDs are derived from the path, so it must not
     depend on which folder the import happened to start from.
+
+    `media_dir` is required to promote PNG/JPEG/PDF into media records. Without it,
+    loose media raises ``UnsupportedFormatError`` (folder imports skip those files)
+    and PNG/JPEG email attachments stay metadata-only.
     """
     _require_case_id(case_id)
     file_path = Path(path)
@@ -243,21 +320,62 @@ def import_file(
             f"Unsupported format {shown} for {source}. "
             f"Supported formats: {', '.join(SUPPORTED_SUFFIXES)}."
         )
+    if suffix in MEDIA_SUFFIXES:
+        try:
+            size = file_path.stat().st_size
+        except OSError as error:
+            raise EvidenceImportError(f"Could not read {source}: {error}") from error
+        if size > MAX_MEDIA_BYTES:
+            raise EvidenceImportError(
+                f"{source} is {size} bytes; media limit is {MAX_MEDIA_BYTES} bytes"
+            )
     try:
         raw = file_path.read_bytes()
     except OSError as error:
         raise EvidenceImportError(f"Could not read {source}: {error}") from error
 
     sha256 = hashlib.sha256(raw).hexdigest()
+    media_root = Path(media_dir) if media_dir is not None else None
+    out = sink if sink is not None else ImportSink()
     if suffix == ".eml":
         builder = _RecordBuilder(
-            case_id=case_id, source_file=source, sha256=sha256, encoding="utf-8"
+            case_id=case_id,
+            source_file=source,
+            sha256=sha256,
+            encoding="utf-8",
+            media_dir=media_root,
+            sink=out,
         )
         records = list(_from_eml(raw, builder))
         _reject_duplicate_ids(records)
         return records
+    if suffix in MEDIA_SUFFIXES:
+        if media_root is None:
+            shown = suffix or "(no extension)"
+            raise UnsupportedFormatError(
+                f"Unsupported format {shown} for {source} without media_dir "
+                "(pass --media-dir or use --store so image/PDF bytes can be kept under the case)"
+            )
+        builder = _RecordBuilder(
+            case_id=case_id,
+            source_file=source,
+            sha256=sha256,
+            encoding="utf-8",
+            media_dir=media_root,
+            sink=out,
+        )
+        records = list(_from_media_file(raw, suffix, builder))
+        _reject_duplicate_ids(records)
+        return records
     text, encoding = _decode(raw)
-    builder = _RecordBuilder(case_id=case_id, source_file=source, sha256=sha256, encoding=encoding)
+    builder = _RecordBuilder(
+        case_id=case_id,
+        source_file=source,
+        sha256=sha256,
+        encoding=encoding,
+        media_dir=media_root,
+        sink=out,
+    )
 
     if suffix == ".txt":
         records = list(_from_txt(text, builder, txt_mode))
@@ -308,6 +426,8 @@ class _RecordBuilder:
     source_file: str
     sha256: str
     encoding: str
+    media_dir: Path | None = None
+    sink: ImportSink = field(default_factory=ImportSink)
 
     def build(
         self,
@@ -317,10 +437,20 @@ class _RecordBuilder:
         timestamp: str | None = None,
         timestamp_kind: TimestampKind = "unknown",
         metadata: Mapping[str, Any] | None = None,
+        modality: RecordModality | None = None,
+        media_path: str | None = None,
+        content_type: str | None = None,
     ) -> EvidenceRecord:
         details = dict(metadata or {})
         if self.encoding != "utf-8":
             details.setdefault("source_encoding", self.encoding)
+        extras: dict[str, Any] = {}
+        if modality is not None:
+            extras["modality"] = modality
+        if media_path is not None:
+            extras["media_path"] = media_path
+        if content_type is not None:
+            extras["content_type"] = content_type
         return EvidenceRecord(
             record_id=stable_record_id(self.case_id, self.source_file, locator),
             case_id=self.case_id,
@@ -331,7 +461,16 @@ class _RecordBuilder:
             timestamp_kind=timestamp_kind if timestamp is not None else "unknown",
             original_sha256=self.sha256,
             metadata=details,
+            **extras,
         )
+
+    def require_media_dir(self, what: str) -> Path:
+        if self.media_dir is None:
+            raise EvidenceImportError(
+                f"Importing {what} needs media_dir so bytes can be stored under the case "
+                f"(e.g. data/cases/{self.case_id}/media)"
+            )
+        return self.media_dir
 
 
 def _require_case_id(case_id: str) -> None:
@@ -540,9 +679,7 @@ def _from_csv(text: str, builder: _RecordBuilder) -> Iterator[EvidenceRecord]:
             end_line = reader.line_num
             start_line = end_line - _newlines_in(row)
             locator = (
-                f"line {start_line}"
-                if start_line == end_line
-                else f"lines {start_line}-{end_line}"
+                f"line {start_line}" if start_line == end_line else f"lines {start_line}-{end_line}"
             )
             cells = {
                 key: value.strip()
@@ -581,6 +718,81 @@ def _newlines_in(row: Mapping[Any, Any]) -> int:
         cells = value if isinstance(value, list) else [value]
         total += sum(cell.count("\n") for cell in cells if isinstance(cell, str))
     return total
+
+
+# --- media (PNG / JPEG / PDF) -------------------------------------------------
+
+
+def _from_media_file(raw: bytes, suffix: str, builder: _RecordBuilder) -> Iterator[EvidenceRecord]:
+    """One record for a loose image or PDF; bytes written under ``media_dir``."""
+    typed = media_type_for_suffix(suffix)
+    if typed is None:
+        raise UnsupportedFormatError(f"Unsupported media format {suffix}")
+    content_type, modality = typed
+    try:
+        verify_media_bytes(raw, content_type)
+    except MediaStoreError as error:
+        raise EvidenceImportError(f"{builder.source_file}: {error}") from error
+    locator = pdf_locator(raw) if modality == "pdf" else "entire file"
+    yield _media_record(
+        builder,
+        locator=locator,
+        data=raw,
+        extension=suffix if suffix != ".jpeg" else ".jpg",
+        content_type=content_type,
+        modality=modality,  # type: ignore[arg-type]
+        filename=Path(builder.source_file).name,
+        metadata={},
+    )
+
+
+def _media_record(
+    builder: _RecordBuilder,
+    *,
+    locator: str,
+    data: bytes,
+    extension: str,
+    content_type: str,
+    modality: RecordModality,
+    filename: str | None,
+    metadata: Mapping[str, Any],
+    timestamp: str | None = None,
+    timestamp_kind: TimestampKind = "unknown",
+) -> EvidenceRecord:
+    """Write bytes to the case media store and build the EvidenceRecord."""
+    media_dir = builder.require_media_dir(builder.source_file)
+    record_id = stable_record_id(builder.case_id, builder.source_file, locator)
+    ext = extension.lower() if extension.startswith(".") else f".{extension.lower()}"
+    try:
+        verify_media_bytes(data, content_type)
+        media_path, media_sha, created = store_media_bytes(media_dir, record_id, data, extension)
+    except MediaStoreError as error:
+        raise EvidenceImportError(f"{builder.source_file} {locator}: {error}") from error
+    dest = media_dir / f"{record_id}{ext}"
+    if created:
+        builder.sink.written_media[record_id] = dest
+    details = dict(metadata)
+    details["media_sha256"] = media_sha
+    if filename:
+        details["filename"] = filename
+    try:
+        return builder.build(
+            locator=locator,
+            content="",  # no text chunks until multimodal embedding (BLA-69)
+            timestamp=timestamp,
+            timestamp_kind=timestamp_kind,
+            metadata=details,
+            modality=modality,
+            media_path=media_path,
+            content_type=content_type,
+        )
+    except Exception:
+        # build() can fail after bytes are on disk (e.g. schema ValidationError); drop the
+        # orphan so a metadata-only fallback or failed file never keeps a row-less file.
+        if created:
+            builder.sink.written_media.pop(record_id, None)
+            dest.unlink(missing_ok=True)
+        raise
 
 
 # --- EML ----------------------------------------------------------------------
@@ -645,14 +857,21 @@ def _message_records(
     # IMAP numbering: a forwarded single-part message's body is section S.1; a multipart
     # one's parts are S.1, S.2, ...; the file's own single-part body is "body".
     body_section = section if section is None or message.is_multipart() else f"{section}.1"
-    _collect_parts(message, body_section, entries, attachments)
+    _collect_parts(
+        message,
+        body_section,
+        entries,
+        attachments,
+        promote_images=builder.media_dir is not None,
+    )
 
+    headers_locator = "headers" if section is None else f"part {section} headers"
     if headers:
         details = {**base, "content_type": message.get_content_type()}
         if attachments:
             details["attachments"] = attachments
         yield builder.build(
-            locator="headers" if section is None else f"part {section} headers",
+            locator=headers_locator,
             content="\n".join(f"{header}: {value}" for header, value in headers.items()),
             timestamp=date,
             timestamp_kind="sent",
@@ -667,6 +886,31 @@ def _message_records(
                     "file's records were imported"
                 )
             yield from _message_records(inner, where, builder, depth=depth + 1)
+            continue
+        if kind == "media":
+            try:
+                yield _email_image_record(
+                    part, where, builder, base=base, date=date, parent_locator=headers_locator
+                )
+            except (EvidenceImportError, ValidationError) as error:
+                # Mislabelled or truncated attachments are common; keep the email text and
+                # the attachments[] metadata entry rather than failing the whole .eml.
+                # MediaStoreError is already wrapped as EvidenceImportError in _media_record;
+                # build failures after a write unlink the file there before re-raising.
+                detail = str(error)
+                for prefix in (
+                    f"{builder.source_file} {where}: ",
+                    f"{builder.source_file} ",
+                ):
+                    if detail.startswith(prefix):
+                        detail = detail[len(prefix) :]
+                        break
+                builder.sink.warnings.append(
+                    ImportProblem(
+                        builder.source_file,
+                        f"{where}: attachment kept as metadata only ({detail})",
+                    )
+                )
             continue
         content = _part_text(part, name, where)
         if not content:
@@ -722,44 +966,187 @@ def _collect_parts(
     section: str | None,
     entries: list[tuple[str, str, EmailMessage]],
     attachments: list[dict[str, Any]],
+    *,
+    promote_images: bool,
+    collect_text: bool = True,
 ) -> None:
     """Walk the MIME tree, numbering parts like IMAP sections (1, 1.2, ...). Text parts
     and forwarded messages go to ``entries`` in document order; other leaves are listed
-    in ``attachments``."""
+    in ``attachments``. When ``promote_images`` is true, PNG/JPEG leaves also get a
+    media entry so they become real records. ``collect_text`` is False when walking a
+    non-preferred ``multipart/alternative`` sibling so inline images are still found
+    without duplicating HTML/plain body text."""
     if part.get_content_type() == "message/rfc822":
         # A forwarded or attached message, expanded later like the file's own message.
         # (The email library reports it as multipart, so check it first.)
-        entries.append(("message", section or "1", part))
+        if collect_text:
+            entries.append(("message", section or "1", part))
         return
     if part.is_multipart():
         children = list(part.iter_parts())
         numbered = list(enumerate(children, 1))
         if part.get_content_subtype() == "alternative":
-            # The same message in several forms: keep one. A plain or HTML leaf wins;
-            # otherwise read the nested multiparts (e.g. multipart/related around HTML).
+            # Prefer one text form; still walk non-preferred multiparts for inline
+            # images (typical: text/plain + multipart/related with cid PNGs).
             preferred = _preferred_alternative(children)
-            numbered = [
-                (index, child)
-                for index, child in numbered
-                if child is preferred or (preferred is None and child.is_multipart())
-            ]
+            for index, child in numbered:
+                child_section = f"{section}.{index}" if section else str(index)
+                if child is preferred or (preferred is None and child.is_multipart()):
+                    _collect_parts(
+                        child,
+                        child_section,
+                        entries,
+                        attachments,
+                        promote_images=promote_images,
+                        collect_text=collect_text,
+                    )
+                elif promote_images and child.is_multipart():
+                    _collect_parts(
+                        child,
+                        child_section,
+                        entries,
+                        attachments,
+                        promote_images=True,
+                        collect_text=False,
+                    )
+            return
         for index, child in numbered:
             child_section = f"{section}.{index}" if section else str(index)
-            _collect_parts(child, child_section, entries, attachments)
+            _collect_parts(
+                child,
+                child_section,
+                entries,
+                attachments,
+                promote_images=promote_images,
+                collect_text=collect_text,
+            )
         return
 
     locator = f"part {section}" if section else "body"
     content_type = part.get_content_type()
     if content_type in ("text/plain", "text/html"):
-        entries.append(("text", locator, part))
+        if collect_text:
+            entries.append(("text", locator, part))
         return
+    # Prefer an exact decoded length for attachments[]. When a size hint already
+    # exceeds the media cap, skip decode here (and again in _email_image_record)
+    # so huge email images match the loose-file st_size gate.
+    size_hint = _part_decoded_size_hint(part)
+    if size_hint is not None and size_hint > MAX_MEDIA_BYTES:
+        size_bytes = size_hint
+    else:
+        size_bytes = len(part.get_payload(decode=True) or b"")
     attachments.append(
         {
             "locator": locator,
             "filename": part.get_filename(),
             "content_type": content_type,
-            "size_bytes": len(part.get_payload(decode=True) or b""),
+            "size_bytes": size_bytes,
         }
+    )
+    # PNG/JPEG attachments also become real media records (BLA-68) when a media_dir
+    # is available; other binaries stay metadata-only in the attachments list above.
+    # Oversized parts still get a media entry so _email_image_record can reject with
+    # the same metadata-only warning path — but size is gated before decode there.
+    if promote_images and content_type in EMAIL_IMAGE_TYPES:
+        entries.append(("media", locator, part))
+
+
+def _part_decoded_size_hint(part: EmailMessage) -> int | None:
+    """Best-effort decoded payload size without decoding, or None if unknown.
+
+    Estimates from the undecoded body and Content-Transfer-Encoding first
+    (base64 ≈ 3/4 of non-whitespace length; quoted-printable ≈ encoded length).
+    When a body estimate is available, return it — an inflated Content-Length must
+    not reject a normal image or land in attachments[].size_bytes. Content-Length
+    is used only when there is no body to measure.
+    """
+    body_estimate: int | None = None
+    encoded_len: int | None = None
+    non_ws: int | None = None
+    payload = part.get_payload(decode=False)
+    if payload is None:
+        body_estimate = 0
+    elif isinstance(payload, list | EmailMessage):
+        pass
+    elif isinstance(payload, str):
+        encoded_len = len(payload)
+        non_ws = sum(1 for char in payload if not char.isspace())
+    elif isinstance(payload, bytes | bytearray):
+        encoded_len = len(payload)
+        non_ws = sum(1 for byte in payload if byte not in b" \t\r\n")
+
+    if encoded_len is not None and non_ws is not None:
+        cte = (part.get("Content-Transfer-Encoding") or "").strip().lower()
+        if cte == "base64":
+            body_estimate = (non_ws * 3) // 4
+        elif cte == "quoted-printable":
+            # QP is roughly 1:1 aside from soft line breaks and =XX escapes;
+            # encoded length is a safe upper bound for the gate.
+            body_estimate = encoded_len
+        else:
+            body_estimate = encoded_len
+
+    if body_estimate is not None:
+        return body_estimate
+
+    content_length: int | None = None
+    raw_length = part.get("Content-Length")
+    if raw_length is not None:
+        try:
+            content_length = int(str(raw_length).strip())
+        except ValueError:
+            pass
+    return content_length
+
+
+def _email_image_record(
+    part: EmailMessage,
+    locator: str,
+    builder: _RecordBuilder,
+    *,
+    base: Mapping[str, Any],
+    date: str | None,
+    parent_locator: str,
+) -> EvidenceRecord:
+    """Turn a PNG/JPEG MIME part into a media EvidenceRecord with parent email linkage."""
+    content_type = part.get_content_type()
+    filename = part.get_filename()
+    extension = extension_for_content_type(content_type, filename)
+    if extension is None:
+        raise EvidenceImportError(
+            f"{builder.source_file} {locator}: unsupported image type {content_type}"
+        )
+    # Gate on declared/estimated size before get_payload(decode=True), matching the
+    # loose-file st_size check so huge attachments never force a full decode.
+    size_hint = _part_decoded_size_hint(part)
+    if size_hint is not None and size_hint > MAX_MEDIA_BYTES:
+        raise EvidenceImportError(
+            f"{builder.source_file} {locator}: attachment is {size_hint} bytes; "
+            f"media limit is {MAX_MEDIA_BYTES} bytes"
+        )
+    data = part.get_payload(decode=True) or b""
+    if len(data) > MAX_MEDIA_BYTES:
+        raise EvidenceImportError(
+            f"{builder.source_file} {locator}: attachment is {len(data)} bytes; "
+            f"media limit is {MAX_MEDIA_BYTES} bytes"
+        )
+    details = {
+        **base,
+        "parent_locator": parent_locator,
+        "content_type": content_type,
+    }
+    return _media_record(
+        builder,
+        locator=locator,
+        data=data,
+        extension=extension,
+        content_type=content_type,
+        modality="image",
+        filename=filename,
+        metadata=details,
+        timestamp=date,
+        timestamp_kind="sent",
     )
 
 

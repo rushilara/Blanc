@@ -132,6 +132,7 @@ def init_db(engine: Engine, embedding_dim: int = DEFAULT_EMBEDDING_DIM) -> None:
 
     Base.metadata.create_all(engine)
     with engine.begin() as connection:
+        _ensure_evidence_record_media_columns(connection)
         ensure_search_index(connection, embedding_dim)
         # Cases imported before ``store_records`` set ``ready`` were left ``empty``.
         connection.execute(
@@ -140,6 +141,22 @@ def init_db(engine: Engine, embedding_dim: int = DEFAULT_EMBEDDING_DIM) -> None:
                 "AND EXISTS (SELECT 1 FROM evidence_records r WHERE r.case_id = cases.case_id)"
             )
         )
+
+
+def _ensure_evidence_record_media_columns(connection) -> None:
+    """Add BLA-68 media columns on existing SQLite DBs created before those fields existed."""
+    if connection.dialect.name != "sqlite":
+        return
+    existing = {
+        row[1] for row in connection.execute(text("PRAGMA table_info(evidence_records)"))
+    }
+    for name, ddl in (
+        ("modality", "ALTER TABLE evidence_records ADD COLUMN modality VARCHAR(16)"),
+        ("media_path", "ALTER TABLE evidence_records ADD COLUMN media_path TEXT"),
+        ("content_type", "ALTER TABLE evidence_records ADD COLUMN content_type VARCHAR(128)"),
+    ):
+        if name not in existing:
+            connection.execute(text(ddl))
 
 
 def get_session(request: Request) -> Iterator[Session]:

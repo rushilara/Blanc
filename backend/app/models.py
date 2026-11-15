@@ -98,6 +98,10 @@ class EvidenceRecordRow(Base):
     timestamp: Mapped[str | None] = mapped_column(Text, nullable=True)
     timestamp_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
     original_sha256: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Media (BLA-68): relative path under the case dir; None for text-only records.
+    modality: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    media_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
     # None means the record had no ``metadata`` key (distinct from ``{}``).
     record_metadata: Mapped[dict[str, Any] | None] = mapped_column(
         "metadata", JSON, nullable=True
@@ -118,6 +122,12 @@ class EvidenceRecordRow(Base):
         }
         if self.timestamp_kind is not None:
             data["timestamp_kind"] = self.timestamp_kind
+        if self.modality is not None:
+            data["modality"] = self.modality
+        if self.media_path is not None:
+            data["media_path"] = self.media_path
+        if self.content_type is not None:
+            data["content_type"] = self.content_type
         if self.record_metadata is not None:
             data["metadata"] = self.record_metadata
         return EvidenceRecord.model_validate(data)

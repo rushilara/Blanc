@@ -1,14 +1,30 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { presentSource } from "@/lib/source-presentation";
 import { SourcePanel } from "./SourcePanel";
 import { TimelineView } from "@/components/TimelineView";
-import { useEffect, useRef, useSyncExternalStore, useState } from "react";
+import { Component, useEffect, useRef, useSyncExternalStore, useState, type ReactNode } from "react";
 import type { AnalysisRevision, EvidenceRecord } from "@/lib/analysis";
 import { citedRecordIds } from "@/lib/citations";
 import { anchorCitations, splitCitations, type Anchor } from "@/lib/inline-citations";
 import { analyzeCase, ApiError, listCaseRecordsPage, listCases, loadRevisionSources, type CaseSummary } from "@/lib/live-api";
+
+/** Thrown by the dynamic() catch fallback when the map chunk fails to import. */
+const MAP_LOAD_ERROR = "Connection map failed to load.";
+
+const ConnectionMap = dynamic(
+  () =>
+    import("./ConnectionMap")
+      .then(mod => ({ default: mod.ConnectionMap }))
+      .catch(() => ({
+        default: function MapLoadError(): never {
+          throw new Error(MAP_LOAD_ERROR);
+        },
+      })),
+  { ssr: false, loading: () => <p className="blanc-map-hint">Drawing the connections…</p> },
+);
 
 const views = ["Findings", "Connections", "Timeline", "Revisions"] as const;
 
@@ -70,6 +86,8 @@ export function Findings() {
   const [question, setQuestion] = useState("");
   const [view, setView] = useState<(typeof views)[number]>("Findings");
   const [open, setOpen] = useState<string>();
+  const [expandedSource, setExpandedSource] = useState<string>();
+  const [sourceHover, setSourceHover] = useState<{ id: string; top: number; left: number } | null>(null);
   const sources = records;
 
   useEffect(() => {
@@ -104,8 +122,6 @@ export function Findings() {
       {extraIds.length > 0 && <> <sup>{extraIds.map(id => citation(id))}</sup></>}
     </>;
   }
-  const nodes = new Map(revision?.graph.nodes.map(node => [node.id, node.label]));
-
   function cancelAsk() {
     request.current?.abort();
     request.current = null;
@@ -177,8 +193,7 @@ export function Findings() {
     return text.replace(/\s+/g, " ").slice(0, 140);
   }
 
-  /** A numbered citation. In the Sources rail (``label`` set) it has no hover card,
-   *  since the rail already shows the name and kind. */
+  /** A numbered citation in the answer. The Sources rail lists names separately. */
   function citation(id: string, label?: string) {
     const number = citedOrder.indexOf(id) + 1 || citedOrder.length + 1;
     const title = citationTitle(id);
@@ -202,7 +217,7 @@ export function Findings() {
   return <div className="blanc-workspace">
     {/* The static sheet avoids the missing workspace styles in the CSS pipeline. */}
     {/* eslint-disable-next-line @next/next/no-css-tags */}
-    <link rel="stylesheet" href="/blanc/findings.css?v=bla-52-states" precedence="blanc" />
+    <link rel="stylesheet" href="/blanc/findings.css?v=connection-map-13-bla-52" precedence="blanc" />
     <header className="blanc-header">
       <Link href="/" aria-label="Blanc home"><svg width="92" height="37" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="210 168 1460 570"><defs>
     <filter id="ink-alpha" colorInterpolationFilters="sRGB">
@@ -220,15 +235,37 @@ export function Findings() {
       )}</nav>}
     </header>
 
-    {revision ? <div className={`blanc-investigation${open ? " has-source" : ""}`}>
+    {revision ? <div className={`blanc-investigation${open ? " has-source" : ""}${view === "Connections" ? " is-map" : ""}`}>
       <aside className="blanc-case-rail" aria-label="Current case and sources">
         <small>Current case</small>
         <h2>{caseTitle}</h2>
-        <section className="blanc-rail-sources"><h3>Sources</h3><ol>{citedOrder.map((id, i) => <li key={id}><span>{i + 1}</span><span className="blanc-rail-source">{citation(id, citationTitle(id))}<small>{citationKind(id)}</small></span></li>)}</ol></section>
+        <section className="blanc-rail-sources"><h3>Sources</h3><ol>{citedOrder.map((id, i) => {
+          const expanded = expandedSource === id;
+          return <li key={id} className={expanded ? "is-open" : undefined}
+            onMouseEnter={event => {
+              if (expanded) return;
+              const rect = event.currentTarget.getBoundingClientRect();
+              setSourceHover({ id, top: rect.top - 4, left: rect.right + 14 });
+            }}
+            onMouseLeave={() => setSourceHover(current => current?.id === id ? null : current)}>
+            <button type="button" className={`blanc-rail-toggle${open === id ? " is-open" : ""}`} aria-expanded={expanded} aria-controls={`blanc-rail-detail-${i}`} onClick={() => { setSourceHover(null); setExpandedSource(expanded ? undefined : id); }}>
+              <span>{i + 1}</span>
+              <span>{citationTitle(id)}</span>
+              <span className="blanc-rail-chevron" aria-hidden="true" />
+            </button>
+            <div id={`blanc-rail-detail-${i}`} className="blanc-rail-detail" hidden={!expanded}>
+              <small>{citationKind(id)}</small>
+              <button type="button" aria-pressed={open === id} onClick={() => setOpen(open === id ? undefined : id)}>{open === id ? "Close source" : "Open source"}</button>
+            </div>
+          </li>;
+        })}</ol></section>
       </aside>
       <main className="blanc-reading blanc-report" key={revision.analysis_id}>
       <p className="blanc-meta">{caseTitle}</p>
-      <h1>{revision.question}</h1>
+      <div className="blanc-sent">
+        <p>You</p>
+        <h1>{revision.question}</h1>
+      </div>
       {feedback && <p role="status">{feedback}</p>}
       {revision.needs_review && <p>This analysis needs investigator review.</p>}
       {view === "Findings" && <>
@@ -238,9 +275,15 @@ export function Findings() {
         {revision.claims.map(claim => <p key={claim.id}><StatusLabel value={claim.status} />{withCitations(claim.text, claim.evidence_ids)}</p>)}
         {revision.unresolved_questions.length > 0 && <><h2>What remains unresolved</h2>{revision.unresolved_questions.map((question, index) => <p key={`${index}-${question}`}>{withCitations(question)}</p>)}</>}
       </>}
-      {view === "Connections" && <><h2>Connections</h2>{revision.graph.edges.length === 0
-        ? <p>No supported relationships.</p>
-        : revision.graph.edges.map(edge => <p key={edge.id}><StatusLabel value={edge.status} />{nodes.get(edge.source) ?? edge.source} → {nodes.get(edge.target) ?? edge.target}<br />{edge.description ? withCitations(edge.description, edge.evidence_ids) : withCitations(edge.type.replaceAll("_", " "), edge.evidence_ids)}</p>)}</>}
+      {view === "Connections" && <ConnectionMapPane
+        nodes={revision.graph.nodes}
+        edges={revision.graph.edges}
+        records={sources}
+        claims={revision.claims}
+        events={revision.timeline_events}
+        questions={revision.unresolved_questions}
+        cite={id => citation(id)}
+      />}
       {view === "Timeline" && <><h2>Timeline</h2><TimelineView key={revision.analysis_id} events={revision.timeline_events} caseId={revision.case_id} records={sources} excludedRecordIds={revision.excluded_record_ids} /></>}
       {view === "Revisions" && <><h2>Current revision</h2><p>{revision.analysis_id}</p><p>Excluded records: {revision.excluded_record_ids.join(", ") || "None"}</p></>}
       {view === "Findings" && <section className="blanc-ruled"><h3>Follow-ups</h3><input aria-label="Ask a follow-up" placeholder="Ask a follow-up…" disabled /><small>Follow-up analysis is not connected yet.</small></section>}
@@ -282,6 +325,11 @@ export function Findings() {
         </div>)}
       </section>
     </main>}
+    {sourceHover && citedOrder.includes(sourceHover.id) && <div className="blanc-rail-float" style={{ top: sourceHover.top, left: sourceHover.left }}>
+      <small>{citedOrder.indexOf(sourceHover.id) + 1} · {citationKind(sourceHover.id)}</small>
+      <strong>{citationTitle(sourceHover.id)}</strong>
+      <span>{citationSnippet(sourceHover.id)}</span>
+    </div>}
   </div>;
 }
 
@@ -398,4 +446,46 @@ function sourceTitle(record: EvidenceRecord) {
 
 function StatusLabel({ value }: { value: string }) {
   return <span className={`blanc-status blanc-status-${value}`}>{value.replaceAll("_", " ")}</span>;
+}
+
+/** next/dynamic caches a failed import, so Retry cannot recover — offer a full reload. */
+function ConnectionMapPane(props: {
+  nodes: AnalysisRevision["graph"]["nodes"];
+  edges: AnalysisRevision["graph"]["edges"];
+  records: EvidenceRecord[];
+  claims: AnalysisRevision["claims"];
+  events: AnalysisRevision["timeline_events"];
+  questions: string[];
+  cite: (id: string) => ReactNode;
+}) {
+  const [loadFailed, setLoadFailed] = useState(false);
+  if (loadFailed) {
+    return <p role="alert">The connection map failed to load.{" "}
+      <button type="button" className="blanc-retry" onClick={() => { window.location.reload(); }}>Reload the page</button>
+    </p>;
+  }
+  return <MapLoadBoundary onLoadError={() => setLoadFailed(true)}>
+    <ConnectionMap {...props} />
+  </MapLoadBoundary>;
+}
+
+class MapLoadBoundary extends Component<
+  { children: ReactNode; onLoadError: () => void },
+  { failed: boolean }
+> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: Error) {
+    // Chunk import failures throw MAP_LOAD_ERROR; anything else that escapes the
+    // map also needs a recoverable UI (ConnectionMap already soft-falls back for canvas).
+    if (error.message === MAP_LOAD_ERROR || this.state.failed) this.props.onLoadError();
+  }
+
+  render() {
+    return this.state.failed ? null : this.props.children;
+  }
 }

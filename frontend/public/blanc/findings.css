@@ -6,13 +6,21 @@
 }
 .blanc-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 20px; padding: 16px clamp(18px, 3vw, 42px); }
 .blanc-header nav { display: flex; flex-wrap: wrap; gap: 8px 20px; }
-.blanc-header button, .blanc-citation button, .blanc-source button { cursor: pointer; font: inherit; }
+.blanc-header button, .blanc-citation button, .blanc-source button, .blanc-rail-toggle, .blanc-rail-detail button { cursor: pointer; font: inherit; }
 .blanc-header button[aria-current] { border-bottom: 1px solid #8c3038; }
 .blanc-reading { width: min(560px, calc(100% - 44px)); margin: 14px auto 0; padding-bottom: 56px; }
 .blanc-meta, .blanc-reading small { font: 12px/1.5 ui-monospace, monospace; }
 .blanc-reading h1 { font: 400 clamp(25px, 4vw, 34px)/1.12 Georgia, serif; margin: 6px 0 22px; overflow-wrap: anywhere; }
-.blanc-reading h2 { font-size: 15px; font-style: italic; margin-top: 17px; }
-.blanc-reading h3 { font-size: 20px; margin: 0 0 12px; }
+.blanc-sent { display: flex; flex-direction: column; align-items: flex-end; margin: 2px 0 26px; }
+.blanc-sent > p { margin: 0 2px 4px; color: #8a7a68; font: 600 10px/1.3 system-ui, sans-serif; letter-spacing: .06em; text-transform: uppercase; }
+.blanc-reading .blanc-sent h1 {
+  width: fit-content; max-width: min(100%, 28rem); margin: 0;
+  padding: 10px 14px; border-radius: 16px 16px 4px 16px;
+  background: #372416; color: #f6efe2;
+  font: 15px/1.45 Georgia, serif; text-align: left; overflow-wrap: anywhere;
+}
+.blanc-reading h2 { margin: 26px 0 8px; font: italic 700 18px/1.25 Georgia, serif; }
+.blanc-reading h3 { margin: 0 0 12px; font: 700 18px/1.25 Georgia, serif; }
 .blanc-ruled { border-top: 1px solid #a99e89; margin-top: 22px; padding-top: 16px; }
 .blanc-ruled li { display: flex; gap: 16px; align-items: baseline; margin: 5px 0; }
 .blanc-ruled li > span:first-child, .blanc-citation { color: #822b33; }
@@ -23,7 +31,7 @@
 /* Tailwind gives <sup> line-height 0, which would leave the button with no box to highlight. */
 .blanc-reading sup .blanc-citation button { padding: 1px 3px; line-height: 1.1; vertical-align: baseline; }
 .blanc-reading sup .blanc-citation button:hover, .blanc-reading sup .blanc-citation.is-active button { background: #822b33; color: #f5eddf; text-decoration: none; }
-.blanc-rail-sources .blanc-citation.is-active button { text-decoration-thickness: 2px; font-weight: 600; }
+.blanc-rail-toggle.is-open > span:nth-child(2) { text-decoration-thickness: 2px; font-weight: 600; }
 
 /* Hover card: fades in just above the number after a short pause, never covers the
    line being read, and ignores the pointer so it cannot flicker. */
@@ -148,6 +156,8 @@
 }
 .blanc-investigation .blanc-reading { width: 100%; margin: 0; }
 .blanc-case-rail {
+  position: relative;
+  z-index: 3;
   min-width: 0;
   width: min(calc(100% - 24px), 170px);
   margin-left: min(24px, 12%);
@@ -159,11 +169,40 @@
 .blanc-case-rail h2 { margin: 4px 0 18px; font-size: 17px; line-height: 1.25; }
 .blanc-rail-sources { border-top: 1px solid #b8ac97; padding-top: 10px; }
 .blanc-rail-sources h3 { margin-bottom: 6px; font-size: 12px; }
-.blanc-rail-sources li { display: grid; grid-template-columns: 2.5ch minmax(0, 1fr); gap: 8px; margin-bottom: 7px; font-size: 12px; }
-.blanc-rail-sources li > span:first-child { color: #822b33; text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.blanc-rail-sources .blanc-citation { margin: 0; }
-.blanc-rail-source { display: grid; gap: 1px; min-width: 0; }
-.blanc-rail-source small { color: #7a6a5a; font: 10.5px/1.4 system-ui, sans-serif; letter-spacing: .01em; }
+.blanc-rail-sources li { margin-bottom: 8px; font-size: 12px; }
+.blanc-rail-float {
+  position: fixed; z-index: 40; display: grid; gap: 4px; width: 240px;
+  padding: 10px 12px; border: 1px solid #c4b59a; border-radius: 6px;
+  background: #f7f1e4; color: #372416; box-shadow: 0 12px 28px rgb(55 36 22 / 20%);
+  pointer-events: none; font: 13px/1.35 Georgia, serif;
+}
+.blanc-rail-float small { font: 600 10px/1.4 system-ui, sans-serif; letter-spacing: .05em; text-transform: uppercase; color: #8a7a68; }
+.blanc-rail-float strong { font: 600 13px/1.3 Georgia, serif; overflow-wrap: anywhere; }
+.blanc-rail-float span {
+  color: #5c4d40; font: 12px/1.45 system-ui, sans-serif; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.blanc-rail-toggle {
+  display: grid; grid-template-columns: 2.5ch minmax(0, 1fr) 8px; gap: 8px; align-items: start;
+  width: 100%; padding: 0; border: 0; background: transparent; color: #822b33; text-align: left;
+}
+.blanc-rail-toggle > span:first-child { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.blanc-rail-toggle > span:nth-child(2) { text-decoration: underline; text-underline-offset: 3px; overflow-wrap: anywhere; }
+.blanc-rail-chevron {
+  width: 5px; height: 5px; margin-top: 4px;
+  border-right: 1px solid currentColor; border-bottom: 1px solid currentColor;
+  transform: rotate(-45deg);
+}
+.blanc-rail-toggle[aria-expanded="true"] .blanc-rail-chevron { transform: rotate(45deg); margin-top: 2px; }
+.blanc-rail-detail { margin: 3px 0 2px calc(2.5ch + 8px); }
+.blanc-rail-detail[hidden] { display: none; }
+.blanc-rail-detail small { display: block; color: #7a6a5a; font: 10.5px/1.4 system-ui, sans-serif; letter-spacing: .01em; }
+.blanc-rail-detail button {
+  margin-top: 4px; padding: 0; border: 0; background: transparent; color: #822b33;
+  font-size: 12px; text-decoration: underline; text-underline-offset: 3px;
+}
+.blanc-rail-detail button[aria-pressed="true"] { font-weight: 600; text-decoration-thickness: 2px; }
+.blanc-rail-toggle:focus-visible, .blanc-rail-detail button:focus-visible { outline: 2px solid #822b33; outline-offset: 3px; }
 @media (max-width: 900px) {
   .blanc-investigation { grid-template-columns: minmax(0, 560px); gap: 20px; }
   .blanc-case-rail { width: 100%; margin-left: 0; border-right: 0; border-bottom: 1px solid #b8ac97; }
@@ -284,6 +323,44 @@
 .blanc-investigation.has-source {
   grid-template-columns: 170px minmax(0, 560px) minmax(320px, 420px);
   width: min(calc(100% - 44px), 1280px);
+}
+.blanc-investigation.is-map {
+  grid-template-columns: minmax(150px, 190px) minmax(0, 1fr);
+  width: min(calc(100% - 28px), 1320px);
+}
+.blanc-investigation.is-map.has-source {
+  grid-template-columns: minmax(150px, 180px) minmax(0, 1fr) minmax(300px, 380px);
+}
+.blanc-map-frame,
+.blanc-map,
+.blanc-map canvas,
+.blanc-map > div,
+.blanc-map-foot,
+.blanc-map-foot section {
+  border: 0;
+  outline: 0;
+  box-shadow: none;
+  background: transparent;
+}
+.blanc-map { position: relative; height: 480px; }
+.blanc-map canvas { display: block; width: 100%; height: 100%; }
+.blanc-map-foot { margin-top: 4px; padding: 0; }
+.blanc-map-foot > p { margin: 0; color: #665548; font: inherit; }
+.blanc-map-foot h2 { margin: 17px 0 8px; font: italic 700 18px/1.3 Georgia, serif; }
+.blanc-map-foot section p { margin: 0 0 12px; font: inherit; color: inherit; }
+.blanc-map-foot .blanc-map-role { margin: -4px 0 16px; color: #665548; font: 11px/1.4 ui-monospace, monospace; letter-spacing: .04em; text-transform: lowercase; }
+.blanc-map-link { margin: 0 0 14px; }
+.blanc-map-foot .blanc-map-link > p:first-child { margin-bottom: 4px; }
+.blanc-map-foot .blanc-map-fact { margin: 0 0 6px; }
+.blanc-map-missed { margin-top: 8px; }
+.blanc-map-missed h3 { margin: 18px 0 6px; font: italic 700 18px/1.25 Georgia, serif; }
+.blanc-map-foot .blanc-map-note { margin: 0 0 10px; color: #665548; }
+.blanc-map-why { display: block; margin-top: 2px; color: #372416; }
+.blanc-map-fallback { margin: 8px 0 0; padding-left: 1.1em; font: 15px/1.55 Georgia, serif; }
+@media (max-width: 900px) {
+  .blanc-investigation.is-map,
+  .blanc-investigation.is-map.has-source { grid-template-columns: minmax(0, 1fr); }
+  .blanc-map { height: 420px; }
 }
 .blanc-source-panel {
   position: sticky; top: 16px; max-height: calc(100svh - 32px); overflow-y: auto; overscroll-behavior: contain;

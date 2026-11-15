@@ -105,7 +105,7 @@ def test_an_embedding_failure_leaves_no_case_and_no_records(
 def test_a_folder_with_nothing_importable_creates_no_case(tmp_path: Path, url: str) -> None:
     source = tmp_path / "exports"
     source.mkdir()
-    (source / "scan.pdf").write_bytes(b"%PDF-1.7")
+    (source / "notes.docx").write_bytes(b"not a word doc")
 
     args = [str(source), "--store", "--title", "Dock", "--database-url", url]
     assert cli_main(args, embedder=FakeEmbedder()) == 1
