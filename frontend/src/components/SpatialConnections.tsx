@@ -1,20 +1,21 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import type { AnalysisRevision } from "@/lib/analysis";
+import type { AnalysisRevision, EvidenceRecord } from "@/lib/analysis";
 
 /** The approved spatial renderer, isolated from the reading view's typography. */
-export function SpatialConnections({ graph, excludedRecordIds, onOpenSource }: {
+export function SpatialConnections({ graph, excludedRecordIds, records, onOpenSource }: {
   graph: AnalysisRevision["graph"];
   excludedRecordIds: string[];
+  records: EvidenceRecord[];
   onOpenSource: (id: string) => void;
 }) {
   const frame = useRef<HTMLIFrameElement>(null);
   function sendGraph() {
-    frame.current?.contentWindow?.postMessage({ type: "blanc:graph", graph, excludedRecordIds }, window.location.origin);
+    frame.current?.contentWindow?.postMessage({ type: "blanc:graph", graph, excludedRecordIds, records }, window.location.origin);
   }
   useEffect(() => {
-    frame.current?.contentWindow?.postMessage({ type: "blanc:graph", graph, excludedRecordIds }, window.location.origin);
+    frame.current?.contentWindow?.postMessage({ type: "blanc:graph", graph, excludedRecordIds, records }, window.location.origin);
     const allowed = new Set([...graph.nodes.flatMap(node => node.evidence_ids ?? []), ...graph.edges.flatMap(edge => edge.evidence_ids)]);
     const receive = (event: MessageEvent) => {
       if (event.origin !== window.location.origin || event.source !== frame.current?.contentWindow) return;
@@ -24,7 +25,7 @@ export function SpatialConnections({ graph, excludedRecordIds, onOpenSource }: {
     };
     window.addEventListener("message", receive);
     return () => window.removeEventListener("message", receive);
-  }, [graph, excludedRecordIds, onOpenSource]);
+  }, [graph, excludedRecordIds, records, onOpenSource]);
 
   if (!graph.nodes.length) return <p>No entities were identified in this analysis.</p>;
   return <section aria-label="Spatial connections">
