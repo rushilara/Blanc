@@ -235,7 +235,7 @@ Every response is `InvestigationBoard` contract JSON. A board is a series of app
 | `GET /cases/{case_id}/boards` | Latest snapshot of every board, most recently updated first. |
 | `GET /cases/{case_id}/boards/{board_id}` | Latest snapshot. |
 | `GET /cases/{case_id}/boards/{board_id}/revisions[/{n}]` | Every snapshot, oldest first, or snapshot `n`. |
-| `PATCH /cases/{case_id}/boards/{board_id}` | Unpin, pin, add notes, rename, set the active revision; appends one snapshot. |
+| `PATCH /cases/{case_id}/boards/{board_id}` | Unpin, pin, review, add notes or corrections, rename, set the active revision; appends one snapshot. |
 
 `PATCH` body (every field optional, applied in this order):
 
@@ -245,13 +245,18 @@ Every response is `InvestigationBoard` contract JSON. A board is a series of app
   "unpin": ["item_..."],
   "add_reconstruction": {"analysis_id": "analysis_..."},
   "pin": [{"kind": "claim", "source_analysis_id": "analysis_...", "ref_id": "claim-2"}],
-  "notes": [{"text": "Check whether the meeting happened.", "target_item_id": "item_..."}],
+  "review": [{"item_id": "item_...", "review_status": "disputed"}],
+  "notes": [
+    {"text": "Check whether the meeting happened.", "target_item_id": "item_..."},
+    {"text": "Casey was not there; the message only says 'may be'.", "kind": "correction", "target_item_id": "item_..."}
+  ],
   "title": "New title",
   "active_analysis_id": "analysis_..."
 }
 ```
 
 - **A pin names a finding; the server copies its `evidence_ids` and `status`** from the saved revision. The request cannot set either, so pinning never changes a status or marks anything verified.
+- **Investigator review (BLA-48).** `review` sets an item's `review_status` (`unreviewed`, `reviewed` or `disputed`), after pins, so an item pinned in the same request can be reviewed. `unreviewed` is stored as absent. A note with `"kind": "correction"` flags its target as wrong and must have a `target_item_id`. Neither changes the finding's `status`, text or evidence, and neither is sent to the model (follow-ups send pinned findings with the model's status only). 422 for an item that isn't on the board, two different statuses for one item in one request, or a correction with no target. Every review decision is a new snapshot, so `GET …/revisions` shows its history. Board exports (`/export`) show each pinned finding's review status and label corrections separately.
 - **"Add this reconstruction to board"** (BLA-30): `"add_reconstruction": {"analysis_id": "analysis_...", "kinds": ["claim", "node", "edge", "event"]}` pins every finding of that revision in one change (`kinds` optional, default all), through the same checks as single pins. Nodes that cite no evidence are skipped. Adding the same revision again changes nothing; adding a second revision appends its findings next to the first.
 - **Nodes are never merged.** A node is identified by its revision and ID, so the same or a similar name from another revision (or the same revision) stays a separate item; deciding two are the same person is left to the investigator.
 - **No length cap on revision IDs.** `ref_id`, `source_analysis_id`, `analysis_id` and `active_analysis_id` name things stored in a revision, whose contract sets no maximum length, so requests don't cap them either. Item IDs (`unpin`, `target_item_id`) are server-generated and capped at 200 characters.
@@ -299,11 +304,11 @@ JSON shape (`report_version: "1.0"`). This is its own API shape, not a `contract
 | `report_version`, `report_kind` (`board` / `analysis`), `generated_at` (UTC) | Header. |
 | `case` `{case_id, title}`, `board` (`null` for an analysis export) `{board_id, title, revision, parent_revision, active_analysis_id, updated_at}` | What was exported. |
 | `analyses[]` | Each revision drawn on: `role` (`exported`, `board_active`, `board_source`), `lineage` (root ... this ID), `question`, `answer`, `unresolved_questions`, `needs_review`, `validation_errors`, `retrieved_record_ids`, `excluded_record_ids`, `created_at`. |
-| `claims[]`, `entities[]`, `relationships[]` | AI-generated findings with `analysis_id`, their own ID, text/label/type, `status` (as saved), `evidence_ids`; on a board also `board_item_id` and `note_ids` (links to notes, never their text). Relationships give `source`/`target` as `{node_id, label, type}`. |
+| `claims[]`, `entities[]`, `relationships[]` | AI-generated findings with `analysis_id`, their own ID, text/label/type, `status` (as saved), `evidence_ids`; on a board also `board_item_id`, `review_status` (the investigator's review, BLA-48; `unreviewed` when not set) and `note_ids` (links to notes, never their text). Relationships give `source`/`target` as `{node_id, label, type}`. |
 | `timeline` `{dated, uncertain, undated}` | Events with the raw `timestamp`, normalized `display`, `precision`, `timezone_known`. `dated` is in `app.timeline` order; `uncertain` holds approximate times and exact times with no known zone; `undated` holds the rest. Nothing is guessed. |
 | `sources[]` | Every cited record once, sorted by ID: `source_file`, `source_locator`, `timestamp`, `timestamp_kind`, `excerpt` (either `{text, char_start, char_end, truncated, content_chars}` where `text == content[char_start:char_end]`, at most the first 2000 characters, **or `null`** when withheld), `cited_by[]` `{kind, analysis_id, ref_id}`, and `excluded_in[]` (every revision in this report that excludes the record; possible on a board that pins items from several revisions). Withholding: for a board with an active revision, or a single-analysis export, `excerpt` is null only when that scope revision excludes the record (a stale pin from an older exclusion does not hide restored evidence). For a board with no active revision, `excerpt` is null when any reported revision excludes the record. |
 | `excluded_evidence[]` | `{analysis_id, record_id, inherited, first_excluded_in, source_file, source_locator, timestamp}`. Locators only, no content; never counted as support. |
-| `investigator_notes[]` | `{note_id, author, created_at, text, target_item_id, target}`. Board exports only; an analysis export has none. |
+| `investigator_notes[]` | `{note_id, author, created_at, text, target_item_id, target, kind}`; `kind` is `correction` when the investigator flagged the target as wrong. Board exports only; an analysis export has none. |
 | `limitations[]` | Fixed caveats (AI-generated and needs human review; statuses and pins are not verification; exclusions change what can be concluded, not what happened; retrieval may miss records; local storage but Gemini processed the text; formats not ingested) plus case-specific ones (attachments not imported, needs-review revisions, truncated excerpts, uncertain times, records excluded elsewhere on the board). |
 
 **Untrusted text in Markdown.** Evidence, model output, notes and IDs may contain Markdown or HTML, and none of it is emitted as structure. Excerpts and notes go in fenced code blocks whose fence is longer than any backtick run in the text. IDs, files and locators go in code spans built the same way. Prose (answers, claims, labels, descriptions) is escaped line by line: ``\ ` * _ [ ] < > # + ! | ~ & @``, a leading `- = >` or `1.`, and `://` / `www.` so bare URLs are not linked. Control characters are dropped. `tests/test_reports.py` covers `<script>`, headings, links, images, pipes, tables and backtick runs.

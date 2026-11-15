@@ -99,10 +99,22 @@ def _ref(ref: FindingRef) -> str:
     return f"{_KIND_LABEL[ref.kind]} {code(ref.ref_id)} (analysis {code(ref.analysis_id)})"
 
 
-def _pinned(board_item_id: str | None, note_ids: list[str]) -> list[str]:
+_REVIEW_LABEL = {
+    "unreviewed": "unreviewed",
+    "reviewed": "reviewed",
+    "disputed": "disputed (the investigator disputes this finding)",
+}
+
+
+def _pinned(
+    board_item_id: str | None, note_ids: list[str], review_status: str | None = None
+) -> list[str]:
     lines = []
     if board_item_id is not None:
         lines.append(f"  - Board item: {code(board_item_id)}")
+    if review_status is not None:
+        label = _REVIEW_LABEL.get(review_status, review_status)
+        lines.append(f"  - Investigator review: {escape_inline(label)}")
     if note_ids:
         lines.append(f"  - Investigator notes attached: {_ids(note_ids)} (see Investigator notes)")
     return lines
@@ -155,7 +167,7 @@ def render_markdown(report: CaseReport) -> str:
         add(f"- **{claim.status}** {escape_inline(claim.text)}")
         add(f"  - Claim {code(claim.claim_id)} from analysis {code(claim.analysis_id)}")
         add(f"  - Sources: {_ids(claim.evidence_ids)}")
-        out.extend(_pinned(claim.board_item_id, claim.note_ids))
+        out.extend(_pinned(claim.board_item_id, claim.note_ids, claim.review_status))
     if not report.claims:
         add("None.")
     add("")
@@ -168,7 +180,7 @@ def render_markdown(report: CaseReport) -> str:
         add(f"- {escape_inline(entity.label)} ({escape_inline(entity.type)})")
         add(f"  - Node {code(entity.node_id)} from analysis {code(entity.analysis_id)}")
         add(f"  - Sources: {_ids(entity.evidence_ids)}")
-        out.extend(_pinned(entity.board_item_id, entity.note_ids))
+        out.extend(_pinned(entity.board_item_id, entity.note_ids, entity.review_status))
     if not report.entities:
         add("None.")
     add("")
@@ -188,7 +200,7 @@ def render_markdown(report: CaseReport) -> str:
         if edge.description:
             add(f"  - Description: {escape_inline(edge.description)}")
         add(f"  - Sources: {_ids(edge.evidence_ids)}")
-        out.extend(_pinned(edge.board_item_id, edge.note_ids))
+        out.extend(_pinned(edge.board_item_id, edge.note_ids, edge.review_status))
     if not report.relationships:
         add("None.")
     add("")
@@ -307,7 +319,7 @@ def _events(out: list[str], events: list[ReportEvent]) -> None:
         zone = ", time zone unknown (shown as written)" if no_zone else ""
         add(f"  - Timestamp as written: {written}, kind {event.timestamp_kind or 'unknown'}{zone}")
         add(f"  - Sources: {_ids(event.evidence_ids)}")
-        out.extend(_pinned(event.board_item_id, event.note_ids))
+        out.extend(_pinned(event.board_item_id, event.note_ids, event.review_status))
     if not events:
         add("None.")
     add("")
@@ -365,8 +377,11 @@ def _exclusion(out: list[str], exclusion: ReportExclusion) -> None:
 
 def _note(out: list[str], note: ReportNote) -> None:
     add = out.append
-    add(f"### Note {code(note.note_id)}")
+    heading = "Correction" if note.kind == "correction" else "Note"
+    add(f"### {heading} {code(note.note_id)}")
     add("")
+    if note.kind == "correction":
+        add("- Flags the attached finding as wrong (investigator correction, not evidence)")
     add(f"- Author: {escape_inline(note.author)}")
     add(f"- Added at (UTC): {_utc(note.created_at)}")
     if note.target is not None:
