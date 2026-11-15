@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useMemo, type KeyboardEvent } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, type KeyboardEvent } from "react";
 import {
   Background,
   BaseEdge,
@@ -48,11 +48,20 @@ function EntityNode({ data, selected }: NodeProps<Node<EntityData>>) {
       className={`min-w-[9.5rem] max-w-[12rem] rounded-lg border bg-white px-3 py-2 shadow-sm dark:bg-zinc-950 ${
         selected
           ? "border-blue-500 ring-2 ring-blue-400/40"
-          : "border-zinc-300 dark:border-zinc-700"
+          : data.pinned
+            ? "border-amber-400 dark:border-amber-600"
+            : "border-zinc-300 dark:border-zinc-700"
       }`}
     >
       <Handle type="target" position={Position.Left} isConnectable={false} className="!h-2 !w-2 !border-zinc-400 !bg-zinc-200 dark:!bg-zinc-700" />
-      <p className="truncate text-sm font-medium text-zinc-900 dark:text-zinc-100">{data.label}</p>
+      <div className="flex items-start justify-between gap-2">
+        <p className="truncate text-sm font-medium text-zinc-900 dark:text-zinc-100">{data.label}</p>
+        {data.pinned && (
+          <span aria-label="Pinned" className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
+            Pin
+          </span>
+        )}
+      </div>
       <p className="truncate text-xs capitalize text-zinc-500">{data.entityType.replaceAll("_", " ")}</p>
       {!!data.evidenceIds.length && (
         <p className="mt-1 font-mono text-[10px] text-zinc-400">{data.evidenceIds.length} source{data.evidenceIds.length === 1 ? "" : "s"}</p>
@@ -125,17 +134,30 @@ const edgeTypes = { relation: RelationEdge };
 function GraphInner({
   nodes,
   edges,
+  pinnedIds,
   onInspectNode,
   onSelectEdge,
 }: {
   nodes: GraphNode[];
   edges: GraphEdge[];
+  pinnedIds: string[];
 } & Handlers) {
-  const built = useMemo(() => buildElements(nodes, edges), [nodes, edges]);
-  // Initial state only: the parent remounts the graph for each revision.
-  const [flowNodes, , applyNodeChanges] = useNodesState(built.flowNodes);
-  const [flowEdges, , applyEdgeChanges] = useEdgesState(built.flowEdges);
+  const built = useMemo(() => buildElements(nodes, edges, pinnedIds), [nodes, edges, pinnedIds]);
+  // Keep drag positions across filter/pin updates; the parent remounts per analysis.
+  const [flowNodes, setFlowNodes, applyNodeChanges] = useNodesState(built.flowNodes);
+  const [flowEdges, setFlowEdges, applyEdgeChanges] = useEdgesState(built.flowEdges);
   const handlers = useMemo(() => ({ onInspectNode, onSelectEdge }), [onInspectNode, onSelectEdge]);
+
+  useEffect(() => {
+    setFlowNodes((current) => {
+      const positions = new Map(current.map((node) => [node.id, node.position]));
+      return built.flowNodes.map((node) => ({
+        ...node,
+        position: positions.get(node.id) ?? node.position,
+      }));
+    });
+    setFlowEdges(built.flowEdges);
+  }, [built, setFlowEdges, setFlowNodes]);
 
   // Read-only view: drag, select and dimension changes apply; removals never do.
   const onNodesChange = useCallback(
@@ -199,11 +221,13 @@ function GraphInner({
 export default function RelationshipGraphCanvas({
   nodes,
   edges,
+  pinnedIds = [],
   onInspectNode,
   onSelectEdge,
 }: {
   nodes: GraphNode[];
   edges: GraphEdge[];
+  pinnedIds?: string[];
 } & Handlers) {
   if (!nodes.length && !edges.length) {
     return <p className="p-5 text-sm text-zinc-500">No entities to draw.</p>;
@@ -211,7 +235,13 @@ export default function RelationshipGraphCanvas({
 
   return (
     <ReactFlowProvider>
-      <GraphInner nodes={nodes} edges={edges} onInspectNode={onInspectNode} onSelectEdge={onSelectEdge} />
+      <GraphInner
+        nodes={nodes}
+        edges={edges}
+        pinnedIds={pinnedIds}
+        onInspectNode={onInspectNode}
+        onSelectEdge={onSelectEdge}
+      />
     </ReactFlowProvider>
   );
 }

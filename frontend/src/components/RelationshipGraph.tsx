@@ -24,6 +24,11 @@ import {
   uniqueIds,
   type GraphEdge,
 } from "@/lib/graphElements";
+import {
+  collectEdgeTypes,
+  collectNodeTypes,
+  filterGraph,
+} from "@/lib/graphFilter";
 
 /** Thrown by the dynamic() catch fallback when the canvas chunk fails to import. */
 const GRAPH_LOAD_ERROR = "Relationship graph failed to load.";
@@ -67,11 +72,56 @@ class GraphCanvasBoundary extends Component<
 
 type Graph = AnalysisRevision["graph"];
 
+function TypeFilter({
+  label,
+  options,
+  selected,
+  onChange,
+}: {
+  label: string;
+  options: string[];
+  selected: string[];
+  onChange: (next: string[]) => void;
+}) {
+  if (!options.length) return null;
+  return (
+    <fieldset className="space-y-1.5">
+      <legend className="text-xs font-medium text-zinc-600 dark:text-zinc-300">{label}</legend>
+      <div className="flex flex-wrap gap-1.5">
+        {options.map((option) => {
+          const on = selected.includes(option);
+          return (
+            <button
+              key={option}
+              type="button"
+              aria-pressed={on}
+              onClick={() =>
+                onChange(on ? selected.filter((value) => value !== option) : [...selected, option])
+              }
+              className={`rounded border px-2 py-0.5 text-xs capitalize ${
+                on
+                  ? "border-blue-400 bg-blue-50 text-blue-900 dark:border-blue-700 dark:bg-blue-950 dark:text-blue-100"
+                  : "border-zinc-300 text-zinc-600 dark:border-zinc-700 dark:text-zinc-300"
+              }`}
+            >
+              {option.replaceAll("_", " ")}
+            </button>
+          );
+        })}
+      </div>
+    </fieldset>
+  );
+}
+
 export function RelationshipGraph({
   graph,
   caseId,
   records,
   excludedRecordIds,
+  pinnedEntityIds,
+  onPinnedEntityIdsChange,
+  pinPersistence = "local",
+  otherVersionPinCount = 0,
   onExclude,
   onAnnotate,
 }: {
@@ -79,6 +129,13 @@ export function RelationshipGraph({
   caseId: string;
   records: EvidenceRecord[];
   excludedRecordIds?: string[];
+  /** Controlled pin set (board-backed or parent state). */
+  pinnedEntityIds?: string[];
+  onPinnedEntityIdsChange?: (ids: string[]) => void | Promise<void>;
+  /** local: parent may omit handlers; board: pin requires evidence and parent persistence. */
+  pinPersistence?: "local" | "board";
+  /** Node pins on the board that belong to other analysis revisions. */
+  otherVersionPinCount?: number;
   onExclude?: (recordId: string) => void;
   onAnnotate?: (recordId: string) => void;
 }) {
@@ -86,12 +143,38 @@ export function RelationshipGraph({
   const [openToken, setOpenToken] = useState(0);
   const [status, setStatus] = useState<string | null>(null);
   const [pair, setPair] = useState<GraphEdge[] | null>(null);
+  const [query, setQuery] = useState("");
+  const [nodeTypes, setNodeTypes] = useState<string[]>([]);
+  const [edgeTypes, setEdgeTypes] = useState<string[]>([]);
+  const [localPins, setLocalPins] = useState<string[]>([]);
+  const [pinBusy, setPinBusy] = useState(false);
+  /** Remount key for render-error Retry only — not tied to filters. */
   const [canvasKey, setCanvasKey] = useState(0);
   /** `load` = chunk import failed (Retry cannot recover); `render` = canvas threw after load. */
   const [canvasFailed, setCanvasFailed] = useState<"load" | "render" | null>(null);
   const pairHeading = useRef<HTMLHeadingElement>(null);
   const pairTitleId = useId();
-  const { drawable, dangling } = useMemo(() => partitionEdges(graph.nodes, graph.edges), [graph]);
+  const searchId = useId();
+
+  const pinnedIds = pinnedEntityIds ?? localPins;
+  const setPinnedIds = useCallback(
+    async (next: string[]) => {
+      if (onPinnedEntityIdsChange) await onPinnedEntityIdsChange(next);
+      else setLocalPins(next);
+    },
+    [onPinnedEntityIdsChange],
+  );
+
+  const nodeTypeOptions = useMemo(() => collectNodeTypes(graph.nodes), [graph.nodes]);
+  const edgeTypeOptions = useMemo(() => collectEdgeTypes(graph.edges), [graph.edges]);
+  const filtered = useMemo(
+    () => filterGraph(graph.nodes, graph.edges, { query, nodeTypes, edgeTypes, pinnedIds }),
+    [graph.nodes, graph.edges, query, nodeTypes, edgeTypes, pinnedIds],
+  );
+  const { drawable, dangling } = useMemo(
+    () => partitionEdges(filtered.nodes, filtered.edges),
+    [filtered.nodes, filtered.edges],
+  );
   const danglingIds = new Set(dangling.map((edge) => edge.id));
   const names = new Map(graph.nodes.map((node) => [node.id, node.label]));
   const name = (id: string) => names.get(id) ?? id;
@@ -135,11 +218,73 @@ export function RelationshipGraph({
     [drawable, inspect],
   );
 
+  async function togglePin(nodeId: string) {
+    if (pinBusy) return;
+    const node = graph.nodes.find((item) => item.id === nodeId);
+    if (!node) return;
+    const pinned = pinnedIds.includes(nodeId);
+    if (!pinned && pinPersistence === "board" && !(node.evidence_ids?.length)) {
+      setStatus(`Cannot pin ${node.label}: it cites no evidence, so it cannot be saved on the board.`);
+      return;
+    }
+    const next = pinned ? pinnedIds.filter((id) => id !== nodeId) : [...pinnedIds, nodeId];
+    setPinBusy(true);
+    setStatus(null);
+    try {
+      await setPinnedIds(next);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Could not update pinned entities.");
+    } finally {
+      setPinBusy(false);
+    }
+  }
+
   return (
     <div className="space-y-3">
       <p className="text-xs text-zinc-500">
-        Click a node, edge or edge label (or focus it and press Enter) to open cited source evidence. Drag nodes to rearrange; pan and zoom to explore.
+        Search and filter the graph, pin key entities so they stay visible, then click a node or edge to open cited sources. Drag nodes to rearrange; pan and zoom to explore.
       </p>
+      <div className="space-y-3 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+        <div className="space-y-1">
+          <label htmlFor={searchId} className="text-xs font-medium text-zinc-600 dark:text-zinc-300">
+            Search entities and relationships
+          </label>
+          <input
+            id={searchId}
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Label, type, or relationship…"
+            className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-950"
+          />
+        </div>
+        <TypeFilter label="Node types" options={nodeTypeOptions} selected={nodeTypes} onChange={setNodeTypes} />
+        <TypeFilter label="Edge types" options={edgeTypeOptions} selected={edgeTypes} onChange={setEdgeTypes} />
+        {(filtered.active || pinnedIds.length > 0) && (
+          <p className="text-xs text-zinc-500" role="status">
+            Showing {filtered.nodes.length} of {graph.nodes.length} entities
+            {pinnedIds.length > 0 ? ` · ${pinnedIds.length} pinned` : ""}.
+            {filtered.active && (
+              <button
+                type="button"
+                className="ml-2 underline"
+                onClick={() => {
+                  setQuery("");
+                  setNodeTypes([]);
+                  setEdgeTypes([]);
+                }}
+              >
+                Clear filters
+              </button>
+            )}
+          </p>
+        )}
+        {pinnedIds.length === 0 && otherVersionPinCount > 0 && (
+          <p className="text-xs text-zinc-500" role="status">
+            {otherVersionPinCount} pin{otherVersionPinCount === 1 ? "" : "s"} on other versions
+          </p>
+        )}
+      </div>
       <ul aria-label="Relationship status legend" className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-600 dark:text-zinc-300">
         {Object.entries(STATUS_EDGE).map(([value, color]) => (
           <li key={value} className="flex items-center gap-1.5 capitalize">
@@ -190,14 +335,40 @@ export function RelationshipGraph({
               }
             >
               <RelationshipGraphCanvas
-                nodes={graph.nodes}
+                nodes={filtered.nodes}
                 edges={drawable}
+                pinnedIds={pinnedIds}
                 onInspectNode={onInspectNode}
                 onSelectEdge={onSelectEdge}
               />
             </GraphCanvasBoundary>
           )}
         </div>
+      )}
+      {graph.nodes.length > 0 && (
+        <ul aria-label="Pin entities" className="flex flex-wrap gap-2">
+          {graph.nodes.map((node) => {
+            const pinned = pinnedIds.includes(node.id);
+            const hidden = filtered.active && !filtered.nodes.some((item) => item.id === node.id);
+            if (hidden && !pinned) return null;
+            return (
+              <li key={node.id}>
+                <button
+                  type="button"
+                  disabled={pinBusy}
+                  onClick={() => void togglePin(node.id)}
+                  className={`rounded border px-2 py-1 text-xs ${
+                    pinned
+                      ? "border-amber-400 bg-amber-50 text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100"
+                      : "border-zinc-300 text-zinc-700 dark:border-zinc-700 dark:text-zinc-200"
+                  }`}
+                >
+                  {pinned ? "Unpin" : "Pin"} {node.label}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
       )}
       {status && (
         <p role="status" className="text-xs text-amber-800 dark:text-amber-300 [overflow-wrap:anywhere]">
@@ -232,9 +403,9 @@ export function RelationshipGraph({
           </ul>
         </section>
       )}
-      {!emptyGraph && (graph.edges.length > 0 ? (
+      {!emptyGraph && (filtered.edges.length > 0 ? (
         <ul aria-label="Relationships" className="space-y-3">
-          {graph.edges.map((edge) => (
+          {filtered.edges.map((edge) => (
             <li key={edge.id} data-edge-id={edge.id} className="space-y-2 rounded-lg bg-zinc-50 p-3 dark:bg-zinc-900">
               <p className="break-words text-sm font-medium">
                 {name(edge.source)} <span aria-label="to">→</span> {name(edge.target)}
@@ -252,7 +423,9 @@ export function RelationshipGraph({
           ))}
         </ul>
       ) : (
-        <p className="text-sm text-zinc-500">No supported relationships.</p>
+        <p className="text-sm text-zinc-500">
+          {filtered.active ? "No relationships match the current filters." : "No supported relationships."}
+        </p>
       ))}
       {drawerIds.length > 0 && (
         <SourceReferences
