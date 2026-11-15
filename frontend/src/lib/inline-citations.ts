@@ -79,3 +79,67 @@ export function splitCitations(text: string, knownIds: Iterable<string>): ProseP
   pushText(text.slice(last));
   return parts;
 }
+
+export type Anchor = { text: string; ids: string[] };
+
+/** Anchors shorter than this are too likely to match unrelated words. */
+const MIN_ANCHOR = 3;
+
+/**
+ * Place citations right after the words they support. Each anchor is exact text from a
+ * cited record (a search phrase, a file name, a sender) with the IDs of the records it
+ * came from. Its first whole-word, case-insensitive occurrence in the prose gets those
+ * citations, after a closing quote if one follows. Records already cited at that spot
+ * are not repeated; nothing is inferred beyond exact matches.
+ */
+export function anchorCitations(parts: ProsePart[], anchors: Anchor[]): ProsePart[] {
+  const usable = new Map<string, string[]>();
+  for (const { text, ids } of anchors) {
+    const key = text.trim().toLowerCase();
+    if (key.length < MIN_ANCHOR || !ids.length) continue;
+    usable.set(key, [...new Set([...(usable.get(key) ?? []), ...ids])]);
+  }
+  // Longest first, so "image steganography download" wins over a shorter overlap.
+  const pending = [...usable.entries()].sort((a, b) => b[0].length - a[0].length);
+  const out: ProsePart[] = [];
+  const pushIds = (ids: string[]) => {
+    const previous = out.at(-1);
+    if (previous && "ids" in previous) previous.ids.push(...ids.filter((id) => !previous.ids.includes(id)));
+    else out.push({ ids: [...ids] });
+  };
+
+  parts.forEach((part, index) => {
+    if ("ids" in part) {
+      pushIds(part.ids);
+      return;
+    }
+    const taken: [number, number][] = [];
+    const inserts: { at: number; ids: string[] }[] = [];
+    for (let i = 0; i < pending.length; i++) {
+      const [key, ids] = pending[i];
+      const pattern = new RegExp(`(?<![\\w])${escape(key)}(?![\\w])`, "gi");
+      for (const match of part.text.matchAll(pattern)) {
+        const start = match.index ?? 0;
+        let end = start + match[0].length;
+        if (taken.some(([a, b]) => start < b && end > a)) continue;
+        taken.push([start, end]);
+        if (/["'”’`]/.test(part.text[end] ?? "")) end += 1;
+        // Skip IDs the prose already cites right here.
+        const next = parts[index + 1];
+        const already = end === part.text.length && next && "ids" in next ? next.ids : [];
+        const fresh = ids.filter((id) => !already.includes(id));
+        if (fresh.length) inserts.push({ at: end, ids: fresh });
+        pending.splice(i--, 1);
+        break;
+      }
+    }
+    let cursor = 0;
+    for (const { at, ids } of inserts.sort((a, b) => a.at - b.at)) {
+      if (at > cursor) out.push({ text: part.text.slice(cursor, at) });
+      pushIds(ids);
+      cursor = at;
+    }
+    if (cursor < part.text.length) out.push({ text: part.text.slice(cursor) });
+  });
+  return out;
+}

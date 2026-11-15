@@ -3,9 +3,14 @@ import type { EvidenceRecord } from "./analysis";
 export type SourcePresentation = {
   /** The source family, e.g. "Browser download record". */
   title: string;
-  /** A short name that tells this record apart from others of its family, built only
-   *  from the record's own fields, e.g. `Search: "ccleaner"` or `Download: setup.exe`. */
-  label: string;
+  /** The source's own name: the page's title, the downloaded file's name, or the
+   *  Discord sender. Taken verbatim from the record (only shortened for display). */
+  name: string;
+  /** What kind of record it is, e.g. "Google search · Chrome history". */
+  kind: string;
+  /** Exact words from the record (a search phrase, a file name, a sender) that may
+   *  appear in prose about it; used to place citations next to those words. */
+  anchors: string[];
   fields: { label: string; value: string }[];
   message?: string;
 };
@@ -18,19 +23,19 @@ const shorten = (value: string) => {
   return flat.length > MAX_LABEL ? `${flat.slice(0, MAX_LABEL - 1).trimEnd()}…` : flat;
 };
 
-/** `Search: "query"` for a web search URL, else `Page: <title or host>`. */
-function historyLabel(url: string, title: string): string {
+/** The search phrase if ``url`` is a web search, else null. */
+function searchQuery(url: string): string | null {
   try {
     const parsed = new URL(url);
-    const query = parsed.searchParams.get("q");
-    if (/(^|\.)(google|bing|duckduckgo)\./i.test(parsed.hostname) && /\/search\b|^\/$/.test(parsed.pathname) && query?.trim()) {
-      return `Search: "${shorten(query)}"`;
-    }
-    return `Page: ${shorten(title.trim() || parsed.hostname)}`;
+    const query = parsed.searchParams.get("q")?.trim();
+    const engine = /(^|\.)(google|bing|duckduckgo)\./i.test(parsed.hostname) && /\/search\b|^\/$/.test(parsed.pathname);
+    return engine && query ? query : null;
   } catch {
-    return `Page: ${shorten(title.trim() || url)}`;
+    return null;
   }
 }
+
+const host = (url: string) => { try { return new URL(url).hostname; } catch { return url; } };
 
 const count = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
@@ -54,16 +59,29 @@ export function presentSource(record: EvidenceRecord): SourcePresentation | null
     if (text(data.referrer) && data.referrer) fields.push({ label: "Referring page", value: data.referrer });
     if (count(data.received_bytes)) fields.push({ label: "Received bytes", value: data.received_bytes.toLocaleString("en-US") });
     if (count(data.total_bytes)) fields.push({ label: "Total bytes", value: data.total_bytes.toLocaleString("en-US") });
-    return { title: "Browser download record", label: `Download: ${shorten(fields[0].value)}`, fields };
+    const file = fields[0].value;
+    // A search phrase in the page the download started from is part of this record too.
+    const searched = [data.tab_url, data.referrer, data.tab_referrer_url]
+      .flatMap(url => (text(url) ? [searchQuery(url)] : []))
+      .filter((query): query is string => !!query);
+    return { title: "Browser download record", name: shorten(file), kind: "Download · Chrome history", anchors: [file, ...new Set(searched)], fields };
   }
   if (chrome && /SQLite urls\.id=/.test(record.source_locator) && text(data.url) && text(data.title)) {
     const fields = [{ label: "Page title", value: data.title }, { label: "URL", value: data.url }];
     if (count(data.visit_count)) fields.push({ label: "Recorded visits", value: String(data.visit_count) });
-    return { title: "Browser history record", label: historyLabel(data.url, data.title), fields };
+    const query = searchQuery(data.url);
+    return {
+      title: "Browser history record",
+      name: shorten(data.title.trim() || host(data.url)),
+      kind: query ? "Web search · Chrome history" : "Web page · Chrome history",
+      anchors: query ? [query] : [],
+      fields,
+    };
   }
   if (/\/Discord\/Cache\//i.test(path) && /Discord message id /.test(record.source_locator)
     && object(data.author) && text(data.author.username) && text(data.content)) {
-    return { title: "Discord message", label: `Discord: ${shorten(data.author.username)}`, fields: [{ label: "Sender account", value: data.author.username }], message: data.content };
+    const sender = data.author.username;
+    return { title: "Discord message", name: `Message from ${shorten(sender)}`, kind: "Discord message · Discord cache", anchors: [sender], fields: [{ label: "Sender account", value: sender }], message: data.content };
   }
   return null;
 }

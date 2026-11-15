@@ -7,7 +7,7 @@ import { TimelineView } from "@/components/TimelineView";
 import { useEffect, useRef, useSyncExternalStore, useState } from "react";
 import type { AnalysisRevision, EvidenceRecord } from "@/lib/analysis";
 import { citedRecordIds } from "@/lib/citations";
-import { splitCitations } from "@/lib/inline-citations";
+import { anchorCitations, splitCitations, type Anchor } from "@/lib/inline-citations";
 import { analyzeCase, listCaseRecordsPage, listCases, loadRevisionSources, type CaseSummary } from "@/lib/live-api";
 
 const views = ["Findings", "Connections", "Timeline", "Revisions"] as const;
@@ -73,8 +73,16 @@ export function Findings() {
     : [];
   const citedOrder = [...new Set([...(revision ? citedRecordIds(revision) : []), ...proseIds])];
 
-  function withCitations(text: string, extra: string[] = []) {
-    const parts = prose(text);
+  // Exact words from each cited record (search phrase, file name, sender), so the
+  // answer can carry a citation right where it mentions them.
+  const anchors: Anchor[] = citedOrder.flatMap(id => {
+    const record = records.find(item => item.record_id === id);
+    const presentation = record ? presentSource(record) : null;
+    return (presentation?.anchors ?? []).map(text => ({ text, ids: [id] }));
+  });
+
+  function withCitations(text: string, extra: string[] = [], anchored = false) {
+    const parts = anchored ? anchorCitations(prose(text), anchors) : prose(text);
     const extraIds = [...new Set(extra)].filter(id => !parts.some(part => "ids" in part && part.ids.includes(id)));
     return <>
       {parts.map((part, index) => "ids" in part
@@ -125,6 +133,11 @@ export function Findings() {
     }
   }
 
+  function citationKind(id: string) {
+    const source = sources.find(record => record.record_id === id);
+    return (source && presentSource(source)?.kind) ?? (source ? "Evidence record" : "Not loaded yet");
+  }
+
   function citationTitle(id: string) {
     const source = sources.find(record => record.record_id === id);
     return source ? sourceTitle(source) : id;
@@ -166,7 +179,7 @@ export function Findings() {
       <aside className="blanc-case-rail" aria-label="Current case and sources">
         <small>Current case</small>
         <h2>{caseTitle}</h2>
-        <section className="blanc-rail-sources"><h3>Sources</h3><ol>{citedOrder.map((id, i) => <li key={id}><span>{i + 1}</span>{citation(id, citationTitle(id))}</li>)}</ol></section>
+        <section className="blanc-rail-sources"><h3>Sources</h3><ol>{citedOrder.map((id, i) => <li key={id}><span>{i + 1}</span><span className="blanc-rail-source">{citation(id, citationTitle(id))}<small>{citationKind(id)}</small></span></li>)}</ol></section>
       </aside>
       <main className="blanc-reading blanc-report" key={revision.analysis_id}>
       <p className="blanc-meta">{caseTitle}</p>
@@ -175,7 +188,7 @@ export function Findings() {
       {revision.needs_review && <p>This analysis needs investigator review.</p>}
       {view === "Findings" && <>
         <h2>Finding</h2>
-        <p>{revision.answer ? withCitations(revision.answer) : "No answer in this revision."}</p>
+        <p>{revision.answer ? withCitations(revision.answer, [], true) : "No answer in this revision."}</p>
         <h2>Why</h2>
         {revision.claims.map(claim => <p key={claim.id}><StatusLabel value={claim.status} />{withCitations(claim.text, claim.evidence_ids)}</p>)}
         {revision.unresolved_questions.length > 0 && <><h2>What remains unresolved</h2>{revision.unresolved_questions.map((question, index) => <p key={`${index}-${question}`}>{withCitations(question)}</p>)}</>}
@@ -321,7 +334,7 @@ function TypedGreeting({ text }: { text: string }) {
 }
 
 function sourceTitle(record: EvidenceRecord) {
-  return presentSource(record)?.label ?? (record.source_file.split(/[\\/]/).filter(Boolean).at(-1) || "Evidence record");
+  return presentSource(record)?.name ?? (record.source_file.split(/[\\/]/).filter(Boolean).at(-1) || "Evidence record");
 }
 
 function StatusLabel({ value }: { value: string }) {

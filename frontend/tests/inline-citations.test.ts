@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { splitCitations, type ProsePart } from "../src/lib/inline-citations";
+import { anchorCitations, splitCitations, type ProsePart } from "../src/lib/inline-citations";
 
 // Synthetic IDs shaped like the importer's, and prose shaped like a real model answer.
 const KNOWN = ["case1-url-40", "case1-url-61", "case1-url-168", "case1-download-4"];
@@ -48,4 +48,35 @@ test("a longer ID is not mistaken for a shorter one that prefixes it", () => {
 test("text without known IDs, or with no IDs to look for, is untouched", () => {
   assert.deepEqual(splitCitations("Plain answer.", KNOWN), [{ text: "Plain answer." }]);
   assert.deepEqual(splitCitations("Plain (record case1-url-40).", []), [{ text: "Plain (record case1-url-40)." }]);
+});
+
+test("citations are placed right after the words their records contain", () => {
+  const text = 'Searches for "ccleaner", "cric info" and "image steganography download" before ccsetup552.exe was saved.';
+  const parts = anchorCitations(splitCitations(text, KNOWN), [
+    { text: "ccleaner", ids: ["url-40"] },
+    { text: "cric info", ids: ["url-61", "url-168"] },
+    { text: "image steganography download", ids: ["url-178"] },
+    { text: "ccsetup552.exe", ids: ["dl-2"] },
+  ]);
+  assert.equal(
+    render(parts),
+    'Searches for "ccleaner"[url-40], "cric info"[url-61,url-168] and "image steganography download"[url-178] before ccsetup552.exe[dl-2] was saved.',
+  );
+});
+
+test("only the first whole-word match is cited, and short or unmatched anchors do nothing", () => {
+  const text = "meth and crystal meth, then crystal meth again; methane is unrelated.";
+  const parts = anchorCitations([{ text }], [
+    { text: "crystal meth", ids: ["a"] },
+    { text: "methane x", ids: ["b"] },
+    { text: "me", ids: ["c"] },
+  ]);
+  assert.equal(render(parts), "meth and crystal meth[a], then crystal meth again; methane is unrelated.");
+});
+
+test("an anchor does not repeat a citation the prose already has at that spot", () => {
+  const parts = anchorCitations(splitCitations('"ccleaner" (record case1-url-40)', KNOWN), [
+    { text: "ccleaner", ids: ["case1-url-40"] },
+  ]);
+  assert.equal(render(parts), '"ccleaner"[case1-url-40]');
 });

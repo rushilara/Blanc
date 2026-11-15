@@ -122,6 +122,8 @@
 .blanc-rail-sources li { display: grid; grid-template-columns: 2.5ch minmax(0, 1fr); gap: 8px; margin-bottom: 7px; font-size: 12px; }
 .blanc-rail-sources li > span:first-child { color: #822b33; text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .blanc-rail-sources .blanc-citation { margin: 0; }
+.blanc-rail-source { display: grid; gap: 1px; min-width: 0; }
+.blanc-rail-source small { color: #7a6a5a; font: 10.5px/1.4 system-ui, sans-serif; letter-spacing: .01em; }
 @media (max-width: 900px) {
   .blanc-investigation { grid-template-columns: minmax(0, 560px); gap: 20px; }
   .blanc-case-rail { width: 100%; margin-left: 0; border-right: 0; border-bottom: 1px solid #b8ac97; }
