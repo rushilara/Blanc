@@ -197,6 +197,50 @@ def validate_comparison(revisions: list[dict], comparison: dict) -> list[str]:
             errors.append(f"{label} newly_supported needs only compared_ref_id")
         if status == 'not_supported' and (b is None or item['compared_evidence_ids']):
             errors.append(f"{label} not_supported needs base_ref_id and no compared evidence")
+    errors += _possible_match_errors(comparison)
+    return errors
+
+
+def _possible_match_errors(comparison: dict) -> list[str]:
+    """Optional possible_matches (BLA-63): an advisory link, listed on both items, between an
+    unmatched unresolved/not_supported base item and a newly_supported item of the same kind."""
+    errors: list[str] = []
+    excluded = set(comparison['excluded_record_ids'])
+    items = comparison['items']
+    vanished = {(i['kind'], i['base_ref_id']): i for i in items
+                if i['compared_ref_id'] is None and i['support_status'] in ('unresolved', 'not_supported')}
+    new = {(i['kind'], i['compared_ref_id']): i for i in items
+           if i['base_ref_id'] is None and i['support_status'] == 'newly_supported'}
+    for n, item in enumerate(items):
+        if 'possible_matches' not in item:
+            continue
+        label = f"comparison item {n}"
+        on_base = item['compared_ref_id'] is None
+        own = (item['kind'], item['base_ref_id'] if on_base else item['compared_ref_id'])
+        if own not in (vanished if on_base else new):
+            errors.append(f"{label} possible_matches is only for an unmatched base item or a newly_supported item")
+            continue
+        others = new if on_base else vanished
+        refs = [m['ref_id'] for m in item['possible_matches']]
+        if len(refs) != len(set(refs)):
+            errors.append(f"{label} possible_matches repeats a ref_id")
+        for match in item['possible_matches']:
+            other = others.get((item['kind'], match['ref_id']))
+            if other is None:
+                errors.append(f"{label} possible match {match['ref_id']} is not on the other side")
+                continue
+            base_item, new_item = (item, other) if on_base else (other, item)
+            shared = set(match['shared_evidence_ids'])
+            if not shared <= set(base_item['base_evidence_ids']) or not shared <= set(new_item['compared_evidence_ids']):
+                errors.append(f"{label} possible match {match['ref_id']} shares records not cited by both")
+            if shared & excluded:
+                errors.append(f"{label} possible match {match['ref_id']} shares excluded records")
+            cited = set(base_item['base_evidence_ids'])
+            if match['original_sources'] != len(cited) or match['remaining_sources'] != len(cited - excluded):
+                errors.append(f"{label} possible match {match['ref_id']} source counts do not match the base item")
+            back = [dict(m, ref_id=match['ref_id']) for m in other.get('possible_matches', []) if m['ref_id'] == own[1]]
+            if back != [match]:
+                errors.append(f"{label} possible match {match['ref_id']} is not listed the same way on the other item")
     return errors
 
 

@@ -288,6 +288,21 @@ class InvestigationBoard(ContractModel):
 # --- RevisionComparison ---------------------------------------------------------------
 
 
+class PossibleMatch(ContractModel):
+    """An advisory link to a finding on the other side of a comparison (BLA-63).
+
+    Server-computed from citations, never LLM-generated, and never a change of
+    ``support_status``: it only says the two are *possibly* the same finding, for the
+    investigator to confirm. Count consistency (``remaining_sources`` <= ``original_sources``
+    and so on) needs the other item, so it is checked in ``app.validation``.
+    """
+
+    ref_id: NonEmptyStr
+    shared_evidence_ids: UniqueEvidenceIds
+    remaining_sources: Annotated[int, Field(ge=1)]
+    original_sources: Annotated[int, Field(ge=1)]
+
+
 class ComparisonItem(ContractModel):
     kind: ComparisonItemKind
     base_ref_id: str | None
@@ -296,6 +311,9 @@ class ComparisonItem(ContractModel):
     base_evidence_ids: UniqueIds
     compared_evidence_ids: UniqueIds
     explanation: Omittable[str] = None
+    # On a base-only item each ref_id is a compared_ref_id; on a newly supported item each
+    # is a base_ref_id. Omitted (not empty, not null) when there are none.
+    possible_matches: Omittable[Annotated[list[PossibleMatch], Field(min_length=1)]] = None
 
     @model_validator(mode="after")
     def _null_ref_means_no_evidence(self) -> ComparisonItem:
@@ -303,6 +321,11 @@ class ComparisonItem(ContractModel):
             raise ValueError("base_evidence_ids must be empty when base_ref_id is null")
         if self.compared_ref_id is None and self.compared_evidence_ids:
             raise ValueError("compared_evidence_ids must be empty when compared_ref_id is null")
+        if self.possible_matches is not None and None not in (
+            self.base_ref_id,
+            self.compared_ref_id,
+        ):
+            raise ValueError("possible_matches is only for items with one ref ID null")
         return self
 
 

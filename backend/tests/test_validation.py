@@ -9,6 +9,7 @@ import pytest
 from _paths import FIXTURE_FILES, FIXTURES_DIR
 from pydantic import ValidationError
 
+from app.comparison import compare_revisions
 from app.contracts import (
     AnalysisRevision,
     EvidenceRecord,
@@ -331,6 +332,95 @@ class TestComparison:
             cmp["base_analysis_id"],
         )
         assert_error(check_comparison(raw), "must be a child of the base revision")
+
+
+# --- possible_matches (BLA-63) ----------------------------------------------------------
+
+
+class TestPossibleMatches:
+    """A computed comparison where base claim-2 (rec-02 + rec-01) loses rec-02 and the child
+    rewords it as claim-x on rec-01, so the two are linked on both items."""
+
+    @pytest.fixture
+    def linked(self, raw: Raw) -> Raw:
+        raw["revision"]["claims"][1]["evidence_ids"] = ["rec-02", "rec-01"]
+        raw["child"]["claims"].append(
+            {
+                "id": "claim-x",
+                "text": "Jordan may meet Casey.",
+                "evidence_ids": ["rec-01"],
+                "status": "reported",
+            }
+        )
+        base, child = revisions_of(raw)
+        raw["comparison"] = compare_revisions(base, child).to_contract_json()
+        return raw
+
+    @staticmethod
+    def items(raw: Raw) -> tuple[Raw, Raw]:
+        items = raw["comparison"]["items"]
+        before = next(i for i in items if i["base_ref_id"] == "claim-2")
+        after = next(i for i in items if i["compared_ref_id"] == "claim-x")
+        return before, after
+
+    def test_computed_links_are_valid(self, linked: Raw) -> None:
+        before, after = self.items(linked)
+        assert before["possible_matches"] == [
+            {
+                "ref_id": "claim-x",
+                "shared_evidence_ids": ["rec-01"],
+                "remaining_sources": 1,
+                "original_sources": 2,
+            }
+        ]
+        assert after["possible_matches"][0]["ref_id"] == "claim-2"
+        assert check_comparison(linked) == []
+
+    def test_link_to_an_unknown_item(self, linked: Raw) -> None:
+        before, _ = self.items(linked)
+        before["possible_matches"][0]["ref_id"] = "claim-9"
+        assert_error(check_comparison(linked), "possible match claim-9 is not a newly_supported")
+
+    def test_link_to_an_item_of_another_kind(self, linked: Raw) -> None:
+        _, after = self.items(linked)
+        after["possible_matches"][0]["ref_id"] = "edge-2"
+        assert_error(check_comparison(linked), "possible match edge-2 is not an unmatched base")
+
+    def test_link_on_an_item_that_cannot_have_one(self, linked: Raw) -> None:
+        _, after = self.items(linked)
+        after["support_status"] = "unresolved"
+        assert_error(check_comparison(linked), "possible_matches is only for")
+
+    def test_link_on_an_item_with_both_refs_is_a_schema_error(self, linked: Raw) -> None:
+        before, _ = self.items(linked)
+        linked["comparison"]["items"][0]["possible_matches"] = before["possible_matches"]
+        model, errors = schema_errors(RevisionComparison, linked["comparison"])
+        assert model is None
+        assert_error(errors, "possible_matches is only for items with one ref ID null")
+
+    def test_shared_records_must_be_cited_by_both(self, linked: Raw) -> None:
+        for item in self.items(linked):
+            item["possible_matches"][0]["shared_evidence_ids"] = ["rec-02"]
+        errors = check_comparison(linked)
+        assert_error(errors, "possible match claim-x shares records not cited by both")
+        assert_error(errors, "possible match claim-x shares excluded records")
+
+    def test_counts_must_match_the_base_item(self, linked: Raw) -> None:
+        for item in self.items(linked):
+            item["possible_matches"][0]["remaining_sources"] = 2
+        assert_error(
+            check_comparison(linked), "claim-x source counts do not match", "expected 1 of 2"
+        )
+
+    def test_link_must_be_listed_on_both_items(self, linked: Raw) -> None:
+        _, after = self.items(linked)
+        del after["possible_matches"]
+        assert_error(check_comparison(linked), "claim-x is not listed the same way")
+
+    def test_link_must_not_repeat(self, linked: Raw) -> None:
+        before, _ = self.items(linked)
+        before["possible_matches"].append(before["possible_matches"][0])
+        assert_error(check_comparison(linked), "possible_matches repeats claim-x")
 
 
 # --- Schema-error helpers ---------------------------------------------------------------
