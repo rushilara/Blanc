@@ -49,7 +49,7 @@ If it prints `x86_64`, install a native arm64 Python 3.12 (the python.org instal
 - `app/main.py`: app factory (`create_app`), CORS, lifespan (opens the DB and creates tables), `GET /health` (status plus a non-secret config summary).
 - `app/config.py`: settings.
 - `app/db.py`: SQLAlchemy 2.0 engine/session factory, `Base`, `UTCDateTime`, `get_session` dependency. SQLite foreign keys are enabled on every connection, and the DB file's parent directory is created on startup.
-- `app/models.py`: ORM tables: `Case`, `EvidenceRecordRow` (`evidence_records`), `EvidenceChunk` (`evidence_chunks`).
+- `app/models.py`: ORM tables: `Case`, `EvidenceRecordRow` (`evidence_records`), `EvidenceChunk` (`evidence_chunks`), `BoardSnapshotRow` (`board_snapshots`, append-only).
 - `app/evidence_store.py`: `store_records` (persist records + chunks + vectors + keyword index), `reembed_stale_chunks`, case-scoped reads. See "Evidence storage" below.
 - `app/search_index.py`: sqlite-vec and FTS5 virtual tables, their cleanup trigger, and case-scoped `vector_search` / `keyword_search` primitives (ranking/fusion is BLA-13).
 - `app/chunking.py`: `chunk_spans`, the ~400-token / ~50-token-overlap splitter.
@@ -59,7 +59,8 @@ If it prints `x86_64`, install a native arm64 Python 3.12 (the python.org instal
 - `app/ids.py`: `new_id(prefix)` returns prefixed ULIDs (`case_01J...`). Use it for every server-generated ID (`analysis_`, `board_`, `rec_`, ...).
 - `app/contracts.py`: Pydantic models for the shared contracts in `../contracts/` (`EvidenceRecord`, `AnalysisRevision`, `InvestigationBoard`, `RevisionComparison`). Kept in sync with the JSON Schemas by `tests/test_contracts.py`.
 - `app/validation.py`: cross-reference checks (`validate_revision`, `validate_board`, `validate_comparison`) plus `schema_errors` for parsing untrusted JSON. Each returns readable error strings; an empty list means valid.
-- `app/routers/`: HTTP routers (`cases.py`: `POST /cases`, `GET /cases`, `GET /cases/{case_id}`; `records.py`: `GET /cases/{case_id}/records[/{record_id}]`).
+- `app/routers/`: HTTP routers (`cases.py`: `POST /cases`, `GET /cases`, `GET /cases/{case_id}`; `records.py`: `GET /cases/{case_id}/records[/{record_id}]`; `boards.py`: `/cases/{case_id}/boards`).
+- `app/boards.py`: investigation boards: create, pin/unpin, notes, append-only snapshots. See "Boards" below.
 - `app/records.py`: case-scoped record + exact excerpt lookup. See "Source records" below.
 - `tests/`: pytest suite (`TestClient`). `conftest.py` gives each test its own temp SQLite file.
 
@@ -128,3 +129,35 @@ Errors: unknown case, a record not in this case (even if another case has that `
 `GET /cases/{case_id}/records?limit=50&offset=0` lists the case's records ordered by `(source_file, record_id)`: `{"items": [EvidenceRecord, ...], "total", "limit", "offset"}` (`limit` 1-200).
 
 The logic lives in `app/records.py` (`get_record_with_excerpt`, `chunk_excerpt`, `span_excerpt`, `page_records`) for reuse by reconstruction and citation checks; it raises `RecordNotFoundError` / `ChunkNotFoundError` / `InvalidExcerptError`. Stored content is untrusted evidence and is returned verbatim; the UI must render it as text, never as HTML.
+
+## Boards (BLA-31)
+
+Every response is `InvestigationBoard` contract JSON. A board is a series of append-only snapshots: creating one writes revision 1, and every change writes `revision + 1` with `parent_revision` set. Rows are never updated (a SQLite trigger rejects `UPDATE` on `board_snapshots`).
+
+| Endpoint | Does |
+|---|---|
+| `POST /cases/{case_id}/boards` | `{"title", "active_analysis_id"?}` creates an empty board (201). |
+| `GET /cases/{case_id}/boards` | Latest snapshot of every board, most recently updated first. |
+| `GET /cases/{case_id}/boards/{board_id}` | Latest snapshot. |
+| `GET /cases/{case_id}/boards/{board_id}/revisions[/{n}]` | Every snapshot, oldest first, or snapshot `n`. |
+| `PATCH /cases/{case_id}/boards/{board_id}` | Unpin, pin, add notes, rename, set the active revision; appends one snapshot. |
+
+`PATCH` body (every field optional, applied in this order):
+
+```json
+{
+  "expected_revision": 3,
+  "unpin": ["item_..."],
+  "pin": [{"kind": "claim", "source_analysis_id": "analysis_...", "ref_id": "claim-2"}],
+  "notes": [{"text": "Check whether the meeting happened.", "target_item_id": "item_...", "author": "investigator"}],
+  "title": "New title",
+  "active_analysis_id": "analysis_..."
+}
+```
+
+- **A pin names a finding; the server copies its `evidence_ids` and `status`** from the saved revision. The request cannot set either, so pinning never changes a status or marks anything verified.
+- **Stable item IDs.** `item_id` is derived from `(source_analysis_id, kind, ref_id)` (`app.boards.item_id_for`), so pinning a finding twice is a no-op, and re-pinning after an unpin gives the same ID. A note can target an item pinned in the same request by that ID.
+- **Notes are investigator-only text**, kept in `notes`, never in items. Notes are never removed, so an item with notes cannot be unpinned (422).
+- **Validated before saving.** The new snapshot goes through `validate_board`. Any error is a 422 listing every problem, and nothing is saved.
+- **Errors:** 404 for an unknown case or board, or a board of another case; 409 when `expected_revision` is stale or another save took that revision number; 422 for an invalid change. A change that alters nothing returns the current snapshot and writes nothing.
+- **Revision lookup.** Boards find saved revisions through the `get_revision_lookup` dependency in `app/routers/boards.py`. Saved revisions are BLA-28, so for now it knows none: boards can be created, renamed and annotated, but every pin is a 422 (`no saved revision ... in this case`). BLA-28 should return its lookup there.

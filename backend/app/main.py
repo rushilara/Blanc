@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import Settings, get_settings
 from app.db import init_db, make_engine, make_session_factory
 from app.embeddings import make_embedder
-from app.routers import cases, records
+from app.routers import boards, cases, records
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -47,6 +47,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(cases.router)
     app.include_router(records.router)
+    app.include_router(boards.router)
 
     return app
 
