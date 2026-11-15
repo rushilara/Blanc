@@ -21,10 +21,9 @@ Rules this module enforces:
   statuses match; notes target items on the board). An invalid change saves nothing.
 - A change that leaves the board as it was writes no snapshot.
 
-Revisions are looked up through a ``RevisionLookup``, because saved analysis revisions
-are BLA-28. Until that lands, the app's lookup knows no revisions, so a board can be
-created, renamed and annotated, but nothing can be pinned and ``active_analysis_id``
-cannot be set yet.
+Revisions are looked up through a ``RevisionLookup``; the app uses the saved revisions
+(``app.analyses.saved_revision_lookup``), so only findings of saved revisions can be
+pinned and only a saved revision can be the board's ``active_analysis_id``.
 """
 
 import hashlib
@@ -38,6 +37,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.analyses import saved_revision_lookup
 from app.contracts import AnalysisRevision, BoardItem, BoardNote, InvestigationBoard
 from app.db import utcnow
 from app.ids import new_id
@@ -52,13 +52,6 @@ NOTE_AUTHOR = "investigator"
 
 # (session, case_id, analysis_ids) -> the saved revisions of that case among those IDs.
 RevisionLookup = Callable[[Session, str, Collection[str]], list[AnalysisRevision]]
-
-
-def no_saved_revisions(
-    session: Session, case_id: str, analysis_ids: Collection[str]
-) -> list[AnalysisRevision]:
-    """The lookup until revisions are persisted (BLA-28): no revision is known."""
-    return []
 
 
 class BoardError(Exception):
@@ -156,7 +149,7 @@ def create_board(
     title: str,
     *,
     active_analysis_id: str | None = None,
-    lookup: RevisionLookup = no_saved_revisions,
+    lookup: RevisionLookup = saved_revision_lookup,
     now: datetime | None = None,
 ) -> InvestigationBoard:
     """Create a board with no items or notes (revision 1) and commit it."""
@@ -185,7 +178,7 @@ def update_board(
     board_id: str,
     change: BoardChange,
     *,
-    lookup: RevisionLookup = no_saved_revisions,
+    lookup: RevisionLookup = saved_revision_lookup,
     now: datetime | None = None,
 ) -> BoardUpdate:
     """Apply ``change`` (unpin, then pin, then notes) and append the new snapshot.
