@@ -141,6 +141,8 @@ def _matches_type(data: bytes, media_type: str) -> bool:
         return data.startswith((b"GIF87a", b"GIF89a"))
     if media_type == "image/webp":
         return data[:4] == b"RIFF" and data[8:12] == b"WEBP"
+    if media_type == "application/pdf":
+        return data.startswith(b"%PDF-")
     return False
 
 
@@ -156,6 +158,43 @@ def _inside(root: Path, relative: str) -> Path | None:
     if not resolved.is_relative_to(root) or not resolved.is_file():
         return None
     return resolved
+
+
+def resolve_case_media(
+    record: EvidenceRecord, cases_dir: Path | None, case_id: str
+) -> MediaFile | None:
+    """The file Blanc itself imported for an image/PDF record (BLA-68), from
+    ``CASES_DIR/{case_id}/{media_path}``, checked against the SHA-256 recorded at import
+    (``metadata.media_sha256``). None if the record has no stored media or the file is
+    not there (the caller then falls back to ``EVIDENCE_ROOT``). Raises
+    ``MediaIntegrityError`` if the file is the wrong type, too large or altered."""
+    if cases_dir is None or record.media_path is None or record.content_type is None:
+        return None
+    if not case_id.strip():
+        return None
+    try:
+        root = (Path(cases_dir).expanduser() / case_id).resolve(strict=True)
+    except (FileNotFoundError, OSError):
+        return None
+    path = _inside(root, record.media_path)
+    if path is None:
+        return None
+    if path.stat().st_size > MAX_MEDIA_BYTES:
+        raise MediaIntegrityError(f"{record.media_path} is larger than {MAX_MEDIA_BYTES} bytes")
+    data = path.read_bytes()
+    if not _matches_type(data, record.content_type):
+        raise MediaIntegrityError(f"{record.media_path} is not a valid {record.content_type} file")
+    digest = hashlib.sha256(data).hexdigest()
+    expected = (record.metadata or {}).get("media_sha256")
+    if isinstance(expected, str) and digest != expected.lower():
+        raise MediaIntegrityError(f"{record.media_path} does not match its recorded SHA-256")
+    return MediaFile(
+        data,
+        record.content_type,
+        record.source_file,
+        digest,
+        verified=isinstance(expected, str),
+    )
 
 
 def resolve_media(record: EvidenceRecord, evidence_root: Path | None, case_id: str) -> MediaFile:

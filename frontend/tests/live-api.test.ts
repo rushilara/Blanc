@@ -93,3 +93,21 @@ test("case-list corruption and invalid JSON produce errors, not empty success st
   globalThis.fetch = async () => new Response("not json");
   await assert.rejects(listCases(), /invalid JSON/);
 });
+
+
+test("search accepts image and PDF records only without excerpts", async () => {
+  const text = { record_id: "t", source_file: "a.txt", source_locator: "l1",
+    excerpts: [{ text: "hi", char_start: 0, char_end: 2 }] };
+  const image = { record_id: "i", source_file: "m.eml", source_locator: "part 2", excerpts: [], modality: "image" };
+  const body = (records: unknown[]) => ({ case_id: "case-a", question: "q", records,
+    dropped_by_limit: 0, dropped_by_budget: 0 });
+  reply(body([text, image]));
+  assert.deepEqual((await searchCase("case-a", "q")).records.map(r => r.record_id), ["t", "i"]);
+  // A media record with a text excerpt, or a text record without one, is rejected.
+  reply(body([{ ...image, excerpts: text.excerpts }]));
+  await assert.rejects(searchCase("case-a", "q"), ApiError);
+  reply(body([{ ...text, excerpts: [] }]));
+  await assert.rejects(searchCase("case-a", "q"), ApiError);
+  reply(body([{ ...image, modality: "video" }]));
+  await assert.rejects(searchCase("case-a", "q"), ApiError);
+});

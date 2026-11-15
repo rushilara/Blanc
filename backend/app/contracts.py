@@ -59,7 +59,10 @@ ReviewStatus = Literal["unreviewed", "reviewed", "disputed"]
 BoardNoteKind = Literal["note", "correction"]
 ComparisonItemKind = Literal["claim", "edge", "event"]
 EvidenceWindow = Literal["standard", "expanded"]
-SkipReason = Literal["budget", "record_limit"]
+# "media": an image/PDF in the window that was not sent to the model (BLA-70; vision
+# analysis is BLA-71), including any beyond RETRIEVAL_MAX_MEDIA.
+SkipReason = Literal["budget", "record_limit", "media"]
+MediaModality = Literal["image", "pdf"]
 SupportStatus = Literal[
     "still_supported", "weakened", "not_supported", "newly_supported", "unresolved"
 ]
@@ -252,6 +255,7 @@ class SkippedEvidence(ContractModel):
     reason: SkipReason
     vector_rank: Omittable[Rank] = None  # rank in the vector search alone, if it found it
     keyword_rank: Omittable[Rank] = None  # rank in the keyword search alone, if it found it
+    modality: Omittable[MediaModality] = None  # set for image/PDF records; absent = text
 
 
 class RetrievalCoverage(ContractModel):
