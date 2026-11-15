@@ -4,7 +4,9 @@
 # 127.0.0.1, so other machines on the network cannot reach them.
 #
 # Settings come from .env in this folder (copy .env.example): GEMINI_API_KEY, and
-# optionally BLANC_AUTH_SECRET for sign-in. See docs/07_LAPTOP_INSTALL.md.
+# optionally BLANC_AUTH_SECRET for sign-in. Users (scrypt hashes) live on the host in
+# .blanc/users.json; the frontend service mounts ./.blanc → /app/.blanc. Leave the
+# secret empty for demo bypass. Enablement: docs/07_LAPTOP_INSTALL.md.
 
 services:
   backend:
@@ -34,7 +36,7 @@ services:
     environment:
       BLANC_HOSTED: ""
     volumes:
-      # Sign-in users (scrypt hashes), created with the auth:add-user command.
+      # Sign-in users (BLA-60): host .blanc/users.json ↔ /app/.blanc (see .env.example).
       - ./.blanc:/app/.blanc
     ports:
       - "127.0.0.1:3000:3000"
