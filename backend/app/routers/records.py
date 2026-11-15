@@ -1,6 +1,7 @@
 """Source record endpoints: the evidence drawer's record + exact excerpt lookup (BLA-59)."""
 
 from typing import Annotated
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 
@@ -82,28 +83,30 @@ def get_case_record_media(
     record_id: str, case: CaseDep, session: SessionDep, request: Request
 ) -> Response:
     """The original image this record points at, read from the local evidence folder
-    (``EVIDENCE_ROOT``). 404 if the record is not in this case or its image is not
-    available locally; 409 if the local file fails its type or SHA-256 check. Never
-    fetches anything remote. See ``app/media.py``."""
+    (``EVIDENCE_ROOT/{case_id}/``). 404 if the record is not in this case or its image
+    is not available locally; 409 if the local file fails its type or SHA-256 check.
+    Never fetches anything remote. See ``app/media.py``."""
     try:
         record = get_record_with_excerpt(session, case.case_id, record_id).record
     except RecordNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Record not found") from exc
     try:
-        media = resolve_media(record, getattr(request.app.state, "evidence_root", None))
+        media = resolve_media(
+            record, getattr(request.app.state, "evidence_root", None), case.case_id
+        )
     except MediaNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except MediaIntegrityError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-    return Response(
-        content=media.data,
-        media_type=media.media_type,
-        headers={
-            "Cache-Control": "private, no-store",
-            "X-Content-Type-Options": "nosniff",
-            "Content-Security-Policy": "default-src 'none'; sandbox",
-            "X-Source-Path": media.source_path,
-            "X-Content-SHA256": media.sha256,
-            "X-Hash-Verified": "true" if media.verified else "false",
-        },
-    )
+    # Header values are latin-1: percent-encode the path. Omit on CR/LF so a malicious
+    # target_path cannot split response headers.
+    headers = {
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'none'; sandbox",
+        "X-Content-SHA256": media.sha256,
+        "X-Hash-Verified": "true" if media.verified else "false",
+    }
+    if "\r" not in media.source_path and "\n" not in media.source_path:
+        headers["X-Source-Path"] = quote(media.source_path, safe="/")
+    return Response(content=media.data, media_type=media.media_type, headers=headers)

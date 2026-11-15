@@ -7,10 +7,11 @@ workspace can show it next to the record.
 
 Local-first rules:
 
-- Files are only read from under ``EVIDENCE_ROOT``. Paths are normalised, ``..`` and
-  absolute paths are refused, and the resolved path (symlinks followed) must stay inside
-  the root.
-- An ``artifact_manifest.jsonl`` in the root (one JSON object per line with
+- Files are only read from under ``EVIDENCE_ROOT/{case_id}/``. Paths are normalised,
+  ``..`` and absolute paths are refused, and the resolved path (symlinks followed) must
+  stay inside that case folder. A second case with the same original path does not see
+  the first case's bytes.
+- An ``artifact_manifest.jsonl`` in the case folder (one JSON object per line with
   ``source_path``, ``extracted_file`` and ``sha256``) maps original paths to extracted
   files. Without an entry, the file is looked up at its original relative path.
 - An entry may also list ``record_ids``: records shown to be about that file by
@@ -157,15 +158,22 @@ def _inside(root: Path, relative: str) -> Path | None:
     return resolved
 
 
-def resolve_media(record: EvidenceRecord, evidence_root: Path | None) -> MediaFile:
-    """The local image for ``record``. Raises ``MediaNotFoundError`` or
-    ``MediaIntegrityError``."""
+def resolve_media(record: EvidenceRecord, evidence_root: Path | None, case_id: str) -> MediaFile:
+    """The local image for ``record`` under ``EVIDENCE_ROOT/{case_id}/``. Raises
+    ``MediaNotFoundError`` or ``MediaIntegrityError``."""
     if evidence_root is None:
         raise MediaNotFoundError("no local evidence folder is configured (EVIDENCE_ROOT)")
     try:
-        root = evidence_root.expanduser().resolve(strict=True)
+        base = evidence_root.expanduser().resolve(strict=True)
     except (FileNotFoundError, OSError) as exc:
         raise MediaNotFoundError("the local evidence folder does not exist") from exc
+    # Case folder only: never read another case's extracted files or manifest.
+    try:
+        root = (base / case_id).resolve(strict=True)
+    except (FileNotFoundError, OSError) as exc:
+        raise MediaNotFoundError("this record's image is not in the local evidence folder") from exc
+    if not root.is_relative_to(base) or not root.is_dir():
+        raise MediaNotFoundError("this record's image is not in the local evidence folder")
     by_path, by_record = _manifest(root)
 
     candidates: list[_Entry] = []

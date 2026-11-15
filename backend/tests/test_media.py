@@ -4,6 +4,7 @@ import hashlib
 import json
 from collections.abc import Iterator
 from pathlib import Path
+from urllib.parse import quote, unquote
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,6 +15,7 @@ from app.embeddings import FakeEmbedder
 from app.evidence_store import store_records
 from app.main import create_app
 from app.media import (
+    MAX_MEDIA_BYTES,
     MediaIntegrityError,
     MediaNotFoundError,
     media_source_paths,
@@ -24,6 +26,8 @@ from app.models import Case
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 32
+GIF = b"GIF89a" + b"\x00" * 32
+WEBP = b"RIFF" + (40).to_bytes(4, "little") + b"WEBP" + b"\x00" * 28
 HISTORY = "Users/Test/AppData/Local/Google/Chrome/User Data/Default/History"
 
 
@@ -47,14 +51,28 @@ def write(root: Path, relative: str, data: bytes) -> Path:
     return path
 
 
+def case_evidence(root: Path, case_id: str) -> Path:
+    """``EVIDENCE_ROOT/{case_id}/`` — files and manifest are scoped per case."""
+    folder = root / case_id
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
 @pytest.fixture
 def root(tmp_path: Path) -> Path:
-    """An evidence folder laid out like data/narcos: extracted files plus a manifest."""
-    root = tmp_path / "evidence"
-    write(root, "artifacts/inode-1.PNG", PNG)
-    write(root, "Users/Test/Pictures/photo.jpg", JPEG)  # at its original path, no manifest
-    write(root, "artifacts/inode-2.png", b"not really a png")
-    write(root, "artifacts/inode-3.png", PNG)
+    """Evidence root; per-case folders are filled once case ids are known."""
+    return tmp_path / "evidence"
+
+
+def populate_case_folder(case_dir: Path, tmp_path: Path) -> None:
+    """Lay out extracted files and a manifest under one case folder."""
+    write(case_dir, "artifacts/inode-1.PNG", PNG)
+    write(case_dir, "Users/Test/Pictures/photo.jpg", JPEG)  # at its original path, no manifest
+    write(case_dir, "artifacts/inode-2.png", b"not really a png")
+    write(case_dir, "artifacts/inode-3.png", PNG)
+    write(case_dir, "Users/Test/Documents/café.png", PNG)
+    write(case_dir, "artifacts/clip.gif", GIF)
+    write(case_dir, "artifacts/shot.webp", WEBP)
     entries = [
         {
             "source_path": "Users/Test/Documents/flights.PNG",
@@ -76,13 +94,32 @@ def root(tmp_path: Path) -> Path:
             "extracted_file": "../outside.png",
             "sha256": None,
         },
+        {
+            "source_path": "Users/Test/Documents/café.png",
+            "extracted_file": "Users/Test/Documents/café.png",
+            "sha256": hashlib.sha256(PNG).hexdigest(),
+        },
+        {
+            "source_path": "Users/Test/Documents/clip.gif",
+            "extracted_file": "artifacts/clip.gif",
+            "sha256": None,
+        },
+        {
+            "source_path": "Users/Test/Documents/shot.webp",
+            "extracted_file": "artifacts/shot.webp",
+            "sha256": None,
+        },
+        {
+            "source_path": "Users/Test/Documents/huge.png",
+            "extracted_file": "artifacts/inode-1.PNG",
+            "sha256": None,
+        },
     ]
-    (root / "artifact_manifest.jsonl").write_text(
-        "\n".join(json.dumps(e) for e in entries), "utf-8"
+    (case_dir / "artifact_manifest.jsonl").write_text(
+        "\n".join(json.dumps(e, ensure_ascii=False) for e in entries), "utf-8"
     )
     write(tmp_path, "outside.png", PNG)
-    (root / "Users/Test/Pictures/link.png").symlink_to(tmp_path / "outside.png")
-    return root
+    (case_dir / "Users/Test/Pictures/link.png").symlink_to(tmp_path / "outside.png")
 
 
 @pytest.fixture
@@ -96,6 +133,8 @@ def client_and_cases(tmp_path: Path, root: Path) -> Iterator[tuple[TestClient, s
             a, b = Case(title="A"), Case(title="B")
             session.add_all([a, b])
             session.flush()
+            populate_case_folder(case_evidence(root, a.case_id), tmp_path)
+            # Case B has the same download rows but no files under its case folder.
             targets = {
                 "flights": r"C:\Users\Test\Documents\flights.PNG",
                 "photo": r"C:\Users\Test\Pictures\photo.jpg",
@@ -106,13 +145,18 @@ def client_and_cases(tmp_path: Path, root: Path) -> Iterator[tuple[TestClient, s
                 "escape": r"C:\Users\Test\Documents\escape.png",
                 "symlink": r"C:\Users\Test\Pictures\link.png",
                 "traversal": r"C:\Users\..\..\outside.png",
+                "cafe": r"C:\Users\Test\Documents\café.png",
+                "gif": r"C:\Users\Test\Documents\clip.gif",
+                "webp": r"C:\Users\Test\Documents\shot.webp",
+                "huge": r"C:\Users\Test\Documents\huge.png",
             }
-            store_records(
-                session,
-                a.case_id,
-                [download(a.case_id, k, v) for k, v in targets.items()],
-                FakeEmbedder(),
-            )
+            for case in (a, b):
+                store_records(
+                    session,
+                    case.case_id,
+                    [download(case.case_id, k, v) for k, v in targets.items()],
+                    FakeEmbedder(),
+                )
             session.commit()
             yield client, a.case_id, b.case_id
 
@@ -140,6 +184,17 @@ def test_serves_a_file_at_its_original_path_without_a_manifest_entry(client_and_
     assert response.headers["x-hash-verified"] == "false"
 
 
+def test_non_ascii_source_path_is_percent_encoded(client_and_cases) -> None:
+    client, a, _ = client_and_cases
+    response = media(client, a, "cafe")
+    assert response.status_code == 200
+    encoded = response.headers["x-source-path"]
+    assert encoded == quote("Users/Test/Documents/café.png", safe="/")
+    assert unquote(encoded) == "Users/Test/Documents/café.png"
+    # latin-1-safe: Starlette must be able to encode the header without raising.
+    assert encoded.encode("latin-1")
+
+
 @pytest.mark.parametrize("record_id", ["missing", "installer", "escape", "symlink", "traversal"])
 def test_unavailable_non_image_and_out_of_root_files_are_not_served(
     client_and_cases, record_id: str
@@ -155,8 +210,32 @@ def test_a_wrong_type_or_hash_is_refused(client_and_cases, record_id: str) -> No
     assert response.status_code == 409
 
 
+def test_oversized_file_is_refused(client_and_cases, monkeypatch: pytest.MonkeyPatch) -> None:
+    client, a, _ = client_and_cases
+    monkeypatch.setattr("app.media.MAX_MEDIA_BYTES", 8)
+    response = media(client, a, "huge")
+    assert response.status_code == 409
+    assert "larger" in response.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    ("record_id", "media_type", "body"),
+    [("gif", "image/gif", GIF), ("webp", "image/webp", WEBP)],
+)
+def test_gif_and_webp_are_sniffed_and_served(
+    client_and_cases, record_id: str, media_type: str, body: bytes
+) -> None:
+    client, a, _ = client_and_cases
+    response = media(client, a, record_id)
+    assert response.status_code == 200
+    assert response.content == body
+    assert response.headers["content-type"] == media_type
+
+
 def test_media_is_case_scoped(client_and_cases) -> None:
-    client, _, b = client_and_cases
+    """Same target_path in two cases: only the case with files under its folder gets 200."""
+    client, a, b = client_and_cases
+    assert media(client, a, "flights").status_code == 200
     assert media(client, b, "flights").status_code == 404
     assert client.get("/cases/case_missing/records/flights/media").status_code == 404
 
@@ -209,10 +288,12 @@ def test_a_blank_evidence_root_means_no_images(blank: str, monkeypatch: pytest.M
 
 
 def linked_root(tmp_path: Path, entries: list[dict[str, object]], files: dict[str, bytes]) -> Path:
+    """Evidence root with one case folder ``c`` holding the manifest and files."""
     root = tmp_path / "linked"
+    case_dir = case_evidence(root, "c")
     for relative, data in files.items():
-        write(root, relative, data)
-    (root / "artifact_manifest.jsonl").write_text(
+        write(case_dir, relative, data)
+    (case_dir / "artifact_manifest.jsonl").write_text(
         "\n".join(json.dumps(e) for e in entries), "utf-8"
     )
     return root
@@ -232,14 +313,17 @@ def test_record_ids_link_a_moved_file_to_its_download(tmp_path: Path) -> None:
         {"artifacts/a.png": PNG},
     )
     # The download row saved Downloads\BNE.png; the file was later moved to Downloads\Misc.
-    found = resolve_media(download("c", "dl-6", r"C:\Users\Test\Downloads\BNE.png"), root)
+    found = resolve_media(download("c", "dl-6", r"C:\Users\Test\Downloads\BNE.png"), root, "c")
     assert (found.data, found.source_path, found.verified) == (
         PNG,
         "Users/Test/Downloads/Misc/BNE.png",
         True,
     )
     with pytest.raises(MediaNotFoundError):
-        resolve_media(download("c", "dl-7", r"C:\Users\Test\Downloads\BNE.png"), root)
+        resolve_media(download("c", "dl-7", r"C:\Users\Test\Downloads\BNE.png"), root, "c")
+    # Another case id must not see this case's folder.
+    with pytest.raises(MediaNotFoundError):
+        resolve_media(download("other", "dl-6", r"C:\Users\Test\Downloads\BNE.png"), root, "other")
 
 
 def test_a_records_own_path_wins_over_a_record_ids_link(tmp_path: Path) -> None:
@@ -260,7 +344,7 @@ def test_a_records_own_path_wins_over_a_record_ids_link(tmp_path: Path) -> None:
         ],
         {"artifacts/own.jpg": JPEG, "artifacts/other.png": PNG},
     )
-    assert resolve_media(download("c", "dl-1", r"C:\Users\Test\own.jpg"), root).data == JPEG
+    assert resolve_media(download("c", "dl-1", r"C:\Users\Test\own.jpg"), root, "c").data == JPEG
 
 
 def test_record_ids_links_keep_every_check(tmp_path: Path) -> None:
@@ -297,12 +381,12 @@ def test_record_ids_links_keep_every_check(tmp_path: Path) -> None:
     )
     missing = r"C:\Users\Test\gone.png"
     with pytest.raises(MediaIntegrityError):
-        resolve_media(download("c", "swapped", missing), root)
+        resolve_media(download("c", "swapped", missing), root, "c")
     with pytest.raises(MediaIntegrityError):
-        resolve_media(download("c", "fake", missing), root)
+        resolve_media(download("c", "fake", missing), root, "c")
     for record_id in ("escape", "text"):
         with pytest.raises(MediaNotFoundError):
-            resolve_media(download("c", record_id, missing), root)
+            resolve_media(download("c", record_id, missing), root, "c")
 
 
 def test_the_first_entry_naming_a_record_wins_and_bad_lists_are_ignored(tmp_path: Path) -> None:
@@ -332,6 +416,24 @@ def test_the_first_entry_naming_a_record_wins_and_bad_lists_are_ignored(tmp_path
         {"artifacts/1.png": PNG, "artifacts/2.jpg": JPEG},
     )
     missing = r"C:\Users\Test\gone.png"
-    assert resolve_media(download("c", "dl-1", missing), root).data == PNG
+    assert resolve_media(download("c", "dl-1", missing), root, "c").data == PNG
     with pytest.raises(MediaNotFoundError):
-        resolve_media(download("c", "dl-2", missing), root)
+        resolve_media(download("c", "dl-2", missing), root, "c")
+
+
+def test_oversized_via_resolve_media(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = linked_root(
+        tmp_path,
+        [
+            {
+                "source_path": "Users/Test/big.png",
+                "extracted_file": "artifacts/big.png",
+                "sha256": None,
+            }
+        ],
+        {"artifacts/big.png": PNG},
+    )
+    monkeypatch.setattr("app.media.MAX_MEDIA_BYTES", 8)
+    with pytest.raises(MediaIntegrityError, match="larger"):
+        resolve_media(download("c", "big", r"C:\Users\Test\big.png"), root, "c")
+    assert MAX_MEDIA_BYTES == 25 * 1024 * 1024  # import stayed at the real default

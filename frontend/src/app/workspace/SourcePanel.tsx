@@ -85,15 +85,23 @@ export function SourcePanel({ caseId, recordId, number, total, records, excluded
       {localImageName(record) && <SourceImage key={record.record_id} caseId={caseId} recordId={record.record_id} name={localImageName(record)!} />}
       {/* A remote-only attachment may have a local copy linked to this record in the
           evidence manifest (record_ids); the backend decides. Its URL is never loaded. */}
-      {!localImageName(record) && remoteImageAttachments(record).map((attachment, index) => {
-        const offline = <p key={attachment.filename} className="blanc-source-offline">
-          Attached image <strong>{attachment.filename}</strong> is stored on {attachment.host}, not in the local evidence, so it is not shown. Blanc never loads evidence from the network.
-        </p>;
-        return index === 0
-          ? <SourceImage key={`${record.record_id}-attachment`} caseId={caseId} recordId={record.record_id} name={attachment.filename}
-              caption={`Local copy of the attachment ${attachment.filename}, linked to this message in the evidence manifest`} missing={offline} />
-          : offline;
-      })}
+      {!localImageName(record) && (() => {
+        const attachments = remoteImageAttachments(record);
+        const single = attachments.length === 1;
+        return attachments.map((attachment, index) => {
+          const offline = <p key={index} className="blanc-source-offline">
+            Attached image <strong>{attachment.filename}</strong> is stored on {attachment.host}, not in the local evidence, so it is not shown. Blanc never loads evidence from the network.
+          </p>;
+          return index === 0
+            ? <SourceImage key={`${record.record_id}-attachment`} caseId={caseId} recordId={record.record_id}
+                name={single ? attachment.filename : "attachment"}
+                caption={single
+                  ? `Local copy of the attachment ${attachment.filename}, linked to this message in the evidence manifest`
+                  : "Local copy of an attachment linked to this message in the evidence manifest"}
+                missing={offline} />
+            : offline;
+        });
+      })()}
       {view?.message !== undefined && <blockquote className="blanc-source-message">{view.message || "(Empty message)"}</blockquote>}
       {view ? <dl className="blanc-source-fields">
         {view.fields.map((field, index) => <div key={index}>
@@ -124,8 +132,15 @@ export function SourcePanel({ caseId, recordId, number, total, records, excluded
   </aside>;
 }
 
+type ImageState =
+  | { status: "loading" }
+  | { status: "ready"; src: string; hashVerified: boolean }
+  | { status: "missing" }
+  | { status: "integrity" };
+
 /** The record's original image from the local evidence folder, with a larger view on
- *  click. Shows a plain note when the file is not available locally. */
+ *  click. Fetches the media bytes so 404 (missing) and 409 (integrity) can be told apart,
+ *  and so ``X-Hash-Verified`` can shape the caption. Revokes the blob URL on cleanup. */
 function SourceImage({ caseId, recordId, name, caption, missing }: {
   caseId: string; recordId: string; name: string;
   /** Overrides the default caption, e.g. for a linked local copy of an attachment. */
@@ -133,23 +148,65 @@ function SourceImage({ caseId, recordId, name, caption, missing }: {
   /** What to show when no local image is available, instead of the default note. */
   missing?: ReactNode;
 }) {
-  const [state, setState] = useState<"loading" | "ready" | "missing">("loading");
+  const [state, setState] = useState<ImageState>({ status: "loading" });
   const viewer = useRef<HTMLDialogElement>(null);
-  const src = mediaUrl(caseId, recordId);
-  if (state === "missing") {
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let objectUrl: string | undefined;
+    setState({ status: "loading" });
+    fetch(mediaUrl(caseId, recordId), { signal: controller.signal })
+      .then(async response => {
+        if (controller.signal.aborted) return;
+        if (response.status === 404) {
+          setState({ status: "missing" });
+          return;
+        }
+        if (response.status === 409) {
+          setState({ status: "integrity" });
+          return;
+        }
+        if (!response.ok) {
+          setState({ status: "missing" });
+          return;
+        }
+        const hashVerified = response.headers.get("X-Hash-Verified") === "true";
+        const blob = await response.blob();
+        if (controller.signal.aborted) return;
+        objectUrl = URL.createObjectURL(blob);
+        setState({ status: "ready", src: objectUrl, hashVerified });
+      })
+      .catch(() => {
+        if (controller.signal.aborted) return;
+        setState({ status: "missing" });
+      });
+    return () => {
+      controller.abort();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [caseId, recordId]);
+
+  if (state.status === "missing") {
     return missing ?? <p className="blanc-source-offline">The original image <strong>{name}</strong> is not in the local evidence folder.</p>;
   }
-  return <figure className="blanc-source-media" data-state={state}>
-    <button type="button" onClick={() => viewer.current?.showModal()} aria-label={`View ${name} larger`} disabled={state !== "ready"}>
+  if (state.status === "integrity") {
+    return <p className="blanc-source-offline" role="alert">The local file for <strong>{name}</strong> failed its integrity check, so it is not shown as evidence.</p>;
+  }
+  const ready = state.status === "ready";
+  const defaultCaption = ready && !state.hashVerified
+    ? `${name} · local evidence file (hash not checked)`
+    : `${name} · original file from local evidence`;
+  return <figure className="blanc-source-media" data-state={state.status}>
+    <button type="button" onClick={() => viewer.current?.showModal()} aria-label={`View ${name} larger`} disabled={!ready}>
       {/* eslint-disable-next-line @next/next/no-img-element -- local evidence served by the case API, not a static asset */}
-      <img src={src} alt={`Original image ${name} from the evidence`} onLoad={() => setState("ready")} onError={() => setState("missing")} />
+      {ready && <img src={state.src} alt={`Original image ${name} from the evidence`} />}
     </button>
-    <figcaption>{caption ?? `${name} · original file from local evidence`}{state === "ready" ? " · click to enlarge" : ""}</figcaption>
-    <dialog ref={viewer} className="blanc-media-viewer" aria-label={`${name}, full size`} onClick={event => { if (event.target === event.currentTarget) viewer.current?.close(); }}>
+    <figcaption>{caption ?? defaultCaption}{ready ? " · click to enlarge" : ""}</figcaption>
+    {ready && <dialog ref={viewer} className="blanc-media-viewer" aria-label={`${name}, full size`} onClick={event => { if (event.target === event.currentTarget) viewer.current?.close(); }}>
       <button type="button" onClick={() => viewer.current?.close()}>Close</button>
       {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={src} alt={`Original image ${name}, full size`} />
+      <img src={state.src} alt={`Original image ${name}, full size`} />
       <p>{name}</p>
-    </dialog>
+    </dialog>}
   </figure>;
 }
