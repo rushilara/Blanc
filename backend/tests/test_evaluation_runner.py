@@ -212,6 +212,46 @@ def test_an_unanswerable_question_must_be_reported_as_unresolved(
     assert grouped["unresolved"][0].detail == "the analysis reports nothing as unresolved"
 
 
+def test_context_claims_citing_allowed_records_do_not_fail_unresolved(
+    question_set, records, tmp_path, base
+) -> None:
+    """BLA-72: "the text arranged a delivery, but not what" is a correct answer to "what
+    was delivered?". Claims citing only the allowed records are context, not answers."""
+    question = question_set.questions[0]
+    question.expect_unresolved = True
+    question.exclusion = None
+    question.expected_findings = []
+    question.allowed_claim_record_ids = ["rec-01"]
+
+    # claim-1 cites rec-01 (allowed); claim-2 cites rec-02, so it still fails.
+    grouped = run(question_set, records, tmp_path, base, None)
+    assert grouped["unresolved"][0].detail == (
+        "1 unresolved questions reported, but it still asserts claim-2"
+    )
+
+    question.allowed_claim_record_ids = ["rec-01", "rec-02"]
+    grouped = run(question_set, records, tmp_path / "second", base, None)
+    assert failed(grouped) == []
+    assert grouped["unresolved"][0].detail == (
+        "1 unresolved questions reported, no claim asserted beyond 2 context claim(s) "
+        "citing allowed records"
+    )
+
+    # Context never replaces saying what is unresolved.
+    base["unresolved_questions"] = []
+    grouped = run(question_set, records, tmp_path / "third", base, None)
+    assert grouped["unresolved"][0].detail == "the analysis reports nothing as unresolved"
+
+
+def test_allowed_claim_records_need_an_unanswerable_question(tmp_path: Path) -> None:
+    data = json.loads(QUESTION_SET_PATH.read_text(encoding="utf-8"))
+    data["questions"][0]["allowed_claim_record_ids"] = ["rec-01"]
+    path = tmp_path / "questions.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ValueError, match="only applies with expect_unresolved"):
+        load_question_set(path)
+
+
 def test_a_combined_claim_does_not_hide_the_claim_the_answer_key_means(
     question_set, records, tmp_path, base, child
 ) -> None:
