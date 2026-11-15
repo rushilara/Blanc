@@ -16,6 +16,9 @@ Author = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, m
 
 MAX_CHANGES = 200
 
+FindingKind = Literal["claim", "edge", "node", "event"]
+ALL_KINDS: tuple[FindingKind, ...] = ("claim", "node", "edge", "event")
+
 
 class BoardCreate(BaseModel):
     """Body of ``POST /cases/{case_id}/boards``. IDs, revision and times are server-set."""
@@ -31,9 +34,22 @@ class PinRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["claim", "edge", "node", "event"]
+    kind: FindingKind
     source_analysis_id: Id
     ref_id: Id
+
+
+class AddReconstruction(BaseModel):
+    """Pin every finding of one revision at once ("add this reconstruction to board").
+
+    ``kinds`` limits which kinds are added (default: all). Nodes that cite no evidence are
+    skipped, since a board item must cite at least one record.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    analysis_id: Id
+    kinds: Annotated[list[FindingKind], Field(min_length=1)] = list(ALL_KINDS)
 
 
 class NoteCreate(BaseModel):
@@ -48,7 +64,7 @@ class NoteCreate(BaseModel):
 
 class BoardChange(BaseModel):
     """Body of ``PATCH /cases/{case_id}/boards/{board_id}``. Applied in order: unpin,
-    pin, then notes. Every successful change appends one snapshot.
+    add_reconstruction, pin, then notes. Every successful change appends one snapshot.
 
     ``expected_revision``: the revision the client last saw; a 409 if the board has
     moved on since, so two tabs cannot silently drop each other's changes.
@@ -60,6 +76,7 @@ class BoardChange(BaseModel):
     expected_revision: Annotated[int, Field(ge=1)] | None = None
     title: Title | None = None
     active_analysis_id: Id | None = None
+    add_reconstruction: AddReconstruction | None = None
     pin: Annotated[list[PinRequest], Field(max_length=MAX_CHANGES)] = []
     unpin: Annotated[list[Id], Field(max_length=MAX_CHANGES)] = []
     notes: Annotated[list[NoteCreate], Field(max_length=MAX_CHANGES)] = []

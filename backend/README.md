@@ -148,6 +148,7 @@ Every response is `InvestigationBoard` contract JSON. A board is a series of app
 {
   "expected_revision": 3,
   "unpin": ["item_..."],
+  "add_reconstruction": {"analysis_id": "analysis_..."},
   "pin": [{"kind": "claim", "source_analysis_id": "analysis_...", "ref_id": "claim-2"}],
   "notes": [{"text": "Check whether the meeting happened.", "target_item_id": "item_...", "author": "investigator"}],
   "title": "New title",
@@ -156,6 +157,8 @@ Every response is `InvestigationBoard` contract JSON. A board is a series of app
 ```
 
 - **A pin names a finding; the server copies its `evidence_ids` and `status`** from the saved revision. The request cannot set either, so pinning never changes a status or marks anything verified.
+- **"Add this reconstruction to board"** (BLA-30): `"add_reconstruction": {"analysis_id": "analysis_...", "kinds": ["claim", "node", "edge", "event"]}` pins every finding of that revision in one change (`kinds` optional, default all), through the same checks as single pins. Nodes that cite no evidence are skipped. Adding the same revision again changes nothing; adding a second revision appends its findings next to the first.
+- **Nodes are never merged.** A node is identified by its revision and ID, so the same or a similar name from another revision (or the same revision) stays a separate item; deciding two are the same person is left to the investigator.
 - **Stable item IDs.** `item_id` is derived from `(source_analysis_id, kind, ref_id)` (`app.boards.item_id_for`), so pinning a finding twice is a no-op, and re-pinning after an unpin gives the same ID. A note can target an item pinned in the same request by that ID.
 - **Notes are investigator-only text**, kept in `notes`, never in items. Notes are never removed, so an item with notes cannot be unpinned (422).
 - **Validated before saving.** The new snapshot goes through `validate_board`. Any error is a 422 listing every problem, and nothing is saved.
