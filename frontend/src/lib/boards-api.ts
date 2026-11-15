@@ -15,6 +15,8 @@ export type BoardItem = {
   ref_id: string;
   evidence_ids: string[];
   status?: string;
+  /** Investigator review (BLA-48); absent means unreviewed. */
+  review_status?: "unreviewed" | "reviewed" | "disputed";
   added_at: string;
 };
 
