@@ -388,9 +388,10 @@ def retrieve(
     window = fused[:max_records]
     rows = _load_rows(session, case_id, (f.record_id for f in window))
     chunk_ids = [cid for f in window for cid in f.chunk_scores]
-    spans = {
-        c.chunk_id: (c.char_start, c.char_end) for c in get_chunks(session, case_id, chunk_ids)
-    }
+    chunk_rows = get_chunks(session, case_id, chunk_ids)
+    spans = {c.chunk_id: (c.char_start, c.char_end) for c in chunk_rows}
+    # Media chunks store an FTS sidecar in ``text`` (content is empty); use it for excerpts.
+    chunk_text = {c.chunk_id: c.text for c in chunk_rows}
 
     records: list[RetrievedRecord] = []
     skipped: list[SkippedRecord] = []
@@ -413,9 +414,15 @@ def retrieve(
                     continue
                 length, truncated = remaining, True
             end = span.start + length
+            if row.modality in ("image", "pdf") and not row.content:
+                # Sidecar text lives on the chunk, not in empty media content.
+                primary = span.chunk_ids[0] if span.chunk_ids else None
+                text = (chunk_text.get(primary) or "")[span.start : end] if primary else ""
+            else:
+                text = row.content[span.start : end]
             excerpts.append(
                 Excerpt(
-                    text=row.content[span.start : end],
+                    text=text,
                     char_start=span.start,
                     char_end=end,
                     chunk_ids=span.chunk_ids,

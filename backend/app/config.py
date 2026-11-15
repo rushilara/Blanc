@@ -13,7 +13,9 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 # backend/app/config.py -> repo root is two levels above `app/`.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-DEFAULT_EMBEDDING_MODEL = "gemini-embedding-001"
+# Multimodal corpus-wide model (BLA-69). Do not mix with gemini-embedding-001 in one index.
+DEFAULT_EMBEDDING_MODEL = "gemini-embedding-2"
+# Requested output_dimensionality (embedding-2's native default is 3072).
 DEFAULT_EMBEDDING_DIM = 768
 
 
@@ -31,9 +33,11 @@ class Settings(BaseSettings):
     # LLM model. Override GEMINI_MODEL in .env to switch models.
     GEMINI_MODEL: str = "gemini-3.5-flash"
 
-    # Embeddings: Gemini embeddings API. EMBEDDING_DIM is the output_dimensionality requested
-    # from the model and the dimension of the sqlite-vec index; changing either marks stored
-    # chunk vectors stale (see app/evidence_store.py: reembed_stale_chunks).
+    # Embeddings: Gemini multimodal embeddings (gemini-embedding-2). EMBEDDING_DIM is the
+    # output_dimensionality requested from the model (must be set explicitly; the model
+    # default is 3072) and the dimension of the sqlite-vec index; changing either marks
+    # stored chunk vectors stale (see app/evidence_store.py: reembed_stale_chunks). After a
+    # model switch, re-run Owl / keyword baseline / "want more evidence?" measurements.
     EMBEDDING_MODEL: str = DEFAULT_EMBEDDING_MODEL
     EMBEDDING_DIM: int = Field(default=DEFAULT_EMBEDDING_DIM, ge=1, le=3072)
 

@@ -4,7 +4,7 @@ All schemas are JSON Schema draft 2020-12 with `additionalProperties: false`. Ev
 
 | Schema | What it describes |
 |---|---|
-| `evidence_record.schema.json` | One immutable, traceable source record (`record_id`, `case_id`, file, locator, content, timestamp). Optional media fields (BLA-68): `modality` (`text` \| `image` \| `pdf`), `media_path` (`media/rec_<16 hex>.(png\|jpg\|pdf)`), `content_type` (`image/png` \| `image/jpeg` \| `application/pdf`). When `modality` is `image` or `pdf`, `media_path` and `content_type` are required; `content` is the empty string until multimodal embedding. |
+| `evidence_record.schema.json` | One immutable, traceable source record (`record_id`, `case_id`, file, locator, content, timestamp). Optional media fields (BLA-68): `modality` (`text` \| `image` \| `pdf`), `media_path` (`media/rec_<16 hex>.(png\|jpg\|pdf)`), `content_type` (`image/png` \| `image/jpeg` \| `application/pdf`). When `modality` is `image` or `pdf`, `media_path` and `content_type` are required; `content` stays the empty string (BLA-69 embeds bytes multimodally and indexes a lexical FTS sidecar on the chunk). |
 | `analysis_revision.schema.json` | One immutable, question-specific reconstruction: answer, claims, graph, timeline, unresolved questions, plus the retrieved and excluded record IDs it was built from. |
 | `investigation_board.schema.json` | One append-only snapshot of an investigator's board: pinned findings and investigator notes. |
 | `revision_comparison.schema.json` | How support for each claim, edge and event changed between a parent revision and the child revision created by excluding evidence. |

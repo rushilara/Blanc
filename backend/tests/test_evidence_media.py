@@ -350,19 +350,26 @@ def test_folder_import_mixes_text_and_media(tmp_path: Path) -> None:
 
 
 def test_media_round_trip_through_store_records(tmp_path: Path) -> None:
-    """Storing and reading back must keep media_path / modality / content_type."""
+    """Storing embeds media bytes and indexes an FTS sidecar (filename)."""
+    from sqlalchemy import text
+
+    from app.evidence_store import list_chunks
+    from app.search_index import FTS_TABLE, VEC_TABLE, keyword_search, to_fts_query
+
     path = write_bytes(tmp_path, "shot.png", PNG_BYTES)
     media_dir = tmp_path / "media"
     (record,) = import_file(path, "case-a", source_root=tmp_path, media_dir=media_dir)
 
+    embedder = FakeEmbedder()
     engine = make_engine(f"sqlite:///{tmp_path / 'round.db'}")
-    init_db(engine, FakeEmbedder().dim)
+    init_db(engine, embedder.dim)
     with make_session_factory(engine)() as session:
         session.add(Case(case_id="case-a", title="Media"))
         session.flush()
-        stored = store_records(session, "case-a", [record], FakeEmbedder())
+        stored = store_records(session, "case-a", [record], embedder, media_dir=media_dir)
         session.commit()
         assert stored.inserted == 1
+        assert stored.chunks_created == 1
         loaded = get_record(session, "case-a", record.record_id)
         assert loaded is not None
         assert loaded.modality == "image"
@@ -370,7 +377,87 @@ def test_media_round_trip_through_store_records(tmp_path: Path) -> None:
         assert loaded.content_type == "image/png"
         assert loaded.content == ""
         assert loaded.to_contract_json()["media_path"] == record.media_path
+        chunks = list_chunks(session, "case-a", record.record_id)
+        assert len(chunks) == 1
+        assert chunks[0].text == "shot.png"
+        assert embedder.embedded_media and embedder.embedded_media[0].data == PNG_BYTES
+        assert session.execute(text(f"SELECT count(*) FROM {VEC_TABLE}")).scalar() == 1
+        assert session.execute(text(f"SELECT count(*) FROM {FTS_TABLE}")).scalar() == 1
+        hits = keyword_search(session, "case-a", to_fts_query("shot"))
+        assert [h.record_id for h in hits] == [record.record_id]
     engine.dispose()
+
+
+def test_email_image_fts_sidecar_includes_subject(tmp_path: Path) -> None:
+    msg = EmailMessage()
+    msg["From"] = "Alex <alex@example.test>"
+    msg["To"] = "Jordan <jordan@example.test>"
+    msg["Date"] = DATE
+    msg["Subject"] = "Warehouse photo"
+    msg["Message-ID"] = "<photo2@example.test>"
+    msg.set_content("See attached.")
+    msg.add_attachment(PNG_BYTES, maintype="image", subtype="png", filename="dock.png")
+
+    path = write_bytes(tmp_path, "mail.eml", msg.as_bytes())
+    media_dir = tmp_path / "media"
+    records = import_file(path, "case-a", source_root=tmp_path, media_dir=media_dir)
+    image = next(r for r in records if r.modality == "image")
+
+    embedder = FakeEmbedder()
+    engine = make_engine(f"sqlite:///{tmp_path / 'email.db'}")
+    init_db(engine, embedder.dim)
+    with make_session_factory(engine)() as session:
+        session.add(Case(case_id="case-a", title="Email media"))
+        session.flush()
+        store_records(session, "case-a", records, embedder, media_dir=media_dir)
+        session.commit()
+        from app.evidence_store import list_chunks
+        from app.search_index import keyword_search, to_fts_query
+
+        chunks = list_chunks(session, "case-a", image.record_id)
+        assert len(chunks) == 1
+        assert "dock.png" in chunks[0].text
+        assert "Warehouse photo" in chunks[0].text
+        assert "From: Alex" in chunks[0].text
+        hits = keyword_search(session, "case-a", to_fts_query("Warehouse"))
+        assert image.record_id in {h.record_id for h in hits}
+    engine.dispose()
+
+
+def test_pdf_truncated_at_embed_time(tmp_path: Path) -> None:
+    from io import BytesIO
+    from types import SimpleNamespace
+
+    from pypdf import PdfReader, PdfWriter
+
+    from app.case_media import GEMINI_PDF_MAX_PAGES, truncate_pdf_for_embedding
+    from app.embeddings import GeminiEmbedder, MediaInput
+
+    del tmp_path  # unused; keeps pytest fixture signature consistent with siblings
+    writer = PdfWriter()
+    for _ in range(GEMINI_PDF_MAX_PAGES + 3):
+        writer.add_blank_page(width=72, height=72)
+    buf = BytesIO()
+    writer.write(buf)
+    long_pdf = buf.getvalue()
+
+    truncated = truncate_pdf_for_embedding(long_pdf)
+    assert len(PdfReader(BytesIO(truncated)).pages) == GEMINI_PDF_MAX_PAGES
+    assert truncate_pdf_for_embedding(PDF_BYTES) == PDF_BYTES
+
+    models_requests: list = []
+
+    class RecordingModels:
+        def embed_content(self, *, model, contents, config):  # noqa: ANN001
+            models_requests.append(contents)
+            return SimpleNamespace(embeddings=[SimpleNamespace(values=[0.1] * 8)])
+
+    embedder = GeminiEmbedder(
+        None, "gemini-embedding-2", 8, client=SimpleNamespace(models=RecordingModels())
+    )
+    embedder.embed_media([MediaInput(data=long_pdf, mime_type="application/pdf")])
+    sent = models_requests[0][0].inline_data.data
+    assert len(PdfReader(BytesIO(sent)).pages) == GEMINI_PDF_MAX_PAGES
 
 
 def test_init_db_adds_media_columns_on_existing_table(tmp_path: Path) -> None:
@@ -434,6 +521,9 @@ def test_cli_cleans_up_media_when_embedding_fails(tmp_path: Path) -> None:
 
     class BoomEmbedder(FakeEmbedder):
         def embed_documents(self, texts):  # noqa: ANN001
+            raise EmbeddingError("boom")
+
+        def embed_media(self, items):  # noqa: ANN001
             raise EmbeddingError("boom")
 
     code = main(

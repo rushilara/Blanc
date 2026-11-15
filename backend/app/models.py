@@ -134,11 +134,14 @@ class EvidenceRecordRow(Base):
 
 
 class EvidenceChunk(Base):
-    """A slice ``content[char_start:char_end]`` of one record, with its embedding metadata.
+    """A chunk of one record, with its embedding metadata.
 
-    The source of truth for the vec0 / FTS5 indexes (``app/search_index.py``), which are
-    keyed by ``chunk_id`` and cleaned up by a delete trigger on this table. The unique
-    ``(case_id, record_id, chunk_index)`` index doubles as the ``case_id`` index.
+    For text records, ``text == content[char_start:char_end]``. For image/PDF records
+    (empty ``content``), ``text`` is the lexical FTS sidecar (filename / parent email
+    headers); offsets span that sidecar string, not the binary. The source of truth for
+    the vec0 / FTS5 indexes (``app/search_index.py``), keyed by ``chunk_id`` and cleaned
+    up by a delete trigger on this table. The unique ``(case_id, record_id, chunk_index)``
+    index doubles as the ``case_id`` index.
     """
 
     __tablename__ = "evidence_chunks"
