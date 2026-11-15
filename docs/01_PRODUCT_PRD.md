@@ -74,6 +74,7 @@ Example illustrative questions (not claims about any particular dataset):
 - Export a structured case report containing source references and limitations.
 - Cleaner large-graph navigation, search/filter by node or event type, manual pinning of important entities.
 - Multi-case reliability testing, responsive UI, loading/empty/error states and recovery of interrupted tasks.
+- **Multimodal evidence (E11):** import PNG/JPEG (email attachments + loose files) and PDFs; store bytes on disk; embed with one multimodal model (`gemini-embedding-2`); retrieve media into the evidence window; pass retrieved media into the analysis LLM (vision) so claims can cite image/PDF record IDs. See Linear BLA-67–BLA-71.
 
 ## 6. Nice-to-have / future epics (explicitly not needed for first prototype)
 
@@ -99,6 +100,7 @@ Example illustrative questions (not claims about any particular dataset):
 | E6. Evidence-first UI | P0 | Synchronized answer/graph/timeline; source drawer; save/expand/version controls. |
 | E7. Case evaluation + demo | P0 | At least one real case and verified multi-record question; no hardcoded answer; fresh-start test. |
 | E8. Cross-case portability + polish | P1 | Second case using same code; investigator annotations, exports, visual diff, search baseline. |
+| E11. Multimodal evidence (images + PDFs) | P1 | Ingest email images, loose images and PDFs to disk; one shared multimodal embedding space; retrieve + vision analysis with citeable media records (BLA-67). |
 | E9. Bounded agentic retrieval | P2 | Up to two retrieval expansions with guardrails and cost limits. |
 | E10. Model specialization | P2 | Fine-tuning and held-out benchmark after sufficient high-quality labels. |
 
@@ -108,12 +110,14 @@ Example illustrative questions (not claims about any particular dataset):
 
 **Secondary validation:** Load a different case without changing parser-specific business logic, answer one independently verified question, and note which formats or extraction tasks still fail. This shows portability but does not prove universal investigator readiness.
 
-**Non-goals for the 15-hour prototype:** native image/RAM analysis, legal conclusions, guilt scores, automatically finding every relevant artifact, production-grade evidentiary admissibility, autonomous investigations, universal format compatibility, or claims of statistical generalization from two scenarios.
+**Non-goals for the 15-hour prototype:** native RAM/E01 disk analysis, legal conclusions, guilt scores, automatically finding every relevant artifact, production-grade evidentiary admissibility, autonomous investigations, universal format compatibility, or claims of statistical generalization from two scenarios.
+
+**Moved to MLP (E11):** image and PDF ingest, multimodal embeddings, and vision-capable analysis—explicitly out of the first text-only demo path, tracked as BLA-67+.
 
 ## 9. Open engineering decisions (defaults recommended)
 
-- **Embedding baseline:** Gemini embeddings for MVP; lock model + dimension at kickoff. Avoid fine-tuning now.
-- **Storage:** SQLite on the local machine for cases, source records and revision history; local sqlite-vec + FTS5 indexes. No Neo4j; no cloud object store for MVP evidence.
+- **Embedding baseline:** Gemini embeddings for MVP (`gemini-embedding-001` text-only). For E11 multimodal, switch the **whole corpus** to `gemini-embedding-2` (one shared space for text + images + PDFs; do not mix models in one index). Lock dimension (prefer 768 for sqlite-vec). Avoid fine-tuning now.
+- **Storage:** SQLite on the local machine for cases, source records and revision history; local sqlite-vec + FTS5 indexes. No Neo4j; no cloud object store for MVP evidence. For E11 media, keep **bytes on disk** under the case directory; DB holds path, hash, locator and content type.
 - **Runtime:** FastAPI + Next.js on localhost for the hackathon demo. Optional static landing host is fine; do not host the case DB for MVP.
 - **UI:** React graph library, simple event list/timeline; functionality before elaborate animation.
 - **Source granularity:** exclude at evidence-record level; optionally add document-level exclusion later.
