@@ -203,7 +203,8 @@ def validate_comparison(revisions: list[dict], comparison: dict) -> list[str]:
 
 def _possible_match_errors(comparison: dict) -> list[str]:
     """Optional possible_matches (BLA-63): an advisory link, listed on both items, between an
-    unmatched unresolved/not_supported base item and a newly_supported item of the same kind."""
+    unmatched unresolved/not_supported base item that lost at least one cited source to this
+    exclusion and a newly_supported item of the same kind (so remaining < original)."""
     errors: list[str] = []
     excluded = set(comparison['excluded_record_ids'])
     items = comparison['items']
@@ -236,6 +237,10 @@ def _possible_match_errors(comparison: dict) -> list[str]:
             if shared & excluded:
                 errors.append(f"{label} possible match {match['ref_id']} shares excluded records")
             cited = set(base_item['base_evidence_ids'])
+            if not cited & excluded:
+                errors.append(f"{label} possible match {match['ref_id']} links a base item that lost no cited source to this exclusion")
+            if match['remaining_sources'] >= match['original_sources']:
+                errors.append(f"{label} possible match {match['ref_id']} must have fewer remaining than original sources")
             if match['original_sources'] != len(cited) or match['remaining_sources'] != len(cited - excluded):
                 errors.append(f"{label} possible match {match['ref_id']} source counts do not match the base item")
             back = [dict(m, ref_id=match['ref_id']) for m in other.get('possible_matches', []) if m['ref_id'] == own[1]]

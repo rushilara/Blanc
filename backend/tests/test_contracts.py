@@ -416,7 +416,7 @@ ACCEPTED: list[tuple[str, str, Callable[[dict], None]]] = [
             compared_evidence_ids=["rec-01"],
             possible_matches=[
                 {**LINK, "ref_id": "claim-2"},
-                {**LINK, "ref_id": "claim-3", "remaining_sources": 3, "original_sources": 3},
+                {**LINK, "ref_id": "claim-3", "remaining_sources": 2, "original_sources": 3},
             ],
         ),
     ),

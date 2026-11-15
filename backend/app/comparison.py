@@ -38,10 +38,12 @@ Support is counted in unique record IDs, so a record cited twice counts once.
 Possibly the same finding (BLA-63). Strict identity means a finding the rerun merely
 rewords shows up twice: the base one `unresolved`, the child one `newly_supported`. To
 help the investigator see that, an advisory link is added in `possible_matches`, on both
-items. A base finding with no identity match is linked to a `newly_supported` child
-finding of the same kind when the child cites at least one record and every record it
-cites was cited by the base finding and is still permitted (an edge must also join the
-same two entities, of any type). The link never changes `support_status` and only appends
+items. A base finding with no identity match that lost at least one cited record to this
+exclusion is linked to a `newly_supported` child finding of the same kind when the child
+cites at least one record and every record it cites was cited by the base finding and is
+still permitted (an edge must also join the same two entities, of any type). So a link
+always has fewer remaining than original sources, and a rewording on records the
+exclusion did not touch is never linked. The link never changes `support_status` and only appends
 cautious wording to the explanation: "Possibly the same finding as claim-a in the active
 analysis: 2 of 3 cited sources remain; please confirm." Model-reused IDs are still not
 used, for the reason above: an ID shared by two different findings would make a changed
@@ -229,13 +231,18 @@ def _possible_matches(
 ) -> dict[int, ComparisonItem]:
     """Advisory links between unmatched base findings and newly supported child findings.
 
-    A base finding with no identity match (`unresolved` or `not_supported`) is linked to a
-    `newly_supported` child finding of the same kind when the child cites at least one
-    record and every record it cites was cited by the base finding and is still permitted.
-    Edges must also join the same two entities (as in `_edge_identity`, but any type).
-    Nothing else is compared: the link only says "possibly the same finding" and leaves
-    both statuses as they are. The link is listed on both items; each list is ordered by
-    the number of shared records (most first), then ref ID.
+    A base finding with no identity match (`unresolved` or `not_supported`) that lost at
+    least one cited record to this exclusion is linked to a `newly_supported` child finding
+    of the same kind when the child cites at least one record and every record it cites was
+    cited by the base finding and is still permitted. Edges must also join the same two
+    entities (as in `_edge_identity`, but any type). Nothing else is compared: the link
+    only says "possibly the same finding" and leaves both statuses as they are. The link is
+    listed on both items; each list is ordered by the number of shared records (most
+    first), then ref ID.
+
+    A base finding that lost nothing is never linked: the exclusion cannot explain why it
+    was restated, so a rewording on untouched records (which may as well be a reversal,
+    such as an added "never") is left as `unresolved` plus `newly_supported` alone.
 
     Returns the linked items, with `possible_matches` set and a cautious sentence appended
     to their explanation, keyed by `id()` of the item they replace.
@@ -245,6 +252,8 @@ def _possible_matches(
     for before, base_item in vanished:
         cited = base_item.base_evidence_ids
         remaining = [rid for rid in cited if rid not in newly_excluded]
+        if len(remaining) == len(cited):
+            continue  # lost no source to this exclusion
         for after, new_item in new:
             child_cited = set(new_item.compared_evidence_ids)
             if not child_cited or not child_cited <= set(remaining):

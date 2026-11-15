@@ -200,6 +200,16 @@ class TestPossibleMatches(unittest.TestCase):
             item['possible_matches'][0]['remaining_sources']=2
         self.assertTrue(validate_comparison(revs,cmp))
 
+    def test_base_item_must_have_lost_a_source(self):
+        revs,cmp=linked_case()
+        revs[0]['claims'][1]['evidence_ids']=['rec-01']
+        cmp['items'][1]['base_evidence_ids']=['rec-01']
+        for item in (cmp['items'][1],cmp['items'][-1]):
+            item['possible_matches'][0].update(remaining_sources=1,original_sources=1)
+        errors=validate_comparison(revs,cmp)
+        self.assertTrue(any('lost no cited source' in e for e in errors))
+        self.assertTrue(any('fewer remaining than original' in e for e in errors))
+
     def test_link_only_on_unmatched_items(self):
         revs,cmp=linked_case()
         cmp['items'][0]['possible_matches']=cmp['items'][1]['possible_matches']

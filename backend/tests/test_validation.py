@@ -412,6 +412,30 @@ class TestPossibleMatches:
             check_comparison(linked), "claim-x source counts do not match", "expected 1 of 2"
         )
 
+    def test_link_on_a_base_item_that_lost_no_source(self, raw: Raw) -> None:
+        # claim-2 now cites only rec-01, which is not excluded: no link may be computed...
+        raw["revision"]["claims"][1]["evidence_ids"] = ["rec-01"]
+        raw["child"]["claims"].append(
+            {
+                "id": "claim-x",
+                "text": "Jordan may meet Casey.",
+                "evidence_ids": ["rec-01"],
+                "status": "reported",
+            }
+        )
+        base, child = revisions_of(raw)
+        raw["comparison"] = compare_revisions(base, child).to_contract_json()
+        before, after = self.items(raw)
+        assert "possible_matches" not in before and "possible_matches" not in after
+        assert check_comparison(raw) == []
+        # ...and a hand-written one is rejected.
+        link = {"shared_evidence_ids": ["rec-01"], "remaining_sources": 1, "original_sources": 1}
+        before["possible_matches"] = [{"ref_id": "claim-x", **link}]
+        after["possible_matches"] = [{"ref_id": "claim-2", **link}]
+        errors = check_comparison(raw)
+        assert_error(errors, "claim-x links a base item that lost no cited source")
+        assert_error(errors, "claim-x must have fewer remaining than original sources")
+
     def test_link_must_be_listed_on_both_items(self, linked: Raw) -> None:
         _, after = self.items(linked)
         del after["possible_matches"]

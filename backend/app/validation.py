@@ -401,8 +401,9 @@ _LINKABLE_BASE_STATUSES = ("unresolved", "not_supported")
 
 
 def _possible_match_errors(comparison: RevisionComparison) -> list[str]:
-    """``possible_matches`` (BLA-63) links an unmatched base item and a newly supported item
-    of the same kind, listed on both, with consistent shared records and counts."""
+    """``possible_matches`` (BLA-63) links an unmatched base item that lost at least one cited
+    source to this exclusion and a newly supported item of the same kind, listed on both,
+    with consistent shared records and counts (remaining < original)."""
     errors: list[str] = []
     excluded = set(comparison.excluded_record_ids)
     vanished = {
@@ -448,6 +449,16 @@ def _possible_match_errors(comparison: RevisionComparison) -> list[str]:
             if shared & excluded:
                 errors.append(f"{label} possible match {match.ref_id} shares excluded records")
             remaining = set(base_item.base_evidence_ids) - excluded
+            if len(remaining) == len(base_item.base_evidence_ids):
+                errors.append(
+                    f"{label} possible match {match.ref_id} links a base item that lost no "
+                    "cited source to this exclusion"
+                )
+            if match.remaining_sources >= match.original_sources:
+                errors.append(
+                    f"{label} possible match {match.ref_id} must have fewer remaining than "
+                    "original sources"
+                )
             if match.original_sources != len(base_item.base_evidence_ids) or (
                 match.remaining_sources != len(remaining)
             ):

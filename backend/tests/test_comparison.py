@@ -639,21 +639,46 @@ def test_links_do_not_depend_on_input_order(base_raw, child_raw) -> None:
     ]
 
 
-def test_a_rewording_that_changes_meaning_is_only_possibly_the_same(base_raw, child_raw) -> None:
-    # Citations cannot tell a negation from a rewording, so the link stays advisory: the
-    # statuses still show the base finding unresolved and the child one newly supported,
-    # and the wording asks the investigator to confirm.
+def test_a_negation_on_records_the_exclusion_did_not_touch_is_not_linked(
+    base_raw, child_raw
+) -> None:
+    # claim-1 cites rec-01 only and rec-02 is excluded: the exclusion cannot explain the
+    # change, and citations cannot tell a negation from a rewording.
     base_raw["claims"][0]["text"] = TRANSFER
-    child_raw["claims"][0].update(id="claim-a", text=TRANSFER.replace("transferred", "never sent"))
+    negated = TRANSFER.replace("transferred", "never transferred")
+    child_raw["claims"][0].update(id="claim-a", text=negated)
     comparison = compare(base_raw, child_raw)
     before = item_for(comparison, "claim", "claim-1", None)
-    assert before.support_status == "unresolved"
-    assert item_for(comparison, "claim", None, "claim-a").support_status == "newly_supported"
-    assert links(before) == [("claim-a", ["rec-01"], 1, 1)]
-    assert before.explanation.endswith(
-        "Possibly the same finding as claim-a in the active analysis: "
-        "1 of 1 cited source remains; please confirm."
-    )
+    after = item_for(comparison, "claim", None, "claim-a")
+    assert (before.support_status, after.support_status) == ("unresolved", "newly_supported")
+    assert before.possible_matches is None and after.possible_matches is None
+    assert "possibly" not in before.explanation.lower()
+
+
+def test_a_base_finding_that_lost_no_source_is_never_linked(base_raw, child_raw) -> None:
+    # Base cites rec-01 and rec-03, neither excluded; the reworded child cites a subset.
+    base_raw["claims"] = [claim("claim-owner", OWNER, ["rec-01", "rec-03"])]
+    child_raw["claims"] = [claim("claim-x", OWNER_REWORDED, ["rec-01"])]
+    comparison = compare(base_raw, child_raw)
+    assert item_for(comparison, "claim", "claim-owner", None).possible_matches is None
+    assert item_for(comparison, "claim", None, "claim-x").possible_matches is None
+
+    # Once the base finding also cited the excluded rec-02, the same child links.
+    base_raw["claims"][0]["evidence_ids"].append("rec-02")
+    comparison = compare(base_raw, child_raw)
+    assert links(item_for(comparison, "claim", None, "claim-x")) == [
+        ("claim-owner", ["rec-01"], 2, 3)
+    ]
+
+
+def test_every_link_has_fewer_remaining_than_original_sources(base_raw, child_raw) -> None:
+    owl_q2(base_raw, child_raw)
+    base_raw["claims"].append(claim("claim-b", "Sarah has a phone.", ["rec-01"]))
+    child_raw["claims"].append(claim("claim-w", "Sarah is the owner.", ["rec-01"]))
+    comparison = compare(base_raw, child_raw)
+    matches = [m for i in comparison.items for m in i.possible_matches or []]
+    assert matches and all(m.remaining_sources < m.original_sources for m in matches)
+    assert item_for(comparison, "claim", "claim-b", None).possible_matches is None
 
 
 def test_items_without_links_omit_the_field_and_validate(base_raw, child_raw) -> None:
