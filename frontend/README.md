@@ -100,3 +100,29 @@ node tests/browser-smoke.mjs
 Live-provider QA additionally covered an indexed local case, both supporting
 sources in search, the original-record modal and Escape, and a 390px viewport.
 These checks validate retrieval/source inspection, not generated live answers.
+
+
+## Timeline view (BLA-39)
+
+The shared workspace uses TimelineView for both the fixture and live revisions.
+It calls the backend's pure `/timeline/normalize` adapter to get authoritative
+ordering and display text. No browser date parser or local timezone conversion is
+used. Known day/month precision is labeled; approximate, unknown-zone exact,
+undated and ambiguous values have a separate section. Original timestamps,
+source-stated/inferred kind and finding status remain visible.
+
+Click an event description to open its original sources. Multiple cited records
+can be selected within the same drawer. Close and Escape restore keyboard focus
+to the event. If normalization fails, no event is hidden and no chronological
+placement is claimed; Retry requests normalization again. Empty timelines make
+no normalization request. The fixture still renders without a running backend,
+with unavailable normalization explicitly indicated.
+
+Tests: `npm test` covers response identity/shape, grouping and unavailable states.
+The backend route tests compare output to the actual normalizer, including offsets,
+coarse precision, unknown zones, ambiguous dates, empty input and duplicate IDs.
+`node tests/timeline-browser.mjs` runs synthetic analysis/source mocks against the
+real local normalizer; requires the preview on port 3002, its backend on 8002 and
+a dedicated headless Chrome test profile exposing CDP on port 9226. It verifies
+ordering, multi-source event inspection, Escape/focus, an independent browser time
+zone, 390px layout, error preservation/retry and empty timelines.

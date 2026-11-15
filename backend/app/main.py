@@ -11,7 +11,7 @@ from app.config import Settings, get_settings
 from app.db import init_db, make_engine, make_session_factory
 from app.embeddings import make_embedder
 from app.retrieval import RetrievalConfig
-from app.routers import analyses, boards, cases, records, search
+from app.routers import analyses, boards, cases, records, search, timeline
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -54,6 +54,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(search.router)
     app.include_router(boards.router)
     app.include_router(analyses.router)
+    app.include_router(timeline.router)
 
     return app
 
