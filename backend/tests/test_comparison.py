@@ -272,6 +272,27 @@ def test_two_findings_on_one_record_are_paired_by_wording_not_order(
     assert result[("event", "event-2", "event-x")] == "still_supported"
 
 
+def test_a_combined_claim_listed_first_does_not_take_another_claims_match(
+    base_raw, child_raw
+) -> None:
+    # A claim citing both records comes first in the base, and the child renumbers its IDs.
+    base_raw["claims"].insert(
+        0,
+        {
+            "id": "claim-0",
+            "text": "Alex is linked to Casey via Jordan.",
+            "evidence_ids": ["rec-01", "rec-02"],
+            "status": "inferred",
+        },
+    )
+    for claim in child_raw["claims"]:
+        claim["id"] = f"new-{claim['id']}"
+    result = statuses(compare(base_raw, child_raw))
+    assert result[("claim", "claim-1", "new-claim-1")] == "still_supported"
+    assert result[("claim", "claim-0", None)] == "unresolved"
+    assert result[("claim", "claim-2", None)] == "not_supported"
+
+
 def test_support_is_counted_in_unique_records(base_raw, child_raw) -> None:
     # The contract allows a finding to cite the same record twice.
     base_raw["claims"][0]["evidence_ids"] = ["rec-01", "rec-01"]
