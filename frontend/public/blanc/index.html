@@ -37,22 +37,22 @@ button span{font:20px system-ui,sans-serif}
 #status:empty{display:none}
 .logo{translate:0 var(--opening-offset, 0px)}
 @keyframes lift{from{translate:0 var(--opening-offset, 0px)}to{translate:0 -6px}}
-.suffix{display:flex;align-items:center;gap:12px;mask-image:linear-gradient(to right,#000 42%,transparent 58%);mask-size:240% 100%;mask-repeat:no-repeat;animation:sweep 1.05s .42s ease-in-out both}
+.suffix{display:flex;align-items:center;gap:12px;clip-path:inset(-8px 100% -8px 0);animation:sweep 1.05s .42s cubic-bezier(.65,0,.35,1) both}
 @keyframes recenter{from{transform:translateX(var(--center-offset, 76px))}to{transform:translateX(0)}}
 .dash{flex:none;animation:close-dash .75s 2.12s ease-in-out both}
 .logo,.suffix{animation-name:recenter,close-gap,lift;animation-duration:1.05s,.75s,.65s;animation-delay:.42s,2.12s,3.22s;animation-timing-function:ease-in-out;animation-fill-mode:both}
-.suffix{animation-name:sweep,close-gap,unmask;animation-duration:1.05s,.75s,0s;animation-delay:.42s,2.12s,1.48s}
+.suffix{animation-name:sweep,close-gap,unclip;animation-duration:1.05s,.75s,0s;animation-delay:.42s,2.12s,1.48s}
 @keyframes close-dash{from{width:32px;opacity:1}to{width:0;opacity:0}}
 @keyframes close-gap{from{gap:12px}to{gap:0}}
-@keyframes sweep{from{mask-position:100% 0;opacity:0}to{mask-position:0 0;opacity:1}}
-@keyframes unmask{to{mask-image:none}}
+@keyframes sweep{from{clip-path:inset(-8px 100% -8px 0)}to{clip-path:inset(-8px 0 -8px 0)}}
+@keyframes unclip{to{clip-path:none}}
 @keyframes reveal{from{visibility:hidden;opacity:0}to{visibility:visible;opacity:1}}
 .initial{padding:6px 0 10px 11px;position:relative;z-index:1;animation:reverse-ink .75s 2.12s ease-in-out both}
 .reverse::before{content:"";position:absolute;top:0;bottom:0;right:100%;width:0;background:var(--ink);animation:engulf .75s 2.12s ease-in-out both}
 @keyframes tighten{from{padding-left:8px;margin-left:0}to{padding-left:0;margin-left:0}}
 @keyframes engulf{from{width:0}to{width:var(--initial-width, 32px)}}
 @keyframes reverse-ink{0%,40%{color:var(--ink)}to{color:var(--paper)}}
-@media(prefers-reduced-motion:reduce){.logo,.suffix,.dash,.initial,.reverse::before,.reverse,form{animation:none}.reverse{padding-left:0;margin-left:0}.reverse::before{width:var(--initial-width, 32px)}.initial{color:var(--paper)}.logo,.suffix{gap:0}.dash{display:none}.suffix{mask:none}.logo{translate:none}}
+@media(prefers-reduced-motion:reduce){.logo,.suffix,.dash,.initial,.reverse::before,.reverse,form{animation:none}.reverse{padding-left:0;margin-left:0}.reverse::before{width:var(--initial-width, 32px)}.initial{color:var(--paper)}.logo,.suffix{gap:0}.dash{display:none}.suffix{clip-path:none}.logo{translate:none}}
 
 .logo{--logo-height:76px}
 .initial,.reverse{height:var(--logo-height);display:flex;align-items:center}
