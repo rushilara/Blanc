@@ -12,6 +12,8 @@ type SourceReferencesProps = {
   caseId: string;
   records: EvidenceRecord[];
   autoOpen?: boolean;
+  /** When set, render this label as the open control instead of citation chips (timeline events). */
+  triggerLabel?: string;
   excludedRecordIds?: string[];
   onExclude?: (recordId: string) => void;
   onAnnotate?: (recordId: string) => void;
@@ -91,13 +93,16 @@ function RecordSection({
   onAnnotate?: (recordId: string) => void;
 }) {
   const fromProp = resolveFromProp(records, caseId, recordId);
+  const hasPropRecord = fromProp != null;
   const [remote, setRemote] = useState<RemoteState | null>(
-    fromProp ? null : { status: "loading" },
+    hasPropRecord ? null : { status: "loading" },
   );
   const sectionRef = useRef<HTMLElement>(null);
 
+  // Depend on caseId/recordId and whether the prop already has the record — not the
+  // records array identity — so parent re-renders do not abort/refetch while open.
   useEffect(() => {
-    if (resolveFromProp(records, caseId, recordId)) return;
+    if (hasPropRecord) return;
 
     const controller = new AbortController();
     fetchRecord(caseId, recordId, controller.signal)
@@ -118,7 +123,7 @@ function RecordSection({
       });
 
     return () => controller.abort();
-  }, [caseId, recordId, records]);
+  }, [caseId, recordId, hasPropRecord]);
 
   useEffect(() => {
     if (highlighted) sectionRef.current?.scrollIntoView({ block: "nearest" });
@@ -217,6 +222,7 @@ export function SourceReferences({
   caseId,
   records,
   autoOpen = false,
+  triggerLabel,
   excludedRecordIds = [],
   onExclude,
   onAnnotate,
@@ -231,9 +237,9 @@ export function SourceReferences({
   const [dialogOpen, setDialogOpen] = useState(autoOpen && uniqueIds.length > 0);
   const excluded = new Set(excludedRecordIds);
 
-  // Open when autoOpen flips on or the investigator clicks a chip. Do not call
-  // dialog.close() in cleanup: under React StrictMode (npm run dev) the close
-  // event can fire after remount and clear open state.
+  // Open when autoOpen flips on or the investigator clicks a chip/label. Do not
+  // call dialog.close() in cleanup: under React StrictMode (npm run dev) the
+  // close event can fire after remount and clear open state.
   useEffect(() => {
     if (!dialogOpen) return;
     const el = dialog.current;
@@ -249,21 +255,34 @@ export function SourceReferences({
 
   return (
     <>
-      <ul aria-label="Source record references" className="flex flex-wrap gap-1.5">
-        {uniqueIds.map((id) => (
-          <li key={id}>
-            <button
-              type="button"
-              onClick={() => open(id)}
-              aria-haspopup="dialog"
-              aria-label={`Inspect source ${id}`}
-              className="rounded-md border border-blue-200 bg-blue-50 px-2 py-1 font-mono text-xs text-blue-800 underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-200"
-            >
-              {id}
-            </button>
-          </li>
-        ))}
-      </ul>
+      {triggerLabel ? (
+        <button
+          type="button"
+          disabled={!uniqueIds.length}
+          onClick={() => open(uniqueIds[0]!)}
+          aria-haspopup="dialog"
+          aria-label={`Inspect evidence for event: ${triggerLabel}`}
+          className="block w-full break-words text-left text-sm leading-6 underline decoration-blue-400 underline-offset-4 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600 disabled:opacity-50"
+        >
+          {triggerLabel}
+        </button>
+      ) : (
+        <ul aria-label="Source record references" className="flex flex-wrap gap-1.5">
+          {uniqueIds.map((id) => (
+            <li key={id}>
+              <button
+                type="button"
+                onClick={() => open(id)}
+                aria-haspopup="dialog"
+                aria-label={`Inspect source ${id}`}
+                className="rounded-md border border-blue-200 bg-blue-50 px-2 py-1 font-mono text-xs text-blue-800 underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-200"
+              >
+                {id}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
       {dialogOpen && (
         <dialog
           ref={dialog}

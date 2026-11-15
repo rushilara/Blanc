@@ -241,3 +241,20 @@ Every response is `InvestigationBoard` contract JSON. A board is a series of app
 - **Validated before saving.** The new snapshot goes through `validate_board`. Any error is a 422 listing every problem, and nothing is saved.
 - **Errors:** 404 for an unknown case or board, or a board of another case; 409 when `expected_revision` is stale or another save took that revision number; 422 for an invalid change. A change that alters nothing returns the current snapshot and writes nothing.
 - **Revision lookup.** Boards find revisions through the `get_revision_lookup` dependency in `app/routers/boards.py`, which returns `app.analyses.saved_revision_lookup`: only findings of saved revisions of the same case can be pinned, and only a saved revision can be `active_analysis_id` (otherwise a 422: `no saved revision ... in this case` / `active_analysis_id ... is not a revision of case ...`). Tests override the dependency to inject revisions.
+
+## Timeline display adapter (BLA-39)
+
+`POST /timeline/normalize` takes `{"events": [TimelineEvent, ...]}` and returns the
+existing `normalize_timeline(...).as_dict()` result: `dated` and `undated` arrays
+of `{event_id, instant, precision, timezone_known, display}`. It is a pure input
+transformation: it neither looks up case data nor calls a model or saves anything.
+This lets synthetic previews and live analyses use the same normalization rules
+without changing the AnalysisRevision contract. Duplicate event IDs and malformed
+inputs return 422; input is capped at 2,000 events per call.
+
+The frontend displays `display` as text and preserves backend ordering. It never
+passes source timestamps through JavaScript Date. Approximate times and exact
+wall-clock times with unknown zones are presented in the separate uncertain
+section; day/month values remain dated with explicit precision labels. An
+unavailable normalizer leaves all events visible as unverified, with a retry,
+rather than silently inventing chronology.

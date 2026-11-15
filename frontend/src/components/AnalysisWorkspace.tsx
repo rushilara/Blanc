@@ -1,7 +1,10 @@
-import type { ReactNode } from "react";
+"use client";
+
+import { useMemo, type ReactNode } from "react";
 import type { AnalysisRevision, EvidenceRecord } from "@/lib/analysis";
 import { QuestionInput } from "@/components/QuestionInput";
 import { SourceReferences } from "@/components/SourceReferences";
+import { TimelineView } from "@/components/TimelineView";
 
 function Pane({ id, title, count, children }: {
   id: string; title: string; count: number; children: ReactNode;
@@ -46,7 +49,10 @@ export function AnalysisWorkspace({
   onAnnotate,
 }: AnalysisWorkspaceProps) {
   // Do not serialize other cases' excerpts into the client-side source controls.
-  const caseRecords = records.filter((record) => record.case_id === revision.case_id);
+  const caseRecords = useMemo(
+    () => records.filter((record) => record.case_id === revision.case_id),
+    [records, revision.case_id],
+  );
   const nodes = new Map(revision.graph.nodes.map((node) => [node.id, node.label]));
   const sourceProps = {
     records: caseRecords,
@@ -114,19 +120,15 @@ export function AnalysisWorkspace({
           {!revision.graph.edges.length && <p className="text-sm text-zinc-500">No supported relationships.</p>}
         </Pane>
         <Pane id="timeline" title="Timeline" count={revision.timeline_events.length}>
-          <ol className="space-y-5">
-            {revision.timeline_events.map((event) => (
-              <li key={event.id} className="space-y-2 border-l-2 border-zinc-200 pl-3 dark:border-zinc-700">
-                {/* Raw source dates may be approximate. BLA-39 owns normalization. */}
-                <p className="break-words font-mono text-xs">{event.timestamp ?? "Undated"}</p>
-                <p className="text-xs text-zinc-500">{event.timestamp_precision ?? "unknown"} precision · {(event.timestamp_kind ?? "unknown").replaceAll("_", " ")}</p>
-                <p className="text-sm leading-6">{event.description}</p>
-                <Status value={event.status} />
-                <SourceReferences {...sourceProps} ids={event.evidence_ids} />
-              </li>
-            ))}
-          </ol>
-          {!revision.timeline_events.length && <p className="text-sm text-zinc-500">No supported events.</p>}
+          <TimelineView
+            key={`${revision.case_id}:${revision.analysis_id}`}
+            events={revision.timeline_events}
+            caseId={revision.case_id}
+            records={caseRecords}
+            excludedRecordIds={revision.excluded_record_ids}
+            onExclude={onExclude}
+            onAnnotate={onAnnotate}
+          />
         </Pane>
       </div>
       {!!revision.excluded_record_ids.length && (
