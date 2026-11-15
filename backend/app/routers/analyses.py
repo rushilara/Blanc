@@ -1,22 +1,27 @@
-"""Saved analysis revisions: history, one revision, and its lineage (BLA-28).
+"""Saved analysis revisions: history, one revision, its lineage (BLA-28), and restoring
+excluded records by reusing an earlier evidence state (BLA-35).
 
-Revisions are created by the analyze, follow-up, exclude and restore endpoints through
-``app.analyses.save_revision``; these routes only read them. A revision is returned as
-``AnalysisRevision`` contract JSON, exactly as saved.
+Revisions are created by the analyze, follow-up and exclude endpoints through
+``app.analyses.save_revision``; restore creates one through ``restore_records``. A revision
+is returned as ``AnalysisRevision`` contract JSON, exactly as saved.
 """
 
 from datetime import datetime
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from app.analyses import (
+    InvalidRestoreError,
+    NoPriorStateError,
+    RevisionConflictError,
     RevisionNotFoundError,
     RevisionSummary,
     get_revision,
     list_revisions,
+    restore_records,
     revision_lineage,
 )
 from app.contracts import AnalysisRevision
@@ -33,6 +38,8 @@ class RevisionSummaryRead(BaseModel):
     question: str
     needs_review: bool
     created_at: datetime
+    excluded_record_ids: list[str]  # the evidence state of this revision
+    restored_from_analysis_id: str | None  # set when this revision is a restore
 
     @classmethod
     def of(cls, summary: RevisionSummary) -> "RevisionSummaryRead":
@@ -65,3 +72,43 @@ def get_analysis_lineage(
     except RevisionNotFoundError as error:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Analysis not found") from error
     return [RevisionSummaryRead.of(s) for s in chain]
+
+
+class RestoreRequest(BaseModel):
+    """Body of ``POST .../restore``: the excluded records to bring back."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    record_ids: Annotated[
+        list[Annotated[str, StringConstraints(min_length=1)]], Field(min_length=1, max_length=200)
+    ]
+
+
+@router.post(
+    "/{analysis_id}/restore",
+    status_code=status.HTTP_201_CREATED,
+    responses={201: {"model": AnalysisRevision}},
+)
+def restore_analysis_records(
+    analysis_id: str, body: RestoreRequest, case: CaseDep, session: SessionDep
+) -> Any:
+    """Bring excluded records back by reusing the nearest earlier revision (same question)
+    whose exclusions are exactly what remains. Saves that revision's findings as a new
+    child of ``analysis_id``; nothing is deleted or rewritten. Returns the new revision.
+
+    404 for an unknown revision; 422 if a record is not excluded here; 409 if no earlier
+    revision had that evidence state (the analysis has to be rerun instead).
+    """
+    try:
+        result = restore_records(session, case.case_id, analysis_id, body.record_ids)
+    except RevisionNotFoundError as error:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Analysis not found") from error
+    except InvalidRestoreError as error:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)) from error
+    except (NoPriorStateError, RevisionConflictError) as error:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
+    return JSONResponse(
+        result.revision.to_contract_json(),
+        status_code=status.HTTP_201_CREATED,
+        headers={"X-Restored-From": result.restored_from.analysis_id},
+    )
