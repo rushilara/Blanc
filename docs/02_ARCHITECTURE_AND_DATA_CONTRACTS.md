@@ -2,6 +2,8 @@
 
 ## 1. Architectural decision
 
+**Local-first data + cloud AI compute (MVP).** Evidence files, SQLite (records, chunks, sqlite-vec, FTS5), and saved investigations stay on the investigator’s machine. FastAPI and the Next.js UI run locally. Embeddings and structured analysis call **Gemini** over the network, so selected evidence text still leaves the machine for those operations. Do **not** design MVP around Railway/S3-hosted corpora. Preserve the option for a later hosted app deploy and for fully offline/local models.
+
 **Do not precompute the whole knowledge graph or event database during ingestion.** That can be an optimization later. In the first prototype, parse and embed records on import; **retrieve and construct a question-relevant reconstruction at runtime**.
 
 ```text
@@ -98,10 +100,12 @@ The board stores: user-pinned claim IDs, graph nodes/edges, timeline events, not
 
 ## 8. Implementation choices
 
-- **Backend:** FastAPI + Pydantic, SQLite, embedding and LLM API of choice.
-- **Retrieval:** local Chroma/FAISS or sqlite-based vector extension; keyword search with SQLite FTS5; start with simple weighted rank fusion.
-- **Frontend:** Next.js + React, a graph library (e.g., React Flow), custom timeline and evidence drawer.
-- **Storage:** SQLite for durable evidence metadata/versions; upload directory for originals; vector index scoped to case.
+- **Backend:** FastAPI + Pydantic on localhost; SQLite on disk; Gemini for embeddings and LLM analysis.
+- **Retrieval:** sqlite-vec + SQLite FTS5 in the same local DB file; simple weighted rank fusion.
+- **Frontend:** Next.js + React on localhost, talking to the local backend (`NEXT_PUBLIC_API_BASE_URL`); graph library (e.g., React Flow), custom timeline and evidence drawer.
+- **Storage:** Local SQLite for durable evidence metadata/versions; local directory for originals; vector + keyword indexes scoped to case. No cloud evidence store in MVP.
+- **Cloud surface (MVP):** Gemini API for embeddings/LLM; optional static marketing/landing host (no case data). API keys live in the investigator’s local `.env`. Keep the login page; real cloud auth can gate the local app (post-MVP wiring is fine if the hackathon clock is tight).
+- **Deferred:** desktop packaging; optional full cloud deploy of the app; fully offline/local models; production org/RBAC.
 - **No new model training, Neo4j, or heavyweight agent framework required for the prototype.**
 
 ## 9. What can go wrong and the mitigation
@@ -115,3 +119,5 @@ The board stores: user-pinned claim IDs, graph nodes/edges, timeline events, not
 | Contradictory saved versions | Preserve side-by-side revisions, model uncertainty and annotator notes. |
 | Uploaded content injects instructions | Isolate source text from system instructions, escape display, validate output schema. |
 | Data leaks between cases | Mandatory case filters in every retrieval and source-ID lookup. |
+| Mistaking local-first for offline privacy | Document that Gemini still processes evidence text; use public/synthetic data for demos; offline models are post-MVP. |
+| Hosting the case DB “for convenience” | Keep MVP demos on localhost; only host marketing/static pages if needed. |

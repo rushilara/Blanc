@@ -76,6 +76,8 @@ starting dev mode; it is a public, build-time value. Optionally set
 The repo-root `.env` is supported as well as frontend/environment configuration.
 Never put a Gemini key in a `NEXT_PUBLIC_` variable. Gemini stays on the backend.
 
+**Local-first:** the workspace talks to a local FastAPI backend; case evidence lives in local SQLite, not a hosted store. Keep the landing login page; real cloud auth is tracked in BLA-60 (gates the app — it does not encrypt the DB file by itself).
+
 `Generate analysis` posts `{question}` to `/cases/{case_id}/analyses`. It expects
 the direct AnalysisRevision contract response. Schema-valid responses for the
 same case/question use the existing Answer/Relationships/Timeline renderer.
