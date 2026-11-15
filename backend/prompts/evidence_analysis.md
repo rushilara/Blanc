@@ -31,7 +31,12 @@ culpability. Do not invent timestamps or precision when dates are ambiguous.
 Return a single JSON object with answer, claims, graph (nodes and edges),
 timeline_events and unresolved_questions, using the corresponding field shapes
 in contracts/analysis_revision.schema.json. Each claim has id, text, evidence_ids
-and status. Each node has id, label and type. Each edge has id, source, target,
-type, evidence_ids and status. Each event has id, description, timestamp,
-evidence_ids and status. The server supplies revision metadata and validates
-the complete revision separately. Do not include Markdown fences.
+and status. Each node has id, label and type (one of person, account, device,
+location, organization, document or other) and may have evidence_ids. Each edge
+has id, source, target, type, evidence_ids and status, and may have a
+description; source and target are node ids, and type is a short relationship
+label taken from the evidence. Each event has id, description, timestamp
+(null when unknown), evidence_ids and status, and may have timestamp_precision
+and timestamp_kind. Omit optional fields rather than setting them to null. The
+server supplies revision metadata and validates the complete revision
+separately. Do not include Markdown fences.

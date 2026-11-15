@@ -34,7 +34,9 @@ backend is packaged; the loader resolves it relative to that module.
 
 These tests check isolation, encoding, case boundaries and exclusions. They do
 not demonstrate that a real model resists an injection. The following behavior
-check remains required once BLA-15 connects the selected model.
+check remains required now that BLA-15 connects the selected model
+(`app/analysis_llm.py`); `tests/test_analysis_llm_live.py` automates its first
+two runs (`make test-live`).
 
 ## Model behavior acceptance check
 
