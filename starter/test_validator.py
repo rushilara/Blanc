@@ -249,6 +249,26 @@ class TestPossibleMatches(unittest.TestCase):
     def test_edge_link_rejects_endpoint_type_change(self):
         self._reject_edge_after_endpoint_change(type='organization')
 
+    def test_edge_link_allows_normalised_label_differences(self):
+        # Case/spacing-only label differences still match (_wording); without normalisation
+        # this hand-written link would fail the endpoint check.
+        base=deepcopy(revision); kid=deepcopy(child); cmp=deepcopy(comparison)
+        base['graph']['edges'][0]['evidence_ids']=['rec-01','rec-02']
+        edge=deepcopy(base['graph']['edges'][0]); edge['id']='edge-x'; edge['type']='emailed'
+        edge['evidence_ids']=['rec-01']
+        for node in kid['graph']['nodes']:
+            if node['id']=='jordan': node['label']='  jordan. '
+        kid['graph']['edges']=[e for e in kid['graph']['edges'] if e['id']!='edge-1']+[edge]
+        cmp['items']=[i for i in cmp['items'] if not (i.get('kind')=='edge' and i.get('base_ref_id')=='edge-1')]
+        link={'shared_evidence_ids':['rec-01'],'remaining_sources':1,'original_sources':2}
+        cmp['items'].append({'kind':'edge','base_ref_id':'edge-1','compared_ref_id':None,
+            'support_status':'unresolved','base_evidence_ids':['rec-01','rec-02'],
+            'compared_evidence_ids':[],'possible_matches':[{'ref_id':'edge-x',**link}]})
+        cmp['items'].append({'kind':'edge','base_ref_id':None,'compared_ref_id':'edge-x',
+            'support_status':'newly_supported','base_evidence_ids':[],
+            'compared_evidence_ids':['rec-01'],'possible_matches':[{'ref_id':'edge-1',**link}]})
+        self.assertEqual(validate_comparison([base,kid],cmp),[])
+
     def test_counts_must_match(self):
         revs,cmp=linked_case()
         for item in (cmp['items'][1],cmp['items'][-1]):
