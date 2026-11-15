@@ -192,3 +192,11 @@ def test_only_image_paths_are_candidates() -> None:
         }
     )
     assert media_source_paths(image_record) == ["Users/A/scan.JPG"]
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_a_blank_evidence_root_means_no_images(blank: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.config import Settings
+
+    monkeypatch.setenv("EVIDENCE_ROOT", blank)
+    assert Settings(_env_file=None).EVIDENCE_ROOT is None
