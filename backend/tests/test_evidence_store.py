@@ -240,6 +240,8 @@ def test_changed_content_for_existing_record_is_rejected(session, cases, embedde
     assert result.inserted == 1
     assert [r.record_id for r in result.rejected] == ["rec-1"]
     assert "immutable" in result.rejected[0].reason
+    assert "(fields: content)" in result.rejected[0].reason
+    assert result.source_changed == []
     assert get_record(session, a, "rec-1").content == "original text"
     assert [c.text for c in list_chunks(session, a, "rec-1")] == ["original text"]
     assert embedder.calls[calls:] == [["new record"]]
@@ -247,6 +249,109 @@ def test_changed_content_for_existing_record_is_rejected(session, cases, embedde
     # Metadata changes count as different content too.
     meta = store_records(session, a, [record(a, "rec-2", "new record", metadata={})], embedder)
     assert [r.record_id for r in meta.rejected] == ["rec-2"]
+    assert "(fields: metadata)" in meta.rejected[0].reason
+
+
+SHA_OLD, SHA_NEW = "a" * 64, "b" * 64
+
+
+def test_only_source_file_hash_changed_is_unchanged(session, cases, embedder) -> None:
+    """A source file was edited (e.g. messages appended): its existing records arrive with
+    a new original_sha256 but are otherwise identical. Keep the stored version, report it."""
+    a, _ = cases
+    store_records(session, a, [record(a, "rec-1", "hello", original_sha256=SHA_OLD)], embedder)
+    session.commit()
+    calls = len(embedder.calls)
+    rows, chunks = count(session, "evidence_records"), count(session, "evidence_chunks")
+
+    result = store_records(
+        session, a, [record(a, "rec-1", "hello", original_sha256=SHA_NEW)], embedder
+    )
+    session.commit()
+    assert (result.inserted, result.unchanged, result.chunks_created) == (0, 1, 0)
+    assert (result.rejected, result.source_changed) == ([], ["rec-1"])
+    assert len(embedder.calls) == calls
+    assert get_record(session, a, "rec-1").original_sha256 == SHA_OLD  # not overwritten
+    assert count(session, "evidence_records") == rows
+    assert count(session, "evidence_chunks") == chunks
+
+    # Adding or dropping the file hash is the same kind of change.
+    added = store_records(session, a, [record(a, "rec-2", "x")], embedder)
+    assert added.inserted == 1
+    again = store_records(session, a, [record(a, "rec-2", "x", original_sha256=SHA_NEW)], embedder)
+    assert (again.unchanged, again.source_changed, again.rejected) == (1, ["rec-2"], [])
+
+
+def test_content_and_file_hash_changed_is_rejected_naming_fields(session, cases, embedder):
+    a, _ = cases
+    stored = record(a, "rec-1", "hello", original_sha256=SHA_OLD, timestamp="2024-01-01")
+    store_records(session, a, [stored], embedder)
+    result = store_records(
+        session,
+        a,
+        [record(a, "rec-1", "hi", original_sha256=SHA_NEW, timestamp="2024-01-02")],
+        embedder,
+    )
+    assert result.source_changed == []
+    assert [r.record_id for r in result.rejected] == ["rec-1"]
+    assert "(fields: content, original_sha256, timestamp)" in result.rejected[0].reason
+    assert get_record(session, a, "rec-1").content == "hello"
+
+
+def test_mixed_batch_after_source_file_edit(session, cases, embedder) -> None:
+    """Re-import of an edited chat export: old messages (new file hash), one edited message,
+    one appended message, one exact duplicate."""
+    a, _ = cases
+    store_records(
+        session,
+        a,
+        [
+            record(a, "m1", "first", original_sha256=SHA_OLD),
+            record(a, "m2", "second", original_sha256=SHA_OLD),
+            record(a, "m3", "third", original_sha256=SHA_OLD),
+        ],
+        embedder,
+    )
+    session.commit()
+    calls = len(embedder.calls)
+
+    result = store_records(
+        session,
+        a,
+        [
+            record(a, "m1", "first", original_sha256=SHA_NEW),  # source changed only
+            record(a, "m2", "second (edited)", original_sha256=SHA_NEW),  # rejected
+            record(a, "m3", "third", original_sha256=SHA_OLD),  # exact duplicate
+            record(a, "m4", "fourth", original_sha256=SHA_NEW),  # new
+        ],
+        embedder,
+    )
+    session.commit()
+    assert (result.inserted, result.unchanged, result.chunks_created) == (1, 2, 1)
+    assert result.source_changed == ["m1"]
+    assert [r.record_id for r in result.rejected] == ["m2"]
+    assert "(fields: content, original_sha256)" in result.rejected[0].reason
+    assert embedder.calls[calls:] == [["fourth"]]
+    assert get_record(session, a, "m1").original_sha256 == SHA_OLD
+    assert get_record(session, a, "m2").content == "second"
+
+
+def test_file_hash_only_duplicate_within_one_call(session, cases, embedder) -> None:
+    a, _ = cases
+    result = store_records(
+        session,
+        a,
+        [
+            record(a, "rec-1", "one", original_sha256=SHA_OLD),
+            record(a, "rec-1", "one", original_sha256=SHA_NEW),
+            record(a, "rec-1", "two", original_sha256=SHA_OLD),
+        ],
+        embedder,
+    )
+    assert (result.inserted, result.unchanged, result.source_changed) == (1, 1, ["rec-1"])
+    assert [r.record_id for r in result.rejected] == ["rec-1"]
+    assert "(fields: content)" in result.rejected[0].reason
+    assert get_record(session, a, "rec-1").original_sha256 == SHA_OLD
 
 
 def test_duplicate_record_ids_within_one_call(session, cases, embedder) -> None:

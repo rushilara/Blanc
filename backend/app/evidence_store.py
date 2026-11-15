@@ -8,9 +8,17 @@ Rules:
 - Records are keyed by ``(case_id, record_id)``. Storing a record identical to one already
   stored (same SHA-256 of its canonical contract JSON) is a no-op: no new rows, no
   embedding calls. So re-importing a case does not duplicate anything.
+- A record that differs from the stored one **only** in file-provenance fields
+  (``PROVENANCE_FIELDS``: ``original_sha256``, the hash of the whole source file) is
+  treated as unchanged. This happens when a source file is edited, e.g. a chat export with
+  new messages appended: the record's own content, locator and timestamp are the same. The
+  stored version is kept as-is (its ``original_sha256`` is not overwritten), nothing is
+  embedded, and the ``record_id`` is listed in ``StoreResult.source_changed`` so the
+  importer can surface it. These records are counted in ``StoreResult.unchanged`` too.
 - Records are immutable (docs/02 §2). A record whose ``record_id`` is already stored in
-  the case with **different** content is rejected and the stored version is kept. The
-  same applies to a second, different copy of a ``record_id`` within one call.
+  the case with any other difference is rejected, the stored version is kept, and the
+  reason names the differing fields. The same applies to a second, different copy of a
+  ``record_id`` within one call.
 - A record whose ``case_id`` is not the target case is rejected.
 - Rejections do not abort the call: the other records are stored and every rejection is
   listed in ``StoreResult.rejected``. An unknown case raises ``CaseNotFoundError``.
@@ -63,9 +71,20 @@ class RejectedRecord:
 @dataclass
 class StoreResult:
     inserted: int = 0
+    #: Records already stored, including the ``source_changed`` ones.
     unchanged: int = 0
     chunks_created: int = 0
     rejected: list[RejectedRecord] = field(default_factory=list)
+    #: IDs of unchanged records whose source file hash differs from the stored one (a
+    #: subset of ``unchanged``). The stored version, with its old hash, was kept.
+    source_changed: list[str] = field(default_factory=list)
+
+
+#: Contract fields that describe the source *file* rather than the record itself. A
+#: record differing from the stored one only in these is not a content change. Kept to
+#: ``original_sha256``: ``source_file`` and ``metadata`` can carry record meaning, so a
+#: change there is still a conflict.
+PROVENANCE_FIELDS: frozenset[str] = frozenset({"original_sha256"})
 
 
 def content_hash(record: EvidenceRecord) -> str:
@@ -74,6 +93,16 @@ def content_hash(record: EvidenceRecord) -> str:
         record.to_contract_json(), sort_keys=True, ensure_ascii=False, separators=(",", ":")
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+_MISSING = object()
+
+
+def differing_fields(a: EvidenceRecord, b: EvidenceRecord) -> list[str]:
+    """Sorted contract fields whose values differ (a field absent on one side counts)."""
+    ja, jb = a.to_contract_json(), b.to_contract_json()
+    keys = ja.keys() | jb.keys()
+    return sorted(k for k in keys if ja.get(k, _MISSING) != jb.get(k, _MISSING))
 
 
 def _require_case(session: Session, case_id: str) -> None:
@@ -114,6 +143,20 @@ def _stored_hashes(session: Session, case_id: str, record_ids: Sequence[str]) ->
     return hashes
 
 
+def _stored_records(
+    session: Session, case_id: str, record_ids: Sequence[str]
+) -> dict[str, EvidenceRecord]:
+    found: dict[str, EvidenceRecord] = {}
+    for batch in _batched(list(dict.fromkeys(record_ids))):
+        rows = session.scalars(
+            select(EvidenceRecordRow).where(
+                EvidenceRecordRow.case_id == case_id, EvidenceRecordRow.record_id.in_(batch)
+            )
+        )
+        found.update({row.record_id: row.to_contract() for row in rows})
+    return found
+
+
 def _write_index(session: Session, chunks: list[EvidenceChunk], vectors: list[list[float]]):
     indexed = [IndexedChunk(c.chunk_id, c.case_id, c.record_id, c.text) for c in chunks]
     insert_vectors(session, indexed, vectors)
@@ -134,6 +177,8 @@ def store_records(
     stored = _stored_hashes(session, case_id, [r.record_id for r in records])
     accepted: dict[str, str] = {}  # record_id -> hash, for records new in this call
     new_records: list[tuple[EvidenceRecord, str]] = []
+    first_seen: dict[str, EvidenceRecord] = {}  # record_id -> the version that wins
+    conflicts: list[EvidenceRecord] = []  # same record_id, different hash; resolved below
     for record in records:
         if record.case_id != case_id:
             result.rejected.append(
@@ -148,14 +193,27 @@ def store_records(
         if known is None:
             accepted[record.record_id] = digest
             new_records.append((record, digest))
+            first_seen[record.record_id] = record
         elif known == digest:
             result.unchanged += 1
+        else:
+            conflicts.append(record)
+
+    # Hashes differ: load the stored versions (only for these) to see which fields differ.
+    missing = [r.record_id for r in conflicts if r.record_id not in first_seen]
+    first_seen.update(_stored_records(session, case_id, missing))
+    for record in conflicts:
+        fields = differing_fields(first_seen[record.record_id], record)
+        if set(fields) <= PROVENANCE_FIELDS:
+            result.unchanged += 1
+            result.source_changed.append(record.record_id)
         else:
             result.rejected.append(
                 RejectedRecord(
                     record.record_id,
-                    "record_id already stored in this case with different content; records "
-                    "are immutable, so the stored version was kept",
+                    f"record_id already stored in this case with different content "
+                    f"(fields: {', '.join(fields)}); records are immutable, so the stored "
+                    f"version was kept",
                 )
             )
 
