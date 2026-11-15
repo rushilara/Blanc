@@ -1101,6 +1101,7 @@ def test_cli_rejected_media_record_cleans_up_new_file(tmp_path: Path) -> None:
     leftover = list(media_dir.rglob("*.png")) if media_dir.exists() else []
     assert leftover == []
 
+
 def test_media_reembed_on_model_change_uses_bytes_not_sidecar(tmp_path: Path) -> None:
     """A model switch must call embed_media with file bytes, never the FTS sidecar text."""
     from app.evidence_store import list_chunks, reembed_stale_chunks, store_records
