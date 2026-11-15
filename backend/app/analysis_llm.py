@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
@@ -43,7 +44,6 @@ from app.contracts import (
     ContractModel,
     Graph,
     Omittable,
-    SuggestedFollowups,
     TimelineEvent,
 )
 from app.models import EvidenceRecordRow
@@ -89,19 +89,40 @@ class AnalysisOutput(ContractModel):
     graph: Graph
     timeline_events: list[TimelineEvent]
     unresolved_questions: list[str]
-    suggested_followups: Omittable[SuggestedFollowups] = None
+    # Loose here: full sanitize (cap, exclusions, blanks) runs in ``analysis_retry._revision``
+    # once excluded IDs are known. The before-validator only coerces bad shapes so parsing
+    # never fails on optional suggestions (BLA-54).
+    suggested_followups: Omittable[list[str]] = None
 
     @model_validator(mode="before")
     @classmethod
     def _clean_followups(cls, data: Any) -> Any:
-        """Suggestions are optional extras: invalid ones are trimmed or dropped here, so they
-        never fail the analysis or trigger the validation retry (BLA-54)."""
-        if isinstance(data, dict) and "suggested_followups" in data:
-            data = dict(data)
-            cleaned = sanitize_followups(data.pop("suggested_followups"))
-            if cleaned:
-                data["suggested_followups"] = cleaned
+        """Coerce unusable ``suggested_followups`` shapes to omit; do not cap or filter
+        exclusions here (that would drop good suggestions that sit past excluded ones)."""
+        if not isinstance(data, dict) or "suggested_followups" not in data:
+            return data
+        data = dict(data)
+        raw = data.pop("suggested_followups")
+        if isinstance(raw, list | tuple):
+            strings = [item for item in raw if isinstance(item, str)]
+            if strings:
+                data["suggested_followups"] = strings
         return data
+
+
+def names_excluded_record(text: str, excluded_ids: Iterable[str]) -> bool:
+    """True if ``text`` names any excluded record ID as a whole token (case-insensitive).
+
+    Token boundaries are non-``[\\w-]`` characters, so ``rec-1`` does not match inside
+    ``rec-12``, while ``REC-02`` still matches ``rec-02``. Loose forms like ``rec 02`` are
+    not treated as IDs.
+    """
+    if not text:
+        return False
+    for rid in excluded_ids:
+        if rid and re.search(rf"(?<![\w-]){re.escape(rid)}(?![\w-])", text, re.I):
+            return True
+    return False
 
 
 def sanitize_followups(value: Any, *, excluded_record_ids: Iterable[str] = ()) -> list[str]:
@@ -111,7 +132,7 @@ def sanitize_followups(value: Any, *, excluded_record_ids: Iterable[str] = ()) -
     and overlong items (over ``MAX_FOLLOWUP_CHARS``; cutting a question could change what
     it asks), drops any that name an ``excluded_record_ids`` value, removes duplicates
     (ignoring case) and keeps the first ``MAX_SUGGESTED_FOLLOWUPS``. Anything that is not a
-    list gives ``[]``.
+    list gives ``[]``. Call this once exclusions are known (``analysis_retry._revision``).
     """
     if not isinstance(value, list | tuple):
         return []
@@ -125,7 +146,7 @@ def sanitize_followups(value: Any, *, excluded_record_ids: Iterable[str] = ()) -
         key = text.casefold()
         if not text or len(text) > MAX_FOLLOWUP_CHARS or key in seen:
             continue
-        if any(rid in text for rid in excluded):
+        if names_excluded_record(text, excluded):
             continue
         seen.add(key)
         kept.append(text)
@@ -176,8 +197,11 @@ def _readable_errors(exc: ValidationError) -> list[str]:
 # ``additionalProperties`` (google-genai rejects it on the Developer API for
 # ``response_schema``; constrained decoding only emits declared properties anyway).
 # Pydantic still enforces all of them.
+# ``maxItems`` is intentionally omitted: Gemini would apply it to every capped list in the
+# schema. Server-side ``sanitize_followups`` (and contract validation on save) still enforce
+# the BLA-54 cap of three suggestions.
 _GEMINI_KEYWORDS = frozenset(
-    {"type", "enum", "items", "minItems", "maxItems", "properties", "required", "anyOf"}
+    {"type", "enum", "items", "minItems", "properties", "required", "anyOf"}
 )
 
 

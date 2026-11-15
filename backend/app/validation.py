@@ -26,6 +26,7 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
+from app.analysis_llm import names_excluded_record
 from app.contracts import (
     MEDIA_SKIP_REASONS,
     AnalysisRevision,
@@ -257,12 +258,12 @@ def validate_revision(records: Sequence[EvidenceRecord], analysis: AnalysisRevis
 def _followup_errors(analysis: AnalysisRevision) -> list[str]:
     """Suggested follow-ups (BLA-54) never name an excluded record (invariant 13). The
     analysis path drops such suggestions before validating, so this only guards saves."""
-    excluded = [rid for rid in analysis.excluded_record_ids if rid]
+    excluded = sorted(rid for rid in analysis.excluded_record_ids if rid)
     return [
         f"suggested follow-up {index + 1} names excluded record {rid}"
         for index, text in enumerate(analysis.suggested_followups or [])
         for rid in excluded
-        if rid in text
+        if names_excluded_record(text, [rid])
     ]
 
 

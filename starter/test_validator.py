@@ -47,6 +47,19 @@ class TestSuggestedFollowups(unittest.TestCase):
         broken['suggested_followups']=['What else does rec-02 say?']
         self.assertTrue(any('excluded record rec-02' in e for e in validate_revision(records,broken)))
 
+    def test_excluded_id_match_is_token_boundary_and_case_insensitive(self):
+        broken=deepcopy(child)
+        # Prefix of an excluded ID must not false-positive (rec-02 vs rec-021).
+        broken['suggested_followups']=['What else does rec-021 say?']
+        self.assertEqual(validate_revision(records,broken),[])
+        broken['suggested_followups']=['What else does REC-02 say?']
+        self.assertTrue(any('excluded record rec-02' in e for e in validate_revision(records,broken)))
+
+    def test_null_suggested_followups_do_not_crash(self):
+        broken=deepcopy(child)
+        broken['suggested_followups']=None
+        self.assertEqual(validate_revision(records,broken),[])
+
 def covered():
     # rec-02 left out of a one-record standard window although the vector search ranked it first.
     r=deepcopy(revision)

@@ -10,7 +10,7 @@ export function SuggestedFollowups({ suggestions, disabled, onPick }: Props) {
   if (!suggestions?.length) return null;
   return (
     <div className="blanc-suggestions">
-      <p className="blanc-suggestions-label">Suggestions — not findings</p>
+      <p className="blanc-suggestions-label">AI-suggested questions — not findings</p>
       <ul>
         {suggestions.map(question => (
           <li key={question}>

@@ -38,13 +38,13 @@ test("parseRevision keeps suggested_followups from the shared contract", () => {
   assert.equal(parseRevision(absent, revision.case_id, revision.question).suggested_followups, undefined);
 });
 
-test("chips are labelled suggestions and only call onPick (never auto-run)", () => {
+test("chips are labelled AI-suggested questions and only call onPick (never auto-run)", () => {
   const picked: string[] = [];
   const view = mount(createElement(SuggestedFollowups, {
     suggestions: ["Who is Jordan?", "Where did they meet?"],
     onPick: question => picked.push(question),
   }));
-  assert.match(view.textContent ?? "", /Suggestions — not findings/);
+  assert.match(view.textContent ?? "", /AI-suggested questions — not findings/);
   const buttons = [...view.querySelectorAll("button")];
   assert.equal(buttons.length, 2);
   click(buttons[0]);

@@ -264,7 +264,7 @@ def test_fake_llm_scripted_responses_then_repeats_last() -> None:
 # --- Gemini response schema --------------------------------------------------------------
 
 _ALLOWED_KEYWORDS = {
-    "type", "enum", "items", "minItems", "maxItems", "properties", "required", "anyOf"
+    "type", "enum", "items", "minItems", "properties", "required", "anyOf"
 }
 
 
@@ -319,7 +319,11 @@ def _contract_output_schema() -> dict[str, Any]:
 def test_output_model_fields_match_revision() -> None:
     assert set(AnalysisOutput.model_fields) == {*OUTPUT_FIELDS, *OPTIONAL_OUTPUT_FIELDS}
     for name, info in AnalysisOutput.model_fields.items():
+        if name == "suggested_followups":
+            # Loose on the LLM output so parse never caps before exclusion-aware sanitize.
+            continue
         assert info.annotation == AnalysisRevision.model_fields[name].annotation
+    assert AnalysisOutput.model_fields["suggested_followups"].annotation == list[str] | None
 
 
 # --- GeminiAnalysisLLM -------------------------------------------------------------------

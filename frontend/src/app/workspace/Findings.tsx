@@ -674,6 +674,12 @@ export function Findings() {
           suggestions={shown.suggested_followups}
           disabled={!!working}
           onPick={question => {
+            if (
+              followUp.trim()
+              && !window.confirm("Replace the draft follow-up with this suggestion?")
+            ) {
+              return;
+            }
             setFollowUp(question);
             followUpRef.current?.focus();
           }}

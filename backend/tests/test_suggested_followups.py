@@ -16,6 +16,7 @@ from app.analysis_llm import (
     AnalysisOutput,
     FakeAnalysisLLM,
     gemini_response_schema,
+    names_excluded_record,
     parse_analysis_output,
     sanitize_followups,
 )
@@ -99,6 +100,39 @@ def test_sanitize_drops_suggestions_naming_an_excluded_record() -> None:
 
 
 @pytest.mark.parametrize(
+    ("text", "excluded", "hits"),
+    [
+        ("What about rec-12?", ["rec-1"], False),  # no false positive on prefix
+        ("What about rec-1?", ["rec-1"], True),
+        ("What about REC-02?", ["rec-02"], True),  # case-insensitive
+        ("What about rec-02?", ["REC-02"], True),
+        ("Ask about rec 02 please?", ["rec-02"], False),  # loose form not an ID token
+        ("See (rec-02).", ["rec-02"], True),
+    ],
+)
+def test_names_excluded_record_uses_token_boundaries(
+    text: str, excluded: list[str], hits: bool
+) -> None:
+    assert names_excluded_record(text, excluded) is hits
+    assert (sanitize_followups([text], excluded_record_ids=excluded) == []) is hits
+
+
+def test_sanitize_keeps_valid_suggestions_past_excluded_ones() -> None:
+    """Cap after exclusion drops, so a good 4th item is not lost behind three excluded."""
+    raw = [
+        "What does rec-02 say?",
+        "Anything else in REC-02?",
+        "Open rec-02 again?",
+        "Did Alex deliver the document?",
+        "Who else was there?",
+    ]
+    assert sanitize_followups(raw, excluded_record_ids=["rec-02"]) == [
+        "Did Alex deliver the document?",
+        "Who else was there?",
+    ]
+
+
+@pytest.mark.parametrize(
     "bad",
     [
         ["a?", "b?", "c?", "d?"],
@@ -112,23 +146,23 @@ def test_sanitize_drops_suggestions_naming_an_excluded_record() -> None:
     ],
 )
 def test_invalid_suggestions_never_fail_parsing(bad: Any) -> None:
+    """Parser only coerces bad shapes; full sanitize (cap/exclusions) is in ``_revision``."""
     parsed = parse_analysis_output(json.dumps(output(suggested_followups=bad)))
-    assert parsed.suggested_followups is None or (
-        1 <= len(parsed.suggested_followups) <= MAX_SUGGESTED_FOLLOWUPS
-    )
-    data = parsed.to_contract_json()
-    if parsed.suggested_followups is None:
-        assert "suggested_followups" not in data
+    if isinstance(bad, list) and any(isinstance(item, str) for item in bad):
+        assert parsed.suggested_followups == [item for item in bad if isinstance(item, str)]
+    else:
+        assert parsed.suggested_followups is None
+        assert "suggested_followups" not in parsed.to_contract_json()
 
 
-def test_absent_or_all_invalid_suggestions_are_omitted() -> None:
-    for out in (output(), output(suggested_followups=[]), output(suggested_followups=[""])):
+def test_absent_or_empty_suggestion_lists_are_omitted() -> None:
+    for out in (output(), output(suggested_followups=[]), output(suggested_followups=[1, None])):
         parsed = AnalysisOutput.model_validate(out)
         assert parsed.suggested_followups is None
         assert "suggested_followups" not in parsed.to_contract_json()
 
 
-def test_revision_contract_rejects_invalid_suggestions_but_output_cleans_them() -> None:
+def test_revision_contract_rejects_invalid_suggestions_but_output_coerces_shapes() -> None:
     base = copy.deepcopy(RAW["revision"])
     for bad in (
         [],
@@ -151,11 +185,14 @@ def test_revision_contract_rejects_invalid_suggestions_but_output_cleans_them() 
     )
 
 
-def test_gemini_schema_offers_up_to_three_string_suggestions() -> None:
+def test_gemini_schema_offers_string_suggestions_without_global_max_items() -> None:
     schema = gemini_response_schema()
     prop = schema["properties"]["suggested_followups"]
-    assert prop == {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 3}
+    assert prop == {"type": "array", "items": {"type": "string"}}
+    assert "maxItems" not in prop
     assert "suggested_followups" not in schema["required"]
+    # Removing maxItems from the Gemini keyword allow-list must not leave it elsewhere.
+    assert "maxItems" not in json.dumps(schema)
 
 
 def test_validate_revision_flags_suggestion_naming_an_excluded_record() -> None:
@@ -165,6 +202,9 @@ def test_validate_revision_flags_suggestion_naming_an_excluded_record() -> None:
     child["suggested_followups"] = [f"What does {excluded} say?"]
     errors = validate_revision(records, AnalysisRevision.model_validate(child))
     assert any("names excluded record" in e for e in errors)
+    # Prefix of an excluded ID must not false-positive.
+    child["suggested_followups"] = ["What does rec-021 say?"]
+    assert validate_revision(records, AnalysisRevision.model_validate(child)) == []
     child["suggested_followups"] = ["Who is Jordan?"]
     assert validate_revision(records, AnalysisRevision.model_validate(child)) == []
 
