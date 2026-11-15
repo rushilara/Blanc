@@ -1057,9 +1057,9 @@ def _part_decoded_size_hint(part: EmailMessage) -> int | None:
 
     Estimates from the undecoded body and Content-Transfer-Encoding first
     (base64 ≈ 3/4 of non-whitespace length; quoted-printable ≈ encoded length).
-    Content-Length is used only when there is no body estimate, or when it is
-    larger than that estimate (prefer the more conservative larger value). A
-    smaller Content-Length must not skip the gate.
+    When a body estimate is available, return it — an inflated Content-Length must
+    not reject a normal image or land in attachments[].size_bytes. Content-Length
+    is used only when there is no body to measure.
     """
     body_estimate: int | None = None
     encoded_len: int | None = None
@@ -1087,6 +1087,9 @@ def _part_decoded_size_hint(part: EmailMessage) -> int | None:
         else:
             body_estimate = encoded_len
 
+    if body_estimate is not None:
+        return body_estimate
+
     content_length: int | None = None
     raw_length = part.get("Content-Length")
     if raw_length is not None:
@@ -1094,11 +1097,6 @@ def _part_decoded_size_hint(part: EmailMessage) -> int | None:
             content_length = int(str(raw_length).strip())
         except ValueError:
             pass
-
-    if body_estimate is not None and content_length is not None:
-        return max(body_estimate, content_length)
-    if body_estimate is not None:
-        return body_estimate
     return content_length
 
 

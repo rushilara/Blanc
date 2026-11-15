@@ -579,16 +579,18 @@ def _spy_image_decode_calls(monkeypatch) -> dict[str, int]:
 
 
 def test_oversized_email_image_rejected_before_decode(tmp_path: Path, monkeypatch) -> None:
-    """Large Content-Length is taken as max with the body estimate; gate before decode."""
+    """Oversized body estimate rejects before decode; inflated Content-Length is ignored."""
     import base64
 
     from app.evidence import importer as importer_mod
 
     monkeypatch.setattr(importer_mod, "MAX_MEDIA_BYTES", 10)
-    # Real PNG is already > 10 bytes; a large Content-Length must not be required
-    # for rejection, but when present the more conservative max is used for
-    # attachments[].size_bytes and still blocks decode=True.
+    # Real PNG is already > 10 bytes; reject via body estimate. Content-Length may
+    # also be large, but size_bytes must report the body estimate, not the header.
     png_b64 = base64.b64encode(PNG_BYTES).decode("ascii")
+    body_estimate = (sum(1 for c in png_b64 if not c.isspace()) * 3) // 4
+    assert body_estimate > 10
+
     path = write_bytes(
         tmp_path,
         "huge.eml",
@@ -602,11 +604,44 @@ def test_oversized_email_image_rejected_before_decode(tmp_path: Path, monkeypatc
     assert [r.source_locator for r in records] == ["headers", "part 1"]
     assert records[1].content == "Body survives."
     assert records[0].metadata["attachments"][0]["filename"] == "huge.png"
-    assert records[0].metadata["attachments"][0]["size_bytes"] == 99999
+    assert records[0].metadata["attachments"][0]["size_bytes"] == body_estimate
     assert sink.warnings
     assert "media limit" in sink.warnings[0].reason
     assert decoded_image_calls["n"] == 0
     assert not media_dir.exists() or list(media_dir.iterdir()) == []
+
+
+def test_inflated_content_length_small_png_still_stored(tmp_path: Path, monkeypatch) -> None:
+    """PNG under the cap with Content-Length over it must still import; size is the body."""
+    import base64
+
+    from app.evidence import importer as importer_mod
+
+    # Cap above the real PNG (~67 bytes) but below the lying Content-Length.
+    monkeypatch.setattr(importer_mod, "MAX_MEDIA_BYTES", 100)
+    png_b64 = base64.b64encode(PNG_BYTES).decode("ascii")
+    body_estimate = (sum(1 for c in png_b64 if not c.isspace()) * 3) // 4
+    assert body_estimate < 100 < 99999
+
+    path = write_bytes(
+        tmp_path,
+        "lie-big.eml",
+        _email_with_png_attachment(png_b64=png_b64, content_length="99999", filename="dock.png"),
+    )
+    media_dir = tmp_path / "media"
+    records = {
+        r.source_locator: r
+        for r in import_file(path, "case-a", source_root=tmp_path, media_dir=media_dir)
+    }
+
+    assert set(records) == {"headers", "part 1", "part 2"}
+    image = records["part 2"]
+    assert image.modality == "image"
+    assert image.content_type == "image/png"
+    assert (media_dir / f"{image.record_id}.png").read_bytes() == PNG_BYTES
+    # Under the cap we decode for the exact length; must not use the inflated header.
+    assert records["headers"].metadata["attachments"][0]["size_bytes"] == len(PNG_BYTES)
+    assert records["headers"].metadata["attachments"][0]["size_bytes"] != 99999
 
 
 def test_tiny_content_length_huge_base64_rejected_before_decode(
