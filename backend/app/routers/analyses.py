@@ -23,6 +23,7 @@ from app.analyses import (
     RevisionConflictError,
     RevisionNotFoundError,
     RevisionSummary,
+    compare_pair,
     compare_to_parent,
     exclude_records,
     get_revision,
@@ -247,13 +248,22 @@ def exclude_analysis_records(
 
 
 @router.get("/{analysis_id}/comparison", responses={200: {"model": RevisionComparison}})
-def get_analysis_comparison(analysis_id: str, case: CaseDep, session: SessionDep) -> Any:
+def get_analysis_comparison(
+    analysis_id: str, case: CaseDep, session: SessionDep, base: str | None = None
+) -> Any:
     """How each finding's support changed from this revision's parent to it (BLA-34):
     ``still_supported``, ``weakened``, ``not_supported``, ``newly_supported`` or
     ``unresolved``. Deterministic. 404 if the revision is unknown or has no parent; 422 for
-    a follow-up, whose question differs from its parent's."""
+    a follow-up, whose question differs from its parent's.
+
+    ``?base=<analysis_id>`` compares against any other revision of the case that asks the
+    same question instead of the parent (BLA-50); 422 if it is the same revision or the
+    questions differ."""
     try:
-        comparison = compare_to_parent(session, case.case_id, analysis_id)
+        if base is None:
+            comparison = compare_to_parent(session, case.case_id, analysis_id)
+        else:
+            comparison = compare_pair(session, case.case_id, base, analysis_id)
     except RevisionNotFoundError as error:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
     except ComparisonNotApplicableError as error:

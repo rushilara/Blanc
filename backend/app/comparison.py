@@ -77,20 +77,27 @@ def compare_revisions(
     compared: AnalysisRevision,
     *,
     created_at: datetime | None = None,
+    require_parent: bool = True,
 ) -> RevisionComparison:
     """Compare `base` with `compared`, its child after an exclusion.
+
+    With ``require_parent=False`` any two revisions of the same case can be compared
+    (BLA-50), such as two exclusion states several steps apart. ``excluded_record_ids``
+    is then what `compared` excludes that `base` did not, and findings citing records
+    `base` excluded but `compared` restored show as newly supported.
 
     Everything in the result depends only on the two revisions except `created_at`,
     which defaults to the current time; pass the timestamp you store to make the whole
     result reproducible.
 
-    Raises `ValueError` if the two are not a parent and child in the same case.
+    Raises `ValueError` if the two are in different cases, or (with ``require_parent``) are
+    not a parent and child.
     """
     if base.case_id != compared.case_id:
         raise ValueError(
             f"revisions belong to different cases: {base.case_id!r} and {compared.case_id!r}"
         )
-    if compared.parent_analysis_id != base.analysis_id:
+    if require_parent and compared.parent_analysis_id != base.analysis_id:
         raise ValueError(
             f"{compared.analysis_id} is not a child of {base.analysis_id} "
             f"(its parent is {compared.parent_analysis_id!r})"

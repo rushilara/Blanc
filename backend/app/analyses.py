@@ -615,6 +615,32 @@ def compare_to_parent(session: Session, case_id: str, analysis_id: str) -> Revis
     return compare_revisions(parent, child, created_at=child.created_at)
 
 
+def compare_pair(
+    session: Session, case_id: str, base_id: str, compared_id: str
+) -> RevisionComparison:
+    """The support diff between any two saved revisions of one case (BLA-50), e.g. the
+    original and an exclusion state several steps later. Both must ask the same question,
+    for the reason ``compare_to_parent`` gives. Deterministic: ``created_at`` is the later
+    revision's creation time. Raises ``RevisionNotFoundError`` for an unknown revision and
+    ``ComparisonNotApplicableError`` for the same revision twice or different questions.
+    """
+    if base_id == compared_id:
+        raise ComparisonNotApplicableError("pick two different revisions to compare")
+    base = get_revision(session, case_id, base_id)
+    compared = get_revision(session, case_id, compared_id)
+    if base.question != compared.question:
+        raise ComparisonNotApplicableError(
+            f"analyses {base_id} and {compared_id} ask different questions, so a support "
+            "comparison would not show the effect of the evidence change"
+        )
+    return compare_revisions(
+        base,
+        compared,
+        created_at=max(base.created_at, compared.created_at),
+        require_parent=False,
+    )
+
+
 def _analyze_and_save(
     session: Session,
     case_id: str,

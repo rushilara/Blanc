@@ -97,6 +97,15 @@ test("accepts a comparison for this revision and rejects a mismatched one", asyn
   await assert.rejects(getComparison(comparison.case_id, comparison.compared_analysis_id), ApiError);
 });
 
+test("compares against a chosen base revision and rejects a reply for another base", async () => {
+  let url = "";
+  globalThis.fetch = async input => { url = String(input); return Response.json(comparison); };
+  const parsed = await getComparison(comparison.case_id, comparison.compared_analysis_id, undefined, comparison.base_analysis_id);
+  assert.equal(parsed.base_analysis_id, comparison.base_analysis_id);
+  assert.match(url, new RegExp(`/comparison\\?base=${comparison.base_analysis_id}$`));
+  await assert.rejects(getComparison(comparison.case_id, comparison.compared_analysis_id, undefined, "analysis-other"), ApiError);
+});
+
 test("exclude and restore return the new revision and keep provider text out of errors", async () => {
   let url = "";
   let body = "";

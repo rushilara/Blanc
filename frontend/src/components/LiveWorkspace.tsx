@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { AnalysisWorkspace } from "./AnalysisWorkspace";
 import { VersionsDrawer } from "./VersionsDrawer";
+import { RevisionDiff } from "./RevisionDiff";
 import { SourceReferences } from "./SourceReferences";
 import {
   createBoard,
@@ -38,6 +39,7 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
   const [sources, setSources] = useState<EvidenceRecord[]>([]);
   const [pinnedEntityIds, setPinnedEntityIds] = useState<string[]>([]);
   const [otherVersionPinCount, setOtherVersionPinCount] = useState(0);
+  const [comparePair, setComparePair] = useState<[string, string] | null>(null);
   const active = useRef<AbortController | null>(null);
   const questionRef = useRef<HTMLTextAreaElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
@@ -77,7 +79,7 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
   function changeCase(id: string) {
     beginViewChange();
     active.current = null;
-    setSelected(id); setSearch(null); setAnalysis(null); setSources([]);
+    setSelected(id); setSearch(null); setAnalysis(null); setSources([]); setComparePair(null);
     applyBoard(null, "");
     setError(""); setRetryAction(null); setPending(null);
   }
@@ -259,7 +261,7 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
         {caseState === "error" && <div role="alert">Could not load cases. Check the backend connection. <button type="button" className="underline" onClick={() => { setCaseState("loading"); setReload(n => n + 1); }}>Retry</button></div>}
         {caseState === "ready" && !cases.length && <p role="status">No cases are available. Import evidence into the backend before searching.</p>}
         {selected && <VersionsDrawer key={selected} caseId={selected} caseTitle={cases.find(c => c.case_id === selected)?.title ?? selected}
-          activeId={analysis?.analysis_id} busy={!!pending} onSelect={openRevision} />}
+          activeId={analysis?.analysis_id} busy={!!pending} onSelect={openRevision} onCompare={setComparePair} />}
         {cases.length > 0 && <form onSubmit={submit} className="space-y-4">
           <div className="space-y-2"><label htmlFor="live-case" className="block text-sm font-semibold">Case</label>
             <select id="live-case" value={selected} onChange={e => changeCase(e.target.value)} className="w-full rounded border border-zinc-400 bg-white p-3 dark:bg-zinc-900">
@@ -296,6 +298,7 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
           </article>)}
         </div>}
       </section>
+      {comparePair && selected && <RevisionDiff key={`${selected}:${comparePair.join(":")}`} caseId={selected} pair={comparePair} onClose={() => setComparePair(null)} />}
       {analysis && (
         <AnalysisWorkspace
           revision={analysis}
