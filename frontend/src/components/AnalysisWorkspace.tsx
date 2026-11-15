@@ -1,4 +1,6 @@
-import type { ReactNode } from "react";
+"use client";
+
+import { useMemo, type ReactNode } from "react";
 import type { AnalysisRevision, EvidenceRecord } from "@/lib/analysis";
 import { QuestionInput } from "@/components/QuestionInput";
 import { SourceReferences } from "@/components/SourceReferences";
@@ -29,12 +31,36 @@ function Status({ value }: { value: string }) {
   return <span className={`inline-block rounded-full border px-2 py-0.5 text-xs font-semibold capitalize ${STATUS_STYLES[value] ?? "border-zinc-300 text-zinc-600"}`}>{value.replaceAll("_", " ")}</span>;
 }
 
+type AnalysisWorkspaceProps = {
+  revision: AnalysisRevision;
+  records?: EvidenceRecord[];
+  showQuestionInput?: boolean;
+  onExclude?: (recordId: string) => void;
+  onAnnotate?: (recordId: string) => void;
+};
+
 // Fixture loading is outside this component. BLA-42 can pass a validated live
 // response to the same renderer; no case-specific findings belong here.
-export function AnalysisWorkspace({ revision, records = [], showQuestionInput = true }: { revision: AnalysisRevision; records?: EvidenceRecord[]; showQuestionInput?: boolean }) {
+export function AnalysisWorkspace({
+  revision,
+  records = [],
+  showQuestionInput = true,
+  onExclude,
+  onAnnotate,
+}: AnalysisWorkspaceProps) {
   // Do not serialize other cases' excerpts into the client-side source controls.
-  const caseRecords = records.filter((record) => record.case_id === revision.case_id);
+  const caseRecords = useMemo(
+    () => records.filter((record) => record.case_id === revision.case_id),
+    [records, revision.case_id],
+  );
   const nodes = new Map(revision.graph.nodes.map((node) => [node.id, node.label]));
+  const sourceProps = {
+    records: caseRecords,
+    caseId: revision.case_id,
+    excludedRecordIds: revision.excluded_record_ids,
+    onExclude,
+    onAnnotate,
+  };
   return (
     <main className="mx-auto w-full max-w-7xl space-y-6 p-4 sm:p-6">
       {showQuestionInput && <QuestionInput key={revision.analysis_id} question={revision.question} />}
@@ -57,7 +83,7 @@ export function AnalysisWorkspace({ revision, records = [], showQuestionInput = 
               <li key={claim.id} className="space-y-2 border-l-2 border-zinc-200 pl-3 dark:border-zinc-700">
                 <Status value={claim.status} />
                 <p className="text-sm leading-6">{claim.text}</p>
-                <SourceReferences records={caseRecords} caseId={revision.case_id} ids={claim.evidence_ids} />
+                <SourceReferences {...sourceProps} ids={claim.evidence_ids} />
               </li>
             ))}
           </ul>
@@ -87,20 +113,28 @@ export function AnalysisWorkspace({ revision, records = [], showQuestionInput = 
                 <p className="text-xs text-zinc-500">{edge.type.replaceAll("_", " ")}</p>
                 {edge.description && <p className="text-sm leading-6">{edge.description}</p>}
                 <Status value={edge.status} />
-                <SourceReferences records={caseRecords} caseId={revision.case_id} ids={edge.evidence_ids} />
+                <SourceReferences {...sourceProps} ids={edge.evidence_ids} />
               </li>
             ))}
           </ul>
           {!revision.graph.edges.length && <p className="text-sm text-zinc-500">No supported relationships.</p>}
         </Pane>
         <Pane id="timeline" title="Timeline" count={revision.timeline_events.length}>
-          <TimelineView key={`${revision.case_id}:${revision.analysis_id}`} events={revision.timeline_events} caseId={revision.case_id} records={caseRecords} />
+          <TimelineView
+            key={`${revision.case_id}:${revision.analysis_id}`}
+            events={revision.timeline_events}
+            caseId={revision.case_id}
+            records={caseRecords}
+            excludedRecordIds={revision.excluded_record_ids}
+            onExclude={onExclude}
+            onAnnotate={onAnnotate}
+          />
         </Pane>
       </div>
       {!!revision.excluded_record_ids.length && (
         <aside className="space-y-2 text-sm text-zinc-500">
           <p>Excluded from this revision</p>
-          <SourceReferences records={caseRecords} caseId={revision.case_id} ids={revision.excluded_record_ids} />
+          <SourceReferences {...sourceProps} ids={revision.excluded_record_ids} />
         </aside>
       )}
     </main>

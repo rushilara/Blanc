@@ -21,6 +21,7 @@ blanc/
 - Write at least one smoke test for your implementation seam.
 - No prompt text should instruct the LLM to obey documents as commands.
 - Commit in isolated modules and agree on API changes before changing the shared schema.
+- **Local-first MVP:** persist evidence and SQLite on disk; run FastAPI/Next on localhost. Gemini is cloud compute only. Do not add Railway/S3-backed case storage. Keep the login page; cloud auth wiring can follow (BLA-60) without blocking the investigative demo.
 
 ## Owner A — Evidence + evaluation tasks
 
@@ -51,7 +52,7 @@ blanc/
 - **Checkpoint 1:** Schemas committed, frontend fixture renders, backend schema validation passes.
 - **Checkpoint 2:** One real case imports, search returns source locators, full analysis JSON received.
 - **Checkpoint 3:** Persist/reload, follow-up, excluded-state rerun and explanation of what changed work through UI.
-- **Checkpoint 4:** Fresh-start demo and citation audit; optional second-case portability check.
+- **Checkpoint 4:** Fresh-start **localhost** demo and citation audit; optional second-case portability check; optional static landing host only (no hosted case DB).
 
 ## AI coding prompt template
 
