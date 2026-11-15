@@ -71,6 +71,10 @@ SQLite via SQLAlchemy 2.0 (typed `Mapped[...]` ORM) at `DATABASE_URL` (default `
 
 The DB is opened in the lifespan, not at import. In tests, enter the client (`with TestClient(app) as client:`) so the lifespan runs.
 
+## Original images (`EVIDENCE_ROOT`)
+
+`GET /cases/{case_id}/records/{record_id}/media` returns the original image behind a record (e.g. a Chrome download's saved file) when it was extracted into the local folder `EVIDENCE_ROOT`. An `artifact_manifest.jsonl` there (one JSON object per line: `source_path`, `extracted_file`, `sha256`) maps original paths to extracted files; without an entry the file is looked up at its original relative path. Only PNG, JPEG, GIF and WebP under 25 MB are served, the leading bytes must match the type, a manifest SHA-256 must match, and paths may not leave the root (`..`, absolute paths and escaping symlinks are refused). 404 means not available locally, 409 a type or hash mismatch. Nothing is fetched from the network. See `app/media.py`.
+
 ## Evidence storage (BLA-12)
 
 From the command line, `python -m app.evidence PATH --store --title "Case title"` (or `--case-id case_...`) imports and stores in one transaction; `make import` wraps it (see the root README). With `--title` the case is created in the same transaction and its `case_id` is printed on stdout, so a failed parse or embedding leaves no empty case behind. `--database-url` overrides `DATABASE_URL`. Without `--store`, the command only parses (`--out records.json`).
