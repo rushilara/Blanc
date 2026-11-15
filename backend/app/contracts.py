@@ -50,6 +50,8 @@ TimestampPrecision = Literal["exact", "day", "month", "approximate", "unknown"]
 EventTimestampKind = Literal["observed", "source_stated", "inferred", "unknown"]
 BoardItemKind = Literal["claim", "edge", "node", "event"]
 ComparisonItemKind = Literal["claim", "edge", "event"]
+EvidenceWindow = Literal["standard", "expanded"]
+SkipReason = Literal["budget", "record_limit"]
 SupportStatus = Literal[
     "still_supported", "weakened", "not_supported", "newly_supported", "unresolved"
 ]
@@ -96,6 +98,7 @@ OffsetDateTime = Annotated[datetime, BeforeValidator(_offset_datetime)]
 NonEmptyStr = Annotated[str, StringConstraints(min_length=1)]
 UniqueIds = Annotated[list[NonEmptyStr], AfterValidator(_unique)]
 EvidenceIds = Annotated[list[NonEmptyStr], Field(min_length=1)]
+Rank = Annotated[int, Field(ge=1)]
 UniqueEvidenceIds = Annotated[list[NonEmptyStr], Field(min_length=1), AfterValidator(_unique)]
 
 
@@ -218,6 +221,30 @@ class TimelineEvent(ContractModel):
     status: EventStatus
 
 
+class SkippedEvidence(ContractModel):
+    """A record retrieval ranked but left out of the evidence window: an ID, never content."""
+
+    record_id: NonEmptyStr
+    rank: Rank  # fused rank among all candidates
+    reason: SkipReason
+    vector_rank: Omittable[Rank] = None  # rank in the vector search alone, if it found it
+    keyword_rank: Omittable[Rank] = None  # rank in the keyword search alone, if it found it
+
+
+class RetrievalCoverage(ContractModel):
+    """What the evidence window held back (BLA-64). Server-assigned, never LLM-produced."""
+
+    evidence_window: EvidenceWindow
+    max_records: Rank
+    max_excerpt_chars: Rank
+    skipped: list[SkippedEvidence]
+    budget_substituted: bool
+    # record_limit skips that the vector or keyword search alone ranked within max_records
+    left_out_record_ids: UniqueIds
+    # standard window and at least one left-out record: the UI may offer the expanded window
+    offer_expanded_window: bool
+
+
 class AnalysisRevision(ContractModel):
     """One immutable, question-specific reconstruction (analysis_revision.schema.json)."""
 
@@ -235,6 +262,7 @@ class AnalysisRevision(ContractModel):
     unresolved_questions: list[str]
     needs_review: Omittable[bool] = None
     validation_errors: Omittable[list[NonEmptyStr]] = None
+    retrieval_coverage: Omittable[RetrievalCoverage] = None
     created_at: OffsetDateTime
 
 
