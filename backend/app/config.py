@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     # Storage: one SQLite file holds tables, the sqlite-vec vector index and the FTS5 index.
     DATABASE_URL: str = "sqlite:///./data/blanc.db"
 
+    # Optional local folder of extracted original files (e.g. data/narcos), used to show a
+    # record's original image. Relative paths resolve from backend/. Never a remote URL.
+    EVIDENCE_ROOT: Path | None = None
+
     # Allowed frontend origins, comma-separated in the environment.
     CORS_ORIGINS: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["http://localhost:3000"]

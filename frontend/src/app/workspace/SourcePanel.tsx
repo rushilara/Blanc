@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import type { EvidenceRecord } from "@/lib/analysis";
 import { fetchRecord, RecordFetchError } from "@/lib/records";
 import { presentSource } from "@/lib/source-presentation";
+import { localImageName, mediaUrl, remoteImageAttachments } from "@/lib/source-media";
 
 type Remote = { status: "loading" } | { status: "ready"; record: EvidenceRecord } | { status: "error"; message: string };
 
@@ -42,7 +43,8 @@ export function SourcePanel({ caseId, recordId, number, total, records, excluded
   useEffect(() => { heading.current?.focus({ preventScroll: true }); }, [recordId]);
 
   useEffect(() => {
-    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    // An open image viewer handles its own Escape first.
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape" && !document.querySelector("dialog[open]")) onClose(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
@@ -69,6 +71,10 @@ export function SourcePanel({ caseId, recordId, number, total, records, excluded
     {!record && remote.status === "error" && <p role="alert">{remote.message} Its content cannot be verified here.</p>}
 
     {record && <>
+      {localImageName(record) && <SourceImage key={record.record_id} caseId={caseId} recordId={record.record_id} name={localImageName(record)!} />}
+      {remoteImageAttachments(record).map(attachment => <p key={attachment.filename} className="blanc-source-offline">
+        Attached image <strong>{attachment.filename}</strong> is stored on {attachment.host}, not in the local evidence, so it is not shown. Blanc never loads evidence from the network.
+      </p>)}
       {view?.message !== undefined && <blockquote className="blanc-source-message">{view.message || "(Empty message)"}</blockquote>}
       {view ? <dl className="blanc-source-fields">
         {view.fields.map((field, index) => <div key={index}><dt>{field.label}</dt><dd>{field.value}</dd></div>)}
@@ -90,4 +96,28 @@ export function SourcePanel({ caseId, recordId, number, total, records, excluded
       {view && <p className="blanc-source-note">Readable fields are extracted from the original record; the raw record is unchanged.</p>}
     </>}
   </aside>;
+}
+
+/** The record's original image from the local evidence folder, with a larger view on
+ *  click. Shows a plain note when the file is not available locally. */
+function SourceImage({ caseId, recordId, name }: { caseId: string; recordId: string; name: string }) {
+  const [state, setState] = useState<"loading" | "ready" | "missing">("loading");
+  const viewer = useRef<HTMLDialogElement>(null);
+  const src = mediaUrl(caseId, recordId);
+  if (state === "missing") {
+    return <p className="blanc-source-offline">The original image <strong>{name}</strong> is not in the local evidence folder.</p>;
+  }
+  return <figure className="blanc-source-media" data-state={state}>
+    <button type="button" onClick={() => viewer.current?.showModal()} aria-label={`View ${name} larger`} disabled={state !== "ready"}>
+      {/* eslint-disable-next-line @next/next/no-img-element -- local evidence served by the case API, not a static asset */}
+      <img src={src} alt={`Original image ${name} from the evidence`} onLoad={() => setState("ready")} onError={() => setState("missing")} />
+    </button>
+    <figcaption>{name} · original file from local evidence{state === "ready" ? " · click to enlarge" : ""}</figcaption>
+    <dialog ref={viewer} className="blanc-media-viewer" aria-label={`${name}, full size`} onClick={event => { if (event.target === event.currentTarget) viewer.current?.close(); }}>
+      <button type="button" onClick={() => viewer.current?.close()}>Close</button>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src={src} alt={`Original image ${name}, full size`} />
+      <p>{name}</p>
+    </dialog>
+  </figure>;
 }

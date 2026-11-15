@@ -29,6 +29,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.embedder = make_embedder(settings)
         app.state.analysis_llm = make_analysis_llm(settings)
         app.state.retrieval_config = RetrievalConfig.from_settings(settings)
+        app.state.evidence_root = settings.EVIDENCE_ROOT
         try:
             yield
         finally:

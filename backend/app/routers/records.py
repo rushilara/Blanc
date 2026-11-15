@@ -2,9 +2,10 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 
 from app.deps import CaseDep, SessionDep
+from app.media import MediaIntegrityError, MediaNotFoundError, resolve_media
 from app.records import (
     ChunkNotFoundError,
     InvalidExcerptError,
@@ -69,4 +70,40 @@ def get_case_record(
         )
         if excerpt is not None
         else None,
+    )
+
+
+@router.get(
+    "/{record_id}/media",
+    response_class=Response,
+    responses={200: {"content": {"image/*": {}}}, 404: {}, 409: {}},
+)
+def get_case_record_media(
+    record_id: str, case: CaseDep, session: SessionDep, request: Request
+) -> Response:
+    """The original image this record points at, read from the local evidence folder
+    (``EVIDENCE_ROOT``). 404 if the record is not in this case or its image is not
+    available locally; 409 if the local file fails its type or SHA-256 check. Never
+    fetches anything remote. See ``app/media.py``."""
+    try:
+        record = get_record_with_excerpt(session, case.case_id, record_id).record
+    except RecordNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Record not found") from exc
+    try:
+        media = resolve_media(record, getattr(request.app.state, "evidence_root", None))
+    except MediaNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except MediaIntegrityError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return Response(
+        content=media.data,
+        media_type=media.media_type,
+        headers={
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+            "X-Source-Path": media.source_path,
+            "X-Content-SHA256": media.sha256,
+            "X-Hash-Verified": "true" if media.verified else "false",
+        },
     )
