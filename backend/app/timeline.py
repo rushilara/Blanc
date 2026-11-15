@@ -12,12 +12,21 @@ Rules:
   `exact` with only a date becomes `day`. A declared precision can make a time
   coarser, never finer.
 - **Known time zones are converted to UTC.** A numeric offset (`+13:00`), `Z`,
-  `UTC`/`GMT`, or an IANA zone name (`Pacific/Auckland`) is a known zone. A time
-  with no zone is kept as written and flagged `timezone_known=False`; it is not
-  assumed to be local or UTC for display, only placed in order as written.
+  `UTC`/`GMT`, or an IANA zone name (`Pacific/Auckland`) is a known zone. When a
+  time carries both an offset and a bracketed zone name, the offset fixes the
+  instant (RFC 9557) and the name is extra information. Offsets beyond +-14:00 are
+  not real and are not trusted. A time with no zone is kept as written and flagged
+  `timezone_known=False`; it is not assumed to be local or UTC, only placed in order
+  as written.
+- **Daylight-saving gaps and overlaps are not resolved silently.** A wall-clock time
+  that a named zone skips (`02:30` on the spring-forward night) or repeats (`01:30`
+  on the fall-back night) has no single instant, so only its day is kept: precision
+  `day`.
 - **Nothing is guessed.** Text such as `10/04/2026` (day or month first?) or
-  `last Friday` is not parsed. Those events, and events with no timestamp or a
-  declared precision of `unknown`, go to the separate `undated` group.
+  `last Friday` is not parsed, and a 10-digit number that also reads as a compact
+  date and hour (`2026041009`) is not taken as epoch seconds. Those events, and
+  events with no timestamp or a declared precision of `unknown`, go to the separate
+  `undated` group.
 - **Order is total and stable:** by instant, then finer precision first, then
   event ID and description.
 
@@ -60,6 +69,11 @@ _ISO = re.compile(
 )
 _EPOCH = re.compile(r"^(?P<whole>\d{10}|\d{13})(?:\.(?P<fraction>\d+))?$")
 _EPOCH_YEARS = (1990, 2100)
+# A compact date and hour, YYYYMMDDHH, which a 10-digit epoch value can also look like.
+_COMPACT_DATE_HOUR = re.compile(
+    r"^(?P<year>19\d{2}|20\d{2}|2100)(?P<month>\d{2})(?P<day>\d{2})(?P<hour>\d{2})$"
+)
+_MAX_OFFSET = timedelta(hours=14)
 
 
 @dataclass(frozen=True)
@@ -72,6 +86,8 @@ class NormalizedTime:
     # False when the timestamp carried no zone: `instant` then orders it as written.
     timezone_known: bool
     # Normalized text for display, at the precision actually known. None when undated.
+    # Show it as text: when timezone_known is False it has no zone (`2026-04-10T09:15:00`),
+    # and parsing it (for example with JavaScript's `Date`) would read it as local time.
     display: str | None
 
     @property
@@ -168,6 +184,8 @@ def _parse_epoch(text: str) -> tuple[datetime, TimestampPrecision, bool] | None:
     if match is None:
         return None
     whole = match["whole"]
+    if _looks_like_compact_date(whole):
+        return None  # epoch seconds or a date and hour? Not guessed.
     seconds = int(whole) if len(whole) == 10 else int(whole) / 1000
     if match["fraction"] and len(whole) == 10:
         seconds = float(f"{whole}.{match['fraction']}")
@@ -178,6 +196,17 @@ def _parse_epoch(text: str) -> tuple[datetime, TimestampPrecision, bool] | None:
     if not _EPOCH_YEARS[0] <= moment.year <= _EPOCH_YEARS[1]:
         return None
     return moment, "exact", True
+
+
+def _looks_like_compact_date(digits: str) -> bool:
+    match = _COMPACT_DATE_HOUR.match(digits)
+    if match is None:
+        return False
+    try:
+        datetime(int(match["year"]), int(match["month"]), int(match["day"]), int(match["hour"]))
+    except ValueError:
+        return False
+    return True
 
 
 def _parse_iso(text: str) -> tuple[datetime, TimestampPrecision, bool] | None:
@@ -215,28 +244,51 @@ def _parse_iso(text: str) -> tuple[datetime, TimestampPrecision, bool] | None:
         # No zone written: keep the wall-clock time as written and order it as such.
         return naive.replace(tzinfo=UTC), "exact", False
     try:
+        if _wall_time_is_ambiguous(naive, zone):
+            # Skipped or repeated by a daylight-saving change: only the day is certain.
+            day = naive.replace(hour=0, minute=0, second=0, microsecond=0)
+            return day.replace(tzinfo=UTC), "day", True
         return naive.replace(tzinfo=zone).astimezone(UTC), "exact", True
     except (OverflowError, ValueError):
         return None
 
 
+def _wall_time_is_ambiguous(naive: datetime, zone: timezone | ZoneInfo) -> bool:
+    """True when a named zone skips or repeats this wall-clock time (fold 0 and 1 differ)."""
+    if not isinstance(zone, ZoneInfo):
+        return False
+    first = naive.replace(tzinfo=zone, fold=0).utcoffset()
+    second = naive.replace(tzinfo=zone, fold=1).utcoffset()
+    return first != second
+
+
 def _zone(offset: str | None, name: str | None) -> timezone | ZoneInfo | None:
+    """The zone that fixes the instant: a written offset first (RFC 9557), then a name.
+
+    An offset that is not a real one (beyond +-14:00) is not trusted, and neither is a
+    name the zone database does not know; either way the other one is used if present.
+    """
+    fixed = _offset(offset) if offset else None
+    if fixed is not None:
+        return fixed
     if name:
         try:
             return ZoneInfo(name)
         except (ZoneInfoNotFoundError, ValueError):
-            # An unrecognized zone name is not a known zone; fall back to any offset.
-            pass
-    if not offset:
-        return None
+            return None
+    return None
+
+
+def _offset(offset: str) -> timezone | None:
     if offset.upper() in ("Z", "UTC", "GMT"):
         return UTC
     sign = -1 if offset[0] == "-" else 1
     digits = offset[1:].replace(":", "")
     hours, minutes = int(digits[:2]), int(digits[2:] or 0)
-    if hours > 14 or minutes > 59:
+    delta = timedelta(hours=hours, minutes=minutes)
+    if minutes > 59 or delta > _MAX_OFFSET:
         return None
-    return timezone(sign * timedelta(hours=hours, minutes=minutes))
+    return timezone(sign * delta)
 
 
 def _truncate(
