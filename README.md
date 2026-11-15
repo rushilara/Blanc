@@ -59,13 +59,26 @@ Copy `.env.example` to `.env` for local config; `.env` is gitignored.
 Prerequisites: Python 3.12, Node 20 (20.12+), npm, make.
 
 ```bash
-cp .env.example .env   # both backend and frontend read this file; API keys are optional to start
+cp .env.example .env   # both backend and frontend read this file; set GEMINI_API_KEY to import and analyze
 make backend           # creates backend/.venv, installs deps, runs FastAPI with reload on :8000 (BACKEND_PORT)
 make frontend          # npm install + Next.js dev server on http://localhost:3000
 make test              # backend ruff + pytest, frontend lint
 ```
 
 Check the backend at http://localhost:8000/health (also shown in the workspace header). Run `make backend` and `make frontend` in separate terminals. If `python3.12` is not on your PATH, pass it explicitly, e.g. `make backend PYTHON=/path/to/python3.12`.
+
+### Load a case
+
+A fresh database has no cases. Import extracted evidence (TXT, JSON, CSV, EML) into the local case database:
+
+```bash
+make import EVIDENCE=path/to/exports TITLE="Owl case"      # new case; prints its case_id
+make import EVIDENCE=path/to/more CASE=case_01...          # add to an existing case
+```
+
+This parses the files, embeds the chunks with Gemini and stores everything in the local SQLite file at `DATABASE_URL`; the case shows up as `ready` in the workspace. Original files are read where they are and not copied: each record keeps the file's path (relative to the export folder) and its SHA-256. Re-running is safe; already-stored records are skipped and not re-embedded. If parsing or embedding fails, nothing is written. Options such as `--txt-mode line` go in `IMPORT_ARGS="..."`; see `python -m app.evidence --help` in `backend/`.
+
+Then open http://localhost:3000, sign in (placeholder until BLA-60), pick the case and ask a question.
 
 - LLM: Google Gemini API (`GEMINI_API_KEY`, `GEMINI_MODEL`) — cloud compute; key stays in local `.env`.
 - Embeddings: Gemini embeddings API (`GEMINI_API_KEY`, `EMBEDDING_MODEL`, `EMBEDDING_DIM`); vectors are stored locally in SQLite with sqlite-vec.
