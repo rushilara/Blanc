@@ -49,7 +49,7 @@ If it prints `x86_64`, install a native arm64 Python 3.12 (the python.org instal
 - `app/main.py`: app factory (`create_app`), CORS, lifespan (opens the DB and creates tables), `GET /health` (status plus a non-secret config summary).
 - `app/config.py`: settings.
 - `app/db.py`: SQLAlchemy 2.0 engine/session factory, `Base`, `UTCDateTime`, `get_session` dependency. SQLite foreign keys are enabled on every connection, and the DB file's parent directory is created on startup.
-- `app/models.py`: ORM tables: `Case`, `EvidenceRecordRow` (`evidence_records`), `EvidenceChunk` (`evidence_chunks`), `BoardSnapshotRow` (`board_snapshots`, append-only), `AnalysisRevisionRow` (`analysis_revisions`, immutable).
+- `app/models.py`: ORM tables: `Case`, `EvidenceRecordRow` (`evidence_records`), `EvidenceChunk` (`evidence_chunks`), `BoardSnapshotRow` (`board_snapshots`, append-only), `AnalysisRevisionRow` (`analysis_revisions`, immutable), `RevisionRestoreRow` (`revision_restores`, insert-only).
 - `app/evidence_store.py`: `store_records` (persist records + chunks + vectors + keyword index), `reembed_stale_chunks`, case-scoped reads. See "Evidence storage" below.
 - `app/search_index.py`: sqlite-vec and FTS5 virtual tables, their cleanup trigger, and case-scoped `vector_search` / `keyword_search` primitives, and `to_fts_query` (free text to a safe FTS5 query).
 - `app/retrieval.py`: `retrieve`, hybrid vector + keyword retrieval with RRF fusion and the capped evidence window. See "Retrieval" below.
@@ -196,11 +196,14 @@ revision_lineage(session, case_id, analysis_id)  # root ... this revision
 
 | Endpoint | Returns |
 |---|---|
-| `GET /cases/{case_id}/analyses` | History, newest first: `analysis_id`, `parent_analysis_id`, `question`, `needs_review`, `created_at`. |
+| `GET /cases/{case_id}/analyses` | History, newest first: `analysis_id`, `parent_analysis_id`, `question`, `needs_review`, `created_at`, `excluded_record_ids` (its evidence state) and `restored_from_analysis_id` (set on a restore). |
 | `GET /cases/{case_id}/analyses/{analysis_id}` | The revision, as `AnalysisRevision` contract JSON exactly as saved (404 if it is not in this case). |
 | `GET /cases/{case_id}/analyses/{analysis_id}/lineage` | The revision and its ancestors, oldest first. |
+| `POST /cases/{case_id}/analyses/{analysis_id}/restore` | `{"record_ids": [...]}`: bring excluded records back (BLA-35). Returns the new revision (201), with the reused revision's ID in the `X-Restored-From` header. |
 
-Creating revisions is the analyze, follow-up, exclude and restore endpoints' job (BLA-20, BLA-29, BLA-33, BLA-35); they call `save_revision`. Everything is in SQLite, so revisions and boards (with their notes) reload after a browser refresh or a server restart.
+**Restoring (BLA-35).** Restore reuses an earlier evidence state; it deletes and rewrites nothing. The target state is the current exclusions minus `record_ids`. The nearest ancestor with the same question and exactly that exclusion set is found, and its findings are saved again as a new revision whose parent is the current one. A `revision_restores` row records which revision it reused, which is shown in the history. No LLM call is made. Errors: 422 if a record is not excluded in this revision, and 409 if no ancestor ever had that state. For example, if records A then B were excluded, restoring A alone would leave only B excluded, which never existed, so the analysis has to be rerun with that exclusion set.
+
+Creating revisions is the analyze, follow-up and exclude endpoints' job (BLA-20, BLA-29, BLA-33); they call `save_revision`. Restore is implemented here (`restore_records`). Everything is in SQLite, so revisions and boards (with their notes) reload after a browser refresh or a server restart.
 
 ## Boards (BLA-31)
 
