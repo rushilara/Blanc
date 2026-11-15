@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { presentSource } from "@/lib/source-presentation";
-import { SourceReferences } from "@/components/SourceReferences";
+import { SourcePanel } from "./SourcePanel";
 import { TimelineView } from "@/components/TimelineView";
 import { useEffect, useRef, useSyncExternalStore, useState } from "react";
 import type { AnalysisRevision, EvidenceRecord } from "@/lib/analysis";
@@ -144,14 +144,35 @@ export function Findings() {
   }
 
   // Unloaded sources still open the drawer, which fetches the original itself.
+  // One line of the record's own text for the hover card: a message, URL or saved path.
+  function citationSnippet(id: string) {
+    const source = sources.find(record => record.record_id === id);
+    if (!source) return "Not loaded yet. Open to fetch the original record.";
+    const view = presentSource(source);
+    const text = view?.message ?? view?.fields.find(field => /URL|Saved location/.test(field.label))?.value ?? source.content;
+    return text.replace(/\s+/g, " ").slice(0, 140);
+  }
+
+  /** A numbered citation. In the Sources rail (``label`` set) it has no hover card,
+   *  since the rail already shows the name and kind. */
   function citation(id: string, label?: string) {
     const number = citedOrder.indexOf(id) + 1 || citedOrder.length + 1;
-    const loaded = sources.some(record => record.record_id === id);
     const title = citationTitle(id);
-    return <span key={id} className="blanc-citation">
-      <button type="button" onClick={() => setOpen(id)} aria-label={label ?? `Open source ${number}: ${title}`}>{label ?? number}</button>
-      <span className="blanc-preview" aria-hidden="true"><strong>{title}</strong><span>{loaded ? "Open to inspect the original record." : "Open to load the original record."}</span></span>
+    return <span key={id} className={`blanc-citation${open === id ? " is-active" : ""}`}>
+      <button type="button" onClick={() => setOpen(id)} aria-pressed={open === id}
+        aria-label={label ? `Open source ${number}: ${title}` : `Source ${number}: ${title}`}>{label ?? number}</button>
+      {!label && <span className="blanc-preview" aria-hidden="true">
+        <small>{number} · {citationKind(id)}</small>
+        <strong>{title}</strong>
+        <span>{citationSnippet(id)}</span>
+      </span>}
     </span>;
+  }
+
+  function stepSource(direction: -1 | 1) {
+    const index = citedOrder.indexOf(open ?? "");
+    const next = citedOrder[index + direction];
+    if (next) setOpen(next);
   }
 
   return <div className="blanc-workspace">
@@ -175,7 +196,7 @@ export function Findings() {
       )}</nav>}
     </header>
 
-    {revision ? <div className="blanc-investigation">
+    {revision ? <div className={`blanc-investigation${open ? " has-source" : ""}`}>
       <aside className="blanc-case-rail" aria-label="Current case and sources">
         <small>Current case</small>
         <h2>{caseTitle}</h2>
@@ -196,9 +217,13 @@ export function Findings() {
       {view === "Connections" && <><h2>Connections</h2>{revision.graph.edges.map(edge => <p key={edge.id}><StatusLabel value={edge.status} />{nodes.get(edge.source) ?? edge.source} → {nodes.get(edge.target) ?? edge.target}<br />{edge.description ? withCitations(edge.description, edge.evidence_ids) : withCitations(edge.type.replaceAll("_", " "), edge.evidence_ids)}</p>)}</>}
       {view === "Timeline" && <><h2>Timeline</h2><TimelineView key={revision.analysis_id} events={revision.timeline_events} caseId={revision.case_id} records={sources} excludedRecordIds={revision.excluded_record_ids} /></>}
       {view === "Revisions" && <><h2>Current revision</h2><p>{revision.analysis_id}</p><p>Excluded records: {revision.excluded_record_ids.join(", ") || "None"}</p></>}
-      {open && <SourceReferences key={open} ids={[open]} caseId={revision.case_id} records={sources} excludedRecordIds={revision.excluded_record_ids} autoOpen hideTriggers onClose={() => setOpen(undefined)} />}
       {view === "Findings" && <section className="blanc-ruled"><h3>Follow-ups</h3><input aria-label="Ask a follow-up" placeholder="Ask a follow-up…" disabled /><small>Follow-up analysis is not connected yet.</small></section>}
-    </main></div> : <main className="blanc-reading blanc-entry">
+    </main>
+      {open && <SourcePanel key={open} caseId={revision.case_id} recordId={open} records={sources}
+        number={citedOrder.indexOf(open) + 1 || citedOrder.length} total={citedOrder.length}
+        excluded={revision.excluded_record_ids.includes(open)}
+        onClose={() => setOpen(undefined)} onStep={stepSource} />}
+    </div> : <main className="blanc-reading blanc-entry">
       <h1 aria-label={greeting || undefined}><TypedGreeting key={greeting} text={greeting} /></h1>
       <form onSubmit={event => { event.preventDefault(); void ask(); }}>
         <textarea rows={2} required aria-label="Ask a question about a case" placeholder="Ask a question about a case…" value={question} onKeyDown={event => {
