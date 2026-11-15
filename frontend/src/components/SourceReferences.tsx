@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 
+import { SourceContent } from "@/components/SourceContent";
 import type { EvidenceRecord } from "@/lib/analysis";
 import { fetchRecord, RecordFetchError } from "@/lib/records";
 
@@ -185,7 +186,7 @@ function RecordSection({
             <div className="space-y-1">
               <dt className="font-semibold text-zinc-500">Source timestamp</dt>
               <dd className="break-words">
-                {record.timestamp ?? "Not recorded"} · {record.timestamp_kind ?? "unknown"}
+                {record.timestamp ?? "No normalized timestamp"} · {record.timestamp_kind ?? "unknown"}
               </dd>
             </div>
             <div className="space-y-1 sm:col-span-2">
@@ -193,12 +194,9 @@ function RecordSection({
               <dd className="break-all font-mono text-xs">{record.record_id}</dd>
             </div>
           </dl>
-          <div className="space-y-2">
-            <h4 className="text-sm font-semibold">Original excerpt</h4>
-            <blockquote className="whitespace-pre-wrap break-words rounded-lg bg-zinc-100 p-4 text-sm leading-7 dark:bg-zinc-900">
-              {excerpt}
-            </blockquote>
-          </div>
+          {/* #44's readable view with the raw record preserved. Revisions cite whole
+              records, so the excerpt shown is the record's content. */}
+          <SourceContent key={record.record_id} record={{ ...record, content: excerpt }} />
         </>
       )}
 
