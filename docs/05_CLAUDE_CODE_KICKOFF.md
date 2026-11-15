@@ -28,7 +28,8 @@ blanc/
 **Task A1:** Build importer that turns TXT/JSON/CSV (and one additional format if ready) into `EvidenceRecord` objects with stable identifiers and precise locators.  
 **Task A2:** Acquire and validate real case records from Narcos, Owl or M57-Jean; store at least one multi-record question with independently checked citations.  
 **Task A3:** Build a simple script that checks source existence, duplicate IDs and source/case mismatches.  
-**Done when:** Backend can import the case; RAG can retrieve real records; answer key and scenario materials are kept out of search.
+**Task A4 (E11 / BLA-68):** Import PNG/JPEG email attachments, loose images and PDFs as records; store bytes on disk under the case; DB holds path/hash/locator/modality.  
+**Done when:** Backend can import the case; RAG can retrieve real records; answer key and scenario materials are kept out of search. (E11 media import lands with BLA-68.)
 
 ## Owner B — Retrieval and reconstruction tasks
 
@@ -37,7 +38,8 @@ blanc/
 **Task B3:** Implement one structured LLM analysis output; Pydantic validate claims, edges, events and source IDs.  
 **Task B4:** Create a follow-up endpoint; create a new revision using previous board as context (never as evidence).  
 **Task B5:** Implement evidence-exclusion endpoint that reruns retrieval and LLM analysis and saves a child revision.  
-**Done when:** `POST analyses` and `POST exclude` produce valid, source-traceable and meaningfully different revision objects.
+**Task B6 (E11 / BLA-69–71):** Switch corpus to `gemini-embedding-2` (explicit dim 768; `reembed_stale_chunks`; re-run Owl/baseline evals); embed media; give media an FTS sidecar (filename / parent email subject) so RRF is not vector-only; retrieve into the evidence window; pass vision parts into analysis; never send excluded media as parts; citations without fake char offsets.  
+**Done when:** `POST analyses` and `POST exclude` produce valid, source-traceable and meaningfully different revision objects. (E11 multimodal path is BLA-67.)
 
 ## Owner C — Investigator workspace tasks
 
