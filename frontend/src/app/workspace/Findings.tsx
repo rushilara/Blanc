@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { EvidenceWindowNotice, FollowUpWindowChoice } from "@/components/EvidenceWindowNotice";
 import { InvestigationNavigation } from "@/components/InvestigationNavigation";
+import { AnswerText } from "@/components/AnswerText";
 import { windowLabel } from "@/lib/evidence-window";
 import { investigationTitle } from "@/lib/investigation-navigation";
 import { SpatialConnections } from "@/components/SpatialConnections";
@@ -538,7 +539,7 @@ export function Findings() {
   return <div className="blanc-workspace">
     {/* The static sheet avoids the missing workspace styles in the CSS pipeline. */}
     {/* eslint-disable-next-line @next/next/no-css-tags */}
-    <link rel="stylesheet" href="/blanc/findings.css?v=evidence-window" precedence="blanc" />
+    <link rel="stylesheet" href="/blanc/findings.css?v=answer-markdown" precedence="blanc" />
     <header className="blanc-header">
       <Link href="/" aria-label="Blanc home"><svg width="92" height="37" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="210 168 1460 570"><defs>
     <filter id="ink-alpha" colorInterpolationFilters="sRGB">
@@ -607,7 +608,9 @@ export function Findings() {
       </p>
       {view === "Findings" && <>
         <h2>Finding</h2>
-        <p>{shown.answer ? withCitations(shown.answer, [], true) : "No answer in this revision."}</p>
+        {shown.answer
+          ? <AnswerText className="blanc-answer" text={shown.answer} renderText={text => withCitations(text, [], true)} />
+          : <p>No answer in this revision.</p>}
         <h2>Why</h2>
         {shown.claims.map(claim => {
           const item = supportOf("claim", claim.id);

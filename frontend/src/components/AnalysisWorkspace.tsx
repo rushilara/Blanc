@@ -7,6 +7,7 @@ import { RelationshipGraph } from "@/components/RelationshipGraph";
 import { SourceReferences } from "@/components/SourceReferences";
 import { Status } from "@/components/StatusBadge";
 import { TimelineView } from "@/components/TimelineView";
+import { AnswerText } from "./AnswerText";
 
 export type PinPersistence = "local" | "board";
 
@@ -79,7 +80,9 @@ export function AnalysisWorkspace({
       )}
       <div className="grid items-start gap-5 lg:grid-cols-3">
         <Pane id="answer" title="Answer" count={revision.claims.length}>
-          <p className="text-sm leading-7">{revision.answer || "No answer in this revision."}</p>
+          {revision.answer
+            ? <AnswerText text={revision.answer} className="space-y-2 text-sm leading-7 [&_code]:rounded [&_code]:bg-zinc-100 [&_code]:px-1 [&_code]:font-mono [&_code]:text-xs dark:[&_code]:bg-zinc-800 [&_ol]:list-decimal [&_ol]:space-y-1 [&_ol]:pl-5 [&_ul]:list-disc [&_ul]:space-y-1 [&_ul]:pl-5" />
+            : <p className="text-sm leading-7">No answer in this revision.</p>}
           <ul className="space-y-4">
             {revision.claims.map((claim) => (
               <li key={claim.id} className="space-y-2 border-l-2 border-zinc-200 pl-3 dark:border-zinc-700">

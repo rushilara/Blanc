@@ -556,3 +556,12 @@
 .blanc-original-question p { margin: 12px 0 0; }
 .blanc-investigations button:disabled { opacity: .5; cursor: default; }
 @media(max-width:600px) { .blanc-entry .blanc-investigation-open strong { font-size: 15px; } .blanc-home-case { gap: 10px; } }
+
+/* The model's answer, with its Markdown rendered (lists, bold, italic, code). Lists need an
+   explicit marker: the Tailwind reset removes list styles. */
+.blanc-answer > p { margin: 0 0 10px; }
+.blanc-answer ol, .blanc-answer ul { margin: 0 0 10px; padding-left: 22px; }
+.blanc-answer ol { list-style: decimal; }
+.blanc-answer ul { list-style: disc; }
+.blanc-answer li { margin: 4px 0; padding-left: 2px; }
+.blanc-answer code { padding: 0 3px; border-radius: 2px; background: rgba(60, 40, 20, .08); font: .88em ui-monospace, monospace; overflow-wrap: anywhere; }
