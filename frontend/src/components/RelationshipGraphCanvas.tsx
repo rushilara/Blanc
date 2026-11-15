@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useMemo, type KeyboardEvent } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, type KeyboardEvent } from "react";
 import {
   Background,
   BaseEdge,
@@ -143,10 +143,21 @@ function GraphInner({
   pinnedIds: string[];
 } & Handlers) {
   const built = useMemo(() => buildElements(nodes, edges, pinnedIds), [nodes, edges, pinnedIds]);
-  // Initial state only: the parent remounts the graph for each revision.
-  const [flowNodes, , applyNodeChanges] = useNodesState(built.flowNodes);
-  const [flowEdges, , applyEdgeChanges] = useEdgesState(built.flowEdges);
+  // Keep drag positions across filter/pin updates; the parent remounts per analysis.
+  const [flowNodes, setFlowNodes, applyNodeChanges] = useNodesState(built.flowNodes);
+  const [flowEdges, setFlowEdges, applyEdgeChanges] = useEdgesState(built.flowEdges);
   const handlers = useMemo(() => ({ onInspectNode, onSelectEdge }), [onInspectNode, onSelectEdge]);
+
+  useEffect(() => {
+    setFlowNodes((current) => {
+      const positions = new Map(current.map((node) => [node.id, node.position]));
+      return built.flowNodes.map((node) => ({
+        ...node,
+        position: positions.get(node.id) ?? node.position,
+      }));
+    });
+    setFlowEdges(built.flowEdges);
+  }, [built, setFlowEdges, setFlowNodes]);
 
   // Read-only view: drag, select and dimension changes apply; removals never do.
   const onNodesChange = useCallback(

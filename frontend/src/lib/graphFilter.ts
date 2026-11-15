@@ -94,12 +94,13 @@ export function filterGraph(nodes: GraphNode[], edges: GraphEdge[], filters: Gra
 
   const visibleIds = new Set<string>([...matchedNodeIds, ...pinned]);
 
-  // Search or edge-type filters can introduce relationship endpoints.
+  // Search or edge-type filters can introduce relationship endpoints, but never
+  // bypass an active node-type filter (pinned entities stay visible either way).
   if (searching || edgeTypeSet.size > 0) {
     for (const edge of edges) {
       if (!matchedEdgeIds.has(edge.id)) continue;
       for (const end of [edge.source, edge.target]) {
-        if (pinned.has(end) || nodePassesType(byId.get(end)) || searching || nodeTypeSet.size === 0) {
+        if (pinned.has(end) || nodePassesType(byId.get(end))) {
           visibleIds.add(end);
         }
       }

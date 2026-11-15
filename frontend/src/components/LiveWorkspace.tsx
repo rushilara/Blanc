@@ -5,7 +5,9 @@ import { AnalysisWorkspace } from "./AnalysisWorkspace";
 import { VersionsDrawer } from "./VersionsDrawer";
 import { SourceReferences } from "./SourceReferences";
 import {
-  ensureCaseBoard,
+  createBoard,
+  loadCaseBoard,
+  otherVersionNodePinCount,
   pinnedNodeIds,
   setNodePin,
   type InvestigationBoard,
@@ -24,9 +26,13 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
   const [search, setSearch] = useState<SearchResult | null>(null);
   const [analysis, setAnalysis] = useState<AnalysisRevision | null>(null);
   const [sources, setSources] = useState<EvidenceRecord[]>([]);
-  const [board, setBoard] = useState<InvestigationBoard | null>(null);
   const [pinnedEntityIds, setPinnedEntityIds] = useState<string[]>([]);
+  const [otherVersionPinCount, setOtherVersionPinCount] = useState(0);
   const active = useRef<AbortController | null>(null);
+  const boardRef = useRef<InvestigationBoard | null>(null);
+  const pinQueue = useRef(Promise.resolve());
+  /** Bumped on case/version switches so in-flight pins never apply to the wrong view. */
+  const viewEpoch = useRef(0);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -39,56 +45,95 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
   }, [preferredCaseId, reload]);
   useEffect(() => () => active.current?.abort(), []);
 
-  function changeCase(id: string) {
+  function beginViewChange() {
+    viewEpoch.current += 1;
     active.current?.abort();
+  }
+
+  function applyBoard(next: InvestigationBoard | null, analysisId: string) {
+    boardRef.current = next;
+    setPinnedEntityIds(next ? pinnedNodeIds(next, analysisId) : []);
+    setOtherVersionPinCount(next ? otherVersionNodePinCount(next, analysisId) : 0);
+  }
+
+  function changeCase(id: string) {
+    beginViewChange();
     active.current = null;
-    setSelected(id); setSearch(null); setAnalysis(null); setSources([]); setBoard(null);
-    setPinnedEntityIds([]); setError(""); setPending(null);
+    setSelected(id); setSearch(null); setAnalysis(null); setSources([]);
+    applyBoard(null, "");
+    setError(""); setPending(null);
   }
 
-  async function attachBoard(revision: AnalysisRevision, signal?: AbortSignal) {
-    const caseTitle = cases.find((item) => item.case_id === revision.case_id)?.title ?? revision.case_id;
-    const next = await ensureCaseBoard(
-      revision.case_id,
-      `${caseTitle} board`,
-      revision.analysis_id,
-      signal,
-    );
-    if (signal?.aborted) return;
-    setBoard(next);
-    setPinnedEntityIds(pinnedNodeIds(next, revision.analysis_id));
+  async function attachBoard(revision: AnalysisRevision, signal: AbortSignal, epoch: number) {
+    // Read only: browsing versions must not PATCH active_analysis_id or create boards.
+    const next = await loadCaseBoard(revision.case_id, signal);
+    if (signal.aborted || viewEpoch.current !== epoch) return;
+    applyBoard(next, revision.analysis_id);
   }
 
-  const onPinnedEntityIdsChange = useCallback(
-    async (ids: string[]) => {
-      if (!analysis || !board) {
+  const onPinnedEntityIdsChange = useCallback((ids: string[]) => {
+    const currentAnalysis = analysis;
+    const epoch = viewEpoch.current;
+    const run = async () => {
+      if (!currentAnalysis) {
+        if (viewEpoch.current !== epoch) return;
         setPinnedEntityIds(ids);
+        setOtherVersionPinCount(0);
         return;
       }
-      const current = new Set(pinnedNodeIds(board, analysis.analysis_id));
+      const stillCurrent = () => viewEpoch.current === epoch;
+      const caseId = currentAnalysis.case_id;
+      const analysisId = currentAnalysis.analysis_id;
+
+      let latest = boardRef.current;
+      if (!latest) {
+        const caseTitle = cases.find((item) => item.case_id === caseId)?.title ?? caseId;
+        latest = await createBoard(caseId, `${caseTitle} board`, analysisId);
+        if (!stillCurrent()) return;
+        boardRef.current = latest;
+      }
+
+      const current = new Set(pinnedNodeIds(latest, analysisId));
       const next = new Set(ids);
-      let latest = board;
       for (const id of next) {
-        if (!current.has(id)) latest = await setNodePin(analysis.case_id, latest, analysis.analysis_id, id, true);
+        if (!stillCurrent()) return;
+        if (!current.has(id)) {
+          latest = await setNodePin(caseId, latest, analysisId, id, true);
+          if (!stillCurrent()) return;
+          boardRef.current = latest;
+        }
       }
       for (const id of current) {
-        if (!next.has(id)) latest = await setNodePin(analysis.case_id, latest, analysis.analysis_id, id, false);
+        if (!stillCurrent()) return;
+        if (!next.has(id)) {
+          latest = await setNodePin(caseId, latest, analysisId, id, false);
+          if (!stillCurrent()) return;
+          boardRef.current = latest;
+        }
       }
-      setBoard(latest);
-      setPinnedEntityIds(pinnedNodeIds(latest, analysis.analysis_id));
-    },
-    [analysis, board],
-  );
+      if (!stillCurrent()) return;
+      applyBoard(latest, analysisId);
+    };
+
+    const queued = pinQueue.current.then(run, run);
+    pinQueue.current = queued.then(
+      () => undefined,
+      () => undefined,
+    );
+    return queued;
+  }, [analysis, cases]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selected || !question.trim() || pending) return;
     const submitter = (event.nativeEvent as SubmitEvent).submitter as HTMLButtonElement | null;
     const mode = submitter?.value === "analysis" ? "analysis" : "search";
+    beginViewChange();
     const controller = new AbortController();
-    active.current?.abort(); active.current = controller;
+    active.current = controller;
+    const epoch = viewEpoch.current;
     setPending(mode); setError(""); setAnalysis(null); setSearch(null); setSources([]);
-    setBoard(null); setPinnedEntityIds([]);
+    applyBoard(null, "");
     const ask = question.trim();
     try {
       if (mode === "search") {
@@ -97,15 +142,14 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
       } else {
         const result = await analyzeCase(selected, ask, controller.signal);
         const records = await loadRevisionSources(result, controller.signal);
-        if (!controller.signal.aborted) {
+        if (!controller.signal.aborted && viewEpoch.current === epoch) {
           setAnalysis(result);
           setSources(records);
           try {
-            await attachBoard(result, controller.signal);
+            await attachBoard(result, controller.signal, epoch);
           } catch {
-            if (!controller.signal.aborted) {
-              setBoard(null);
-              setPinnedEntityIds([]);
+            if (!controller.signal.aborted && viewEpoch.current === epoch) {
+              applyBoard(null, result.analysis_id);
               setError("Analysis ready, but pinned entities could not be loaded from the board.");
             }
           }
@@ -120,20 +164,21 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
 
   async function openRevision(analysisId: string): Promise<boolean> {
     if (!selected || pending) return false;
+    beginViewChange();
     const controller = new AbortController();
-    active.current?.abort(); active.current = controller;
+    active.current = controller;
+    const epoch = viewEpoch.current;
     setPending("revision"); setError("");
     try {
       const revision = await getRevision(selected, analysisId, controller.signal);
       const records = await loadRevisionSources(revision, controller.signal);
-      if (controller.signal.aborted) return false;
+      if (controller.signal.aborted || viewEpoch.current !== epoch) return false;
       setAnalysis(revision); setSources(records); setSearch(null); setQuestion(revision.question);
       try {
-        await attachBoard(revision, controller.signal);
+        await attachBoard(revision, controller.signal, epoch);
       } catch {
-        if (!controller.signal.aborted) {
-          setBoard(null);
-          setPinnedEntityIds([]);
+        if (!controller.signal.aborted && viewEpoch.current === epoch) {
+          applyBoard(null, revision.analysis_id);
           setError("Version opened, but pinned entities could not be loaded from the board.");
         }
       }
@@ -203,6 +248,7 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
           pinnedEntityIds={pinnedEntityIds}
           onPinnedEntityIdsChange={onPinnedEntityIdsChange}
           pinPersistence="board"
+          otherVersionPinCount={otherVersionPinCount}
         />
       )}
     </>

@@ -52,6 +52,36 @@ function parseBoard(data: unknown, caseId: string): InvestigationBoard {
   return data as InvestigationBoard;
 }
 
+/** Prefer a readable backend `detail`; fall back for known client-facing cases. */
+export function boardErrorMessage(status: number, detail: unknown): string {
+  if (status === 409) {
+    return "The board changed in another tab. Reload and try again.";
+  }
+  const fromDetail = formatDetail(detail);
+  if (fromDetail) return fromDetail;
+  if (status === 422) {
+    return "Notes must be removed before unpinning this entity.";
+  }
+  return `The board request failed (HTTP ${status}).`;
+}
+
+function formatDetail(detail: unknown): string | null {
+  if (typeof detail === "string" && detail.trim()) return detail.trim();
+  if (Array.isArray(detail) && detail.length > 0 && detail.every((item) => typeof item === "string")) {
+    return detail.join("; ");
+  }
+  return null;
+}
+
+async function readErrorDetail(response: Response): Promise<unknown> {
+  try {
+    const body = (await response.json()) as { detail?: unknown };
+    return body?.detail;
+  } catch {
+    return undefined;
+  }
+}
+
 async function boardRequest(
   url: string,
   init: { method: string; body?: unknown; signal?: AbortSignal },
@@ -65,12 +95,8 @@ async function boardRequest(
       : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(init.body) }),
   });
   if (!response.ok) {
-    throw new ApiError(
-      response.status === 409
-        ? "The board changed in another tab. Reload and try again."
-        : `The board request failed (HTTP ${response.status}).`,
-      response.status,
-    );
+    const detail = await readErrorDetail(response);
+    throw new ApiError(boardErrorMessage(response.status, detail), response.status);
   }
   try {
     return await response.json();
@@ -83,6 +109,14 @@ export async function listBoards(caseId: string, signal?: AbortSignal): Promise<
   const data = await boardRequest(path(caseId), { method: "GET", signal });
   if (!Array.isArray(data)) throw new ApiError("The board list response is invalid.");
   return data.map((item) => parseBoard(item, caseId));
+}
+
+export async function getBoard(
+  caseId: string,
+  boardId: string,
+  signal?: AbortSignal,
+): Promise<InvestigationBoard> {
+  return parseBoard(await boardRequest(path(caseId, boardId), { method: "GET", signal }), caseId);
 }
 
 export async function createBoard(
@@ -125,27 +159,26 @@ export function pinnedNodeIds(board: InvestigationBoard, analysisId: string): st
     .map((item) => item.ref_id);
 }
 
-/** Prefer the most recently updated board; create one when the case has none. */
-export async function ensureCaseBoard(
-  caseId: string,
-  title: string,
-  activeAnalysisId: string | null,
-  signal?: AbortSignal,
-): Promise<InvestigationBoard> {
-  const boards = await listBoards(caseId, signal);
-  if (boards[0]) {
-    if (boards[0].active_analysis_id === activeAnalysisId) return boards[0];
-    return patchBoard(
-      caseId,
-      boards[0].board_id,
-      { expected_revision: boards[0].revision, active_analysis_id: activeAnalysisId },
-      signal,
-    );
-  }
-  return createBoard(caseId, title, activeAnalysisId, signal);
+/** Node pins that belong to a different analysis revision than the one being viewed. */
+export function otherVersionNodePinCount(board: InvestigationBoard, analysisId: string): number {
+  return board.items.filter(
+    (item) => item.kind === "node" && item.source_analysis_id !== analysisId,
+  ).length;
 }
 
-export async function setNodePin(
+/**
+ * Read the newest board for the case without creating or retargeting it.
+ * Opening/browsing versions must not PATCH `active_analysis_id` or create boards.
+ */
+export async function loadCaseBoard(
+  caseId: string,
+  signal?: AbortSignal,
+): Promise<InvestigationBoard | null> {
+  const boards = await listBoards(caseId, signal);
+  return boards[0] ?? null;
+}
+
+async function patchNodePin(
   caseId: string,
   board: InvestigationBoard,
   analysisId: string,
@@ -177,4 +210,25 @@ export async function setNodePin(
     { expected_revision: board.revision, active_analysis_id: analysisId, unpin: [existing.item_id] },
     signal,
   );
+}
+
+/**
+ * Pin or unpin a node. On 409, re-fetch the board and retry the change once
+ * before surfacing the conflict to the caller.
+ */
+export async function setNodePin(
+  caseId: string,
+  board: InvestigationBoard,
+  analysisId: string,
+  nodeId: string,
+  pinned: boolean,
+  signal?: AbortSignal,
+): Promise<InvestigationBoard> {
+  try {
+    return await patchNodePin(caseId, board, analysisId, nodeId, pinned, signal);
+  } catch (error) {
+    if (!(error instanceof ApiError) || error.status !== 409) throw error;
+    const fresh = await getBoard(caseId, board.board_id, signal);
+    return patchNodePin(caseId, fresh, analysisId, nodeId, pinned, signal);
+  }
 }

@@ -32,6 +32,8 @@ type AnalysisWorkspaceProps = {
   pinnedEntityIds?: string[];
   onPinnedEntityIdsChange?: (ids: string[]) => void | Promise<void>;
   pinPersistence?: PinPersistence;
+  /** Node pins on the board for other analysis revisions. */
+  otherVersionPinCount?: number;
   onExclude?: (recordId: string) => void;
   onAnnotate?: (recordId: string) => void;
 };
@@ -45,6 +47,7 @@ export function AnalysisWorkspace({
   pinnedEntityIds,
   onPinnedEntityIdsChange,
   pinPersistence = "local",
+  otherVersionPinCount = 0,
   onExclude,
   onAnnotate,
 }: AnalysisWorkspaceProps) {
@@ -103,6 +106,7 @@ export function AnalysisWorkspace({
             pinnedEntityIds={pinnedEntityIds}
             onPinnedEntityIdsChange={onPinnedEntityIdsChange}
             pinPersistence={pinPersistence}
+            otherVersionPinCount={otherVersionPinCount}
             {...sourceProps}
           />
         </Pane>

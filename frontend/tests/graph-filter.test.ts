@@ -77,6 +77,37 @@ test("edge type filter hides non-matching relationships", () => {
   );
 });
 
+test("edge type filter keeps both endpoints of matching relationships", () => {
+  const result = filterGraph(nodes, edges, {
+    query: "",
+    nodeTypes: [],
+    edgeTypes: ["accessed"],
+    pinnedIds: [],
+  });
+  assert.deepEqual(
+    result.edges.map((edge) => edge.id),
+    ["edge-2"],
+  );
+  assert.deepEqual(
+    result.nodes.map((node) => node.id).sort(),
+    ["jordan", "server"],
+  );
+});
+
+test("search does not override an active node-type filter", () => {
+  const result = filterGraph(nodes, edges, {
+    query: "accessed",
+    nodeTypes: ["device"],
+    edgeTypes: [],
+    pinnedIds: [],
+  });
+  assert.deepEqual(
+    result.nodes.map((node) => node.id),
+    ["server"],
+  );
+  assert.deepEqual(result.edges.map((edge) => edge.id), []);
+});
+
 test("empty filters leave the full graph", () => {
   const result = filterGraph(nodes, edges, {
     query: "  ",

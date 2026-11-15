@@ -93,7 +93,7 @@ export function TimelineView({
       </div>
       {eventTypeOptions.length > 0 && (
         <fieldset className="space-y-1.5">
-          <legend className="text-xs font-medium text-zinc-600 dark:text-zinc-300">Event types</legend>
+          <legend className="text-xs font-medium text-zinc-600 dark:text-zinc-300">Time source</legend>
           <div className="flex flex-wrap gap-1.5">
             {eventTypeOptions.map((option) => {
               const on = eventTypes.includes(option);

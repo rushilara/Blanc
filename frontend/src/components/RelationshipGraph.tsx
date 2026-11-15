@@ -81,6 +81,7 @@ export function RelationshipGraph({
   pinnedEntityIds,
   onPinnedEntityIdsChange,
   pinPersistence = "local",
+  otherVersionPinCount = 0,
   onExclude,
   onAnnotate,
 }: {
@@ -93,6 +94,8 @@ export function RelationshipGraph({
   onPinnedEntityIdsChange?: (ids: string[]) => void | Promise<void>;
   /** local: parent may omit handlers; board: pin requires evidence and parent persistence. */
   pinPersistence?: "local" | "board";
+  /** Node pins on the board that belong to other analysis revisions. */
+  otherVersionPinCount?: number;
   onExclude?: (recordId: string) => void;
   onAnnotate?: (recordId: string) => void;
 }) {
@@ -104,7 +107,7 @@ export function RelationshipGraph({
   const [nodeTypes, setNodeTypes] = useState<string[]>([]);
   const [edgeTypes, setEdgeTypes] = useState<string[]>([]);
   const [localPins, setLocalPins] = useState<string[]>([]);
-  const [pinBusy, setPinBusy] = useState<string | null>(null);
+  const [pinBusy, setPinBusy] = useState(false);
   const pairHeading = useRef<HTMLHeadingElement>(null);
   const pairTitleId = useId();
   const searchId = useId();
@@ -132,7 +135,6 @@ export function RelationshipGraph({
   const names = new Map(graph.nodes.map((node) => [node.id, node.label]));
   const name = (id: string) => names.get(id) ?? id;
   const sourceProps = { records, caseId, excludedRecordIds, onExclude, onAnnotate };
-  const canvasKey = `${drawable.map((e) => e.id).join(",")}|${filtered.nodes.map((n) => n.id).join(",")}|${pinnedIds.join(",")}`;
 
   useEffect(() => {
     if (pair) pairHeading.current?.focus();
@@ -172,6 +174,7 @@ export function RelationshipGraph({
   );
 
   async function togglePin(nodeId: string) {
+    if (pinBusy) return;
     const node = graph.nodes.find((item) => item.id === nodeId);
     if (!node) return;
     const pinned = pinnedIds.includes(nodeId);
@@ -180,14 +183,14 @@ export function RelationshipGraph({
       return;
     }
     const next = pinned ? pinnedIds.filter((id) => id !== nodeId) : [...pinnedIds, nodeId];
-    setPinBusy(nodeId);
+    setPinBusy(true);
     setStatus(null);
     try {
       await setPinnedIds(next);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Could not update pinned entities.");
     } finally {
-      setPinBusy(null);
+      setPinBusy(false);
     }
   }
 
@@ -231,6 +234,11 @@ export function RelationshipGraph({
             )}
           </p>
         )}
+        {pinnedIds.length === 0 && otherVersionPinCount > 0 && (
+          <p className="text-xs text-zinc-500" role="status">
+            {otherVersionPinCount} pin{otherVersionPinCount === 1 ? "" : "s"} on other versions
+          </p>
+        )}
       </div>
       <ul aria-label="Relationship status legend" className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-600 dark:text-zinc-300">
         {Object.entries(STATUS_EDGE).map(([value, color]) => (
@@ -242,7 +250,6 @@ export function RelationshipGraph({
       </ul>
       <div className="h-[min(28rem,55vh)] min-h-[18rem] overflow-hidden rounded-lg border border-zinc-200 dark:border-zinc-800">
         <RelationshipGraphCanvas
-          key={canvasKey}
           nodes={filtered.nodes}
           edges={drawable}
           pinnedIds={pinnedIds}
@@ -260,8 +267,7 @@ export function RelationshipGraph({
               <li key={node.id}>
                 <button
                   type="button"
-                  aria-pressed={pinned}
-                  disabled={pinBusy === node.id}
+                  disabled={pinBusy}
                   onClick={() => void togglePin(node.id)}
                   className={`rounded border px-2 py-1 text-xs ${
                     pinned
