@@ -37,6 +37,53 @@ class TestEvidenceGrounding(unittest.TestCase):
         broken_records[0]['case_id']='other-case'
         self.assertTrue(validate_revision(broken_records,revision))
 
+def covered():
+    # rec-02 left out of a one-record standard window although the vector search ranked it first.
+    r=deepcopy(revision)
+    r['retrieved_record_ids']=['rec-01']
+    r['claims']=[c for c in r['claims'] if set(c['evidence_ids'])<={'rec-01'}]
+    r['graph']={'nodes':[],'edges':[]}
+    r['timeline_events']=[]
+    r['retrieval_coverage']={'evidence_window':'standard','max_records':1,'max_excerpt_chars':32000,
+        'skipped':[{'record_id':'rec-02','rank':2,'reason':'record_limit','vector_rank':1}],
+        'budget_substituted':False,'left_out_record_ids':['rec-02'],'offer_expanded_window':True}
+    return r
+
+class TestRetrievalCoverage(unittest.TestCase):
+    def test_valid_coverage(self):
+        self.assertTrue(covered()['claims'])
+        self.assertEqual(validate_revision(records,covered()),[])
+
+    def test_a_skip_ranked_outside_the_window_is_not_left_out(self):
+        far=covered()
+        far['retrieval_coverage']['skipped'][0]['vector_rank']=2
+        far['retrieval_coverage'].update({'left_out_record_ids':[],'offer_expanded_window':False})
+        self.assertEqual(validate_revision(records,far),[])
+        far['retrieval_coverage'].update({'left_out_record_ids':['rec-02'],'offer_expanded_window':True})
+        self.assertTrue(validate_revision(records,far))
+
+    def test_inconsistent_coverage_is_rejected(self):
+        cases=[
+            ('retrieved_record_ids',['rec-01','rec-02'],'lists retrieved_record_ids as skipped'),
+            ('excluded_record_ids',['rec-02'],'lists excluded_record_ids as skipped'),
+        ]
+        for field,value,message in cases:
+            broken=covered(); broken[field]=value
+            self.assertTrue(any(message in e for e in validate_revision(records,broken)),field)
+        changes=[
+            ({'left_out_record_ids':[]},'left_out_record_ids do not follow'),
+            ({'offer_expanded_window':False},'offer_expanded_window does not follow'),
+            ({'evidence_window':'expanded'},'offer_expanded_window does not follow'),
+            ({'budget_substituted':True},'budget_substituted without a budget skip'),
+            ({'skipped':[{'record_id':'rec-02','rank':1,'reason':'record_limit','vector_rank':1}]},'does not fit reason'),
+            ({'skipped':[{'record_id':'rec-99','rank':2,'reason':'record_limit'}],'left_out_record_ids':[],'offer_expanded_window':False},'not in the case corpus'),
+        ]
+        for change,message in changes:
+            broken=covered(); broken['retrieval_coverage'].update(change)
+            self.assertTrue(any(message in e for e in validate_revision(records,broken)),change)
+        cited=covered(); cited['claims'][0]['evidence_ids']=['rec-02']
+        self.assertTrue(any('cited records as skipped' in e for e in validate_revision(records,cited)))
+
 class TestBoard(unittest.TestCase):
     def test_valid_board(self):
         self.assertEqual(validate_board(records,revisions,board),[])

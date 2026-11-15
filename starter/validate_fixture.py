@@ -42,6 +42,53 @@ def validate_revision(records: list[dict], analysis: dict) -> list[str]:
     for edge in analysis['graph']['edges']:
         if edge['source'] not in nodes or edge['target'] not in nodes:
             errors.append(f"edge {edge['id']} references unknown graph node")
+    errors += _coverage_errors(analysis, known)
+    return errors
+
+
+def _left_out(skipped: list[dict], max_records: int) -> list[str]:
+    """Record-limit skips that the vector or keyword search alone ranked in the window."""
+    return [
+        s['record_id'] for s in sorted(skipped, key=lambda s: s['rank'])
+        if s['reason'] == 'record_limit'
+        and any(s.get(k) is not None and s[k] <= max_records for k in ('vector_rank', 'keyword_rank'))
+    ]
+
+
+def _coverage_errors(analysis: dict, known: set[str]) -> list[str]:
+    """Invariant 12: retrieval_coverage (BLA-64) agrees with the revision."""
+    coverage = analysis.get('retrieval_coverage')
+    if coverage is None:
+        return []
+    errors: list[str] = []
+    skipped = coverage['skipped']
+    ids = [s['record_id'] for s in skipped]
+    if len(ids) != len(set(ids)) or len({s['rank'] for s in skipped}) != len(skipped):
+        errors.append('retrieval_coverage repeats a skipped record or rank')
+    cited = {rid for f in [*analysis['claims'], *analysis['graph']['nodes'],
+                           *analysis['graph']['edges'], *analysis['timeline_events']]
+             for rid in f.get('evidence_ids', [])}
+    if not set(ids) <= known:
+        errors.append('retrieval_coverage skips records not in the case corpus')
+    for name in ('retrieved_record_ids', 'excluded_record_ids'):
+        if set(ids) & set(analysis[name]):
+            errors.append(f'retrieval_coverage lists {name} as skipped')
+    if set(ids) & cited:
+        errors.append('retrieval_coverage lists cited records as skipped')
+    window = coverage['max_records']
+    if len(analysis['retrieved_record_ids']) > window:
+        errors.append('retrieval_coverage max_records is below the retrieved count')
+    for s in skipped:
+        if (s['reason'] == 'record_limit') == (s['rank'] <= window):
+            errors.append(f"retrieval_coverage rank {s['rank']} does not fit reason {s['reason']}")
+    if coverage['budget_substituted'] and not any(s['reason'] == 'budget' for s in skipped):
+        errors.append('retrieval_coverage budget_substituted without a budget skip')
+    expected = _left_out(skipped, window)
+    if coverage['left_out_record_ids'] != expected:
+        errors.append('retrieval_coverage left_out_record_ids do not follow from the skips')
+    offer = coverage['evidence_window'] == 'standard' and bool(expected)
+    if coverage['offer_expanded_window'] != offer:
+        errors.append('retrieval_coverage offer_expanded_window does not follow from the skips')
     return errors
 
 

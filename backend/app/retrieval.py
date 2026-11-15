@@ -37,7 +37,7 @@ built.
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from pydantic import BaseModel
@@ -45,6 +45,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import Settings
+from app.contracts import EvidenceWindow
 from app.embeddings import Embedder
 from app.evidence_store import CaseNotFoundError, EmbeddingIndexMismatchError, get_chunks
 from app.models import Case, EvidenceRecordRow
@@ -64,6 +65,7 @@ DEFAULT_VECTOR_CANDIDATES = 50
 DEFAULT_KEYWORD_CANDIDATES = 50
 DEFAULT_RRF_K = 60
 DEFAULT_MAX_RECORDS = 16
+DEFAULT_EXPANDED_MAX_RECORDS = 24
 DEFAULT_MAX_EXCERPT_CHARS = 32000
 DEFAULT_MAX_EXCERPTS_PER_RECORD = 2
 
@@ -78,6 +80,15 @@ class RetrievalConfig:
     max_records: int = DEFAULT_MAX_RECORDS
     max_excerpt_chars: int = DEFAULT_MAX_EXCERPT_CHARS
     max_excerpts_per_record: int = DEFAULT_MAX_EXCERPTS_PER_RECORD
+    # Record count of the "expanded" evidence window (BLA-64); see ``for_window``.
+    expanded_max_records: int = DEFAULT_EXPANDED_MAX_RECORDS
+
+    def for_window(self, window: EvidenceWindow) -> RetrievalConfig:
+        """This config for an evidence window: ``standard`` is unchanged; ``expanded`` raises
+        only ``max_records`` (the character budget stays the same)."""
+        if window == "expanded":
+            return replace(self, max_records=self.expanded_max_records)
+        return self
 
     @classmethod
     def from_settings(cls, settings: Settings) -> RetrievalConfig:
@@ -90,6 +101,7 @@ class RetrievalConfig:
             max_records=settings.RETRIEVAL_MAX_RECORDS,
             max_excerpt_chars=settings.RETRIEVAL_MAX_EXCERPT_CHARS,
             max_excerpts_per_record=settings.RETRIEVAL_MAX_EXCERPTS_PER_RECORD,
+            expanded_max_records=settings.RETRIEVAL_EXPANDED_MAX_RECORDS,
         )
 
 
@@ -138,6 +150,9 @@ class SkippedRecord(BaseModel):
     reason: Literal["budget", "record_limit"]
     # budget skips: size of the record's best excerpt, which did not fit; else None
     excerpt_chars: int | None = None
+    # Each retriever's own rank for this record (None if that retriever did not find it).
+    vector_rank: int | None = None
+    keyword_rank: int | None = None
 
 
 class RetrievalResult(BaseModel):
@@ -419,6 +434,8 @@ def retrieve(
                     score=f.score,
                     reason="budget",
                     excerpt_chars=best.end - best.start if best else None,
+                    vector_rank=f.vector.rank if f.vector else None,
+                    keyword_rank=f.keyword.rank if f.keyword else None,
                 )
             )
             continue
@@ -440,7 +457,14 @@ def retrieve(
         )
 
     skipped.extend(
-        SkippedRecord(record_id=f.record_id, rank=rank, score=f.score, reason="record_limit")
+        SkippedRecord(
+            record_id=f.record_id,
+            rank=rank,
+            score=f.score,
+            reason="record_limit",
+            vector_rank=f.vector.rank if f.vector else None,
+            keyword_rank=f.keyword.rank if f.keyword else None,
+        )
         for rank, f in enumerate(fused[max_records:], start=max_records + 1)
     )
     return empty.model_copy(
