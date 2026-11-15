@@ -88,8 +88,7 @@ def test_a_finding_with_a_second_source_is_weakened_not_erased(base_raw, child_r
     edge = next(i for i in comparison.items if i.kind == "edge" and i.base_ref_id == "edge-2")
     assert edge.compared_evidence_ids == ["rec-01"]
     assert edge.explanation == (
-        "Still supported by rec-01, but it no longer rests on rec-02, so it has fewer "
-        "supporting records than before."
+        "Still supported by rec-01, but it no longer rests on rec-02, which is excluded."
     )
 
 
@@ -142,18 +141,79 @@ def test_a_light_rewording_is_still_the_same_finding(base_raw, child_raw) -> Non
     assert result[("claim", "claim-1", "claim-a")] == "still_supported"
 
 
-def test_near_identical_wording_needs_a_shared_record_to_match(base_raw, child_raw) -> None:
-    reworded = base_raw["claims"][0]["text"].replace("about a document", "about the document")
-    assert reworded != base_raw["claims"][0]["text"]
-    child_raw["claims"][0].update(id="claim-a", text=reworded)
-    result = statuses(compare(base_raw, child_raw))
-    assert result[("claim", "claim-1", "claim-a")] == "still_supported"
+TRANSFER = "Alice transferred the money to Bob on Tuesday."
 
-    # The same near-identical wording resting on a different record is a different finding.
-    base_raw["claims"][0]["evidence_ids"] = ["rec-02"]
-    result = statuses(compare(base_raw, child_raw))
-    assert result[("claim", "claim-1", None)] == "not_supported"
+
+def restated(base_raw: dict, child_raw: dict, text: str, child_text: str) -> dict:
+    """Base claim-1 says `text`; the child replaces it with `child_text` on the same record."""
+    base_raw["claims"][0]["text"] = text
+    child_raw["claims"][0].update(id="claim-a", text=child_text)
+    return statuses(compare(base_raw, child_raw))
+
+
+@pytest.mark.parametrize(
+    ("text", "child_text"),
+    [
+        # Negation: one word reverses the finding.
+        (TRANSFER, TRANSFER.replace("transferred", "never transferred")),
+        ("Alex sent the document to Jordan.", "Alex did not send the document to Jordan."),
+        # Changed amount, date and person.
+        (TRANSFER.replace("the money", "$5,000"), TRANSFER.replace("the money", "$9,000")),
+        (TRANSFER, TRANSFER.replace("Tuesday", "Thursday")),
+        (TRANSFER, TRANSFER.replace("Bob", "Rob")),
+        # Swapped roles: the same words in a different order.
+        ("Alice paid Bob.", "Bob paid Alice."),
+        # Even a harmless-looking rewording is not taken as proof of identity.
+        (
+            "Alex emails Jordan about a document on Friday.",
+            "Alex emails Jordan about the document on Friday.",
+        ),
+    ],
+)
+def test_similar_wording_is_not_the_same_finding(base_raw, child_raw, text, child_text) -> None:
+    result = restated(base_raw, child_raw, text, child_text)
+    # Both are shown: the base claim is not reported as surviving.
+    assert result[("claim", "claim-1", None)] == "unresolved"
     assert result[("claim", None, "claim-a")] == "newly_supported"
+    assert "still_supported" not in [v for (kind, _, _), v in result.items() if kind == "claim"]
+
+
+def test_an_event_at_a_different_time_is_not_the_same_event(base_raw, child_raw) -> None:
+    event = child_raw["timeline_events"][0]
+    assert event["description"] == base_raw["timeline_events"][0]["description"]
+    event.update(id="event-a", timestamp="2026-04-11T09:15:00Z")
+    result = statuses(compare(base_raw, child_raw))
+    assert result[("event", "event-1", None)] == "unresolved"
+    assert result[("event", None, "event-a")] == "newly_supported"
+
+    # The same description and timestamp, with spacing differences, is the same event.
+    timestamp = base_raw["timeline_events"][0]["timestamp"]
+    child_raw["timeline_events"][0]["timestamp"] = f" {timestamp} "
+    result = statuses(compare(base_raw, child_raw))
+    assert result[("event", "event-1", "event-a")] == "still_supported"
+
+
+def test_a_finding_whose_records_were_replaced_is_weakened(base_raw, child_raw) -> None:
+    # Base cites [rec-01, rec-02]; rec-02 is excluded and the child cites [rec-01, rec-03].
+    base_raw["claims"][0]["evidence_ids"] = ["rec-01", "rec-02"]
+    child_raw["claims"][0]["evidence_ids"] = ["rec-01", "rec-03"]
+    comparison = compare(base_raw, child_raw)
+    item = next(i for i in comparison.items if i.base_ref_id == "claim-1")
+    assert item.support_status == "weakened"
+    assert item.explanation == (
+        "Still supported by rec-01, rec-03, but it no longer rests on rec-02, which is excluded."
+    )
+
+    # A record the child stops citing without it being excluded is named too.
+    base_raw["claims"][0]["evidence_ids"] = ["rec-01", "rec-02", "rec-03"]
+    child_raw["claims"][0]["evidence_ids"] = ["rec-01"]
+    comparison = compare(base_raw, child_raw)
+    item = next(i for i in comparison.items if i.base_ref_id == "claim-1")
+    assert item.support_status == "weakened"
+    assert item.explanation == (
+        "Still supported by rec-01, but it no longer rests on rec-02, which is excluded; "
+        "rec-03, which the active analysis no longer cites."
+    )
 
 
 def test_sharing_a_record_does_not_make_two_findings_the_same(base_raw, child_raw) -> None:
@@ -260,4 +320,7 @@ def test_only_a_parent_and_its_child_in_one_case_can_be_compared(base_raw, child
 def test_created_at_defaults_to_an_offset_aware_time(base_raw, child_raw) -> None:
     comparison = compare_revisions(revision(base_raw), revision(child_raw))
     assert comparison.created_at.tzinfo is not None
+    stamp = datetime(2026, 11, 14, tzinfo=UTC)
+    first = compare_revisions(revision(base_raw), revision(child_raw), created_at=stamp)
+    assert first == compare_revisions(revision(base_raw), revision(child_raw), created_at=stamp)
     assert comparison.to_contract_json()["schema_version"] == "1.0"

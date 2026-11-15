@@ -5,8 +5,10 @@ call, so the same two revisions always give the same comparison.
 
 For every claim, edge and event, `compare_revisions` says how its support changed:
 
-- `still_supported`: present in both, citing at least as many records as before.
-- `weakened`: present in both, but citing fewer records than before.
+- `still_supported`: present in both, and the child still cites every record the base
+  cited.
+- `weakened`: present in both, but the child no longer cites at least one record the base
+  cited (an excluded record, or one it dropped or replaced). The explanation names them.
 - `not_supported`: present in the base only, and every record it cited is now excluded.
 - `unresolved`: the child marks it unresolved, or no finding in the child can be
   identified as this one even though some of its records are still permitted. A
@@ -16,12 +18,16 @@ For every claim, edge and event, `compare_revisions` says how its support change
 
 Identity is conservative. Two findings are the same finding only when there is a
 structural reason to think so: an edge joining the same two nodes with the same
-type, or a claim or event with the same wording. Citing the same record is not
-enough, because one record often supports several unrelated facts; and an ID is
-not enough either, because IDs are regenerated on every LLM run. When identity
-cannot be established, the base finding is reported as `unresolved` or
-`not_supported` and the child finding as `newly_supported`, rather than a
-vanished conclusion being shown as surviving.
+type, a claim with the same wording, or an event with the same wording and the
+same timestamp. Wording is compared after ignoring case, spacing and punctuation,
+and nothing looser: similar wording is not enough, because "Alice transferred the
+money" and "Alice never transferred the money" differ by one word, as do changed
+amounts, dates and names. Citing the same record is not enough either, because one
+record often supports several unrelated facts; and an ID is not enough, because
+IDs are regenerated on every LLM run. When identity cannot be established, the
+base finding is reported as `unresolved` or `not_supported` and the child finding
+as `newly_supported`, so both are shown, rather than a vanished or reversed
+conclusion being shown as surviving.
 
 Support is counted in unique record IDs, so a record cited twice counts once.
 
@@ -33,7 +39,6 @@ remaining evidence", never "did not happen" or "disproved".
 import re
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from difflib import SequenceMatcher
 from typing import Any
 
 from app.contracts import (
@@ -46,11 +51,6 @@ from app.contracts import (
 
 _KINDS: tuple[ComparisonItemKind, ...] = ("claim", "edge", "event")
 
-# How alike two wordings must be (0-1) to count as the same finding restated, on top of
-# sharing a supporting record. High on purpose: a miss is reported honestly as
-# unresolved plus newly supported, while a false match hides a vanished conclusion.
-_SAME_WORDING = 0.85
-
 
 def compare_revisions(
     base: AnalysisRevision,
@@ -59,6 +59,10 @@ def compare_revisions(
     created_at: datetime | None = None,
 ) -> RevisionComparison:
     """Compare `base` with `compared`, its child after an exclusion.
+
+    Everything in the result depends only on the two revisions except `created_at`,
+    which defaults to the current time; pass the timestamp you store to make the whole
+    result reproducible.
 
     Raises `ValueError` if the two are not a parent and child in the same case.
     """
@@ -113,13 +117,14 @@ def _match(
 ) -> dict[int, Any]:
     """Pair each base finding with its counterpart in the child, if one can be identified.
 
-    Three rules, in order, each using a child finding at most once:
+    Each child finding is used at most once, in base order:
 
-    1. An edge joining the same two nodes with the same type.
-    2. A claim or event with the same wording (ignoring case, spacing and punctuation).
-    3. A claim or event with nearly the same wording that also shares a record.
+    - an edge: the same two nodes and the same type;
+    - a claim: the same wording (ignoring case, spacing and punctuation);
+    - an event: the same wording and the same timestamp.
 
-    There is no rule based on shared records or on IDs alone; see the module docstring.
+    There is no rule based on similar wording, shared records or IDs; see the module
+    docstring.
     """
     pairs: dict[int, Any] = {}
     taken: set[int] = set()
@@ -141,31 +146,23 @@ def _match(
         return pairs
 
     for before in base_items:
-        wording = _wording(kind, before)
+        key = _identity(kind, before)
         for after in free(compared_items):
-            if _wording(kind, after) == wording:
+            if _identity(kind, after) == key:
                 pair(before, after)
                 break
-
-    for before in base_items:
-        if id(before) in pairs:
-            continue
-        wording, cited = _wording(kind, before), set(before.evidence_ids)
-        best, best_ratio = None, _SAME_WORDING
-        for after in free(compared_items):
-            if not cited & set(after.evidence_ids):
-                continue
-            ratio = SequenceMatcher(None, wording, _wording(kind, after)).ratio()
-            if ratio >= best_ratio:
-                best, best_ratio = after, ratio
-        if best is not None:
-            pair(before, best)
-
     return pairs
 
 
-def _wording(kind: ComparisonItemKind, item: Any) -> str:
-    text = item.text if kind == "claim" else item.description
+def _identity(kind: ComparisonItemKind, item: Any) -> tuple[str, str | None]:
+    """What must be equal for a claim or event to be the same finding."""
+    if kind == "claim":
+        return _wording(item.text), None
+    timestamp = item.timestamp.strip() if item.timestamp is not None else None
+    return _wording(item.description), timestamp
+
+
+def _wording(text: str) -> str:
     return " ".join(re.sub(r"[^\w\s]", " ", text.casefold()).split())
 
 
@@ -213,13 +210,10 @@ def _classify(
             "The active analysis marks this unresolved: the remaining evidence is not "
             "enough to decide. That does not show it did not happen."
         )
-    elif len(cited_after) < len(cited_before):
+    elif dropped := [rid for rid in cited_before if rid not in cited_after]:
         status = "weakened"
-        dropped = [rid for rid in cited_before if rid not in cited_after]
-        explanation = (
-            f"Still supported by {_ids(cited_after)}, but it no longer rests on "
-            f"{_ids(dropped)}, so it has fewer supporting records than before."
-        )
+        explanation = f"Still supported by {_ids(cited_after)}, but it no longer rests on "
+        explanation += "; ".join(_dropped_reasons(dropped, excluded_now)) + "."
     else:
         status = "still_supported"
         explanation = (
@@ -247,6 +241,18 @@ def _new_item(kind: ComparisonItemKind, after: Any) -> ComparisonItem:
         compared_evidence_ids=cited,
         explanation=f"Appears only in this revision, supported by {_ids(cited)}.",
     )
+
+
+def _dropped_reasons(dropped: Sequence[str], excluded_now: set[str]) -> list[str]:
+    """Why each record the base cited is missing from the child, excluded records first."""
+    excluded = [rid for rid in dropped if rid in excluded_now]
+    uncited = [rid for rid in dropped if rid not in excluded_now]
+    reasons = []
+    if excluded:
+        reasons.append(f"{_ids(excluded)}, which {_is(excluded)} excluded")
+    if uncited:
+        reasons.append(f"{_ids(uncited)}, which the active analysis no longer cites")
+    return reasons
 
 
 def _ids(ids: Sequence[str]) -> str:
