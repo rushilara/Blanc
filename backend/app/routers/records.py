@@ -1,12 +1,18 @@
 """Source record endpoints: the evidence drawer's record + exact excerpt lookup (BLA-59)."""
 
+import re
 from typing import Annotated
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 
 from app.deps import CaseDep, SessionDep
-from app.media import MediaIntegrityError, MediaNotFoundError, resolve_media
+from app.media import (
+    MediaIntegrityError,
+    MediaNotFoundError,
+    resolve_case_media,
+    resolve_media,
+)
 from app.records import (
     ChunkNotFoundError,
     InvalidExcerptError,
@@ -77,21 +83,26 @@ def get_case_record(
 @router.get(
     "/{record_id}/media",
     response_class=Response,
-    responses={200: {"content": {"image/*": {}}}, 404: {}, 409: {}},
+    responses={200: {"content": {"image/*": {}, "application/pdf": {}}}, 404: {}, 409: {}},
 )
 def get_case_record_media(
     record_id: str, case: CaseDep, session: SessionDep, request: Request
 ) -> Response:
-    """The original image this record points at, read from the local evidence folder
-    (``EVIDENCE_ROOT/{case_id}/``). 404 if the record is not in this case or its image
-    is not available locally; 409 if the local file fails its type or SHA-256 check.
+    """The original image (or PDF) for this record: the copy Blanc stored at import
+    (``CASES_DIR/{case_id}/{media_path}``, BLA-70) if there is one, else the image it
+    points at in the local evidence folder (``EVIDENCE_ROOT/{case_id}/``). 404 if the
+    record is not in this case or its file is not available locally; 409 if the local
+    file fails its type, size or SHA-256 check.
     Never fetches anything remote. See ``app/media.py``."""
     try:
         record = get_record_with_excerpt(session, case.case_id, record_id).record
     except RecordNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Record not found") from exc
     try:
-        media = resolve_media(
+        # Media Blanc imported itself (CASES_DIR) first, then the external evidence folder.
+        media = resolve_case_media(
+            record, getattr(request.app.state, "cases_dir", None), case.case_id
+        ) or resolve_media(
             record, getattr(request.app.state, "evidence_root", None), case.case_id
         )
     except MediaNotFoundError as exc:
@@ -109,4 +120,8 @@ def get_case_record_media(
     }
     if "\r" not in media.source_path and "\n" not in media.source_path:
         headers["X-Source-Path"] = quote(media.source_path, safe="/")
+    if media.media_type == "application/pdf":
+        # Never rendered inline under the sandboxed CSP: offered as a download instead.
+        safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", record.record_id)
+        headers["Content-Disposition"] = f'attachment; filename="{safe_name}.pdf"'
     return Response(content=media.data, media_type=media.media_type, headers=headers)

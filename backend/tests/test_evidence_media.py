@@ -1274,8 +1274,9 @@ def test_media_backfill_creates_chunk_and_fts(tmp_path: Path) -> None:
     engine.dispose()
 
 
-def test_media_indexed_but_excluded_from_retrieve(tmp_path: Path) -> None:
-    """Media stays in vec/FTS indexes but retrieve() excludes image/pdf at query time."""
+def test_media_is_retrieved_without_a_text_excerpt(tmp_path: Path) -> None:
+    """BLA-70: media ranks with text and enters the window as a record with no excerpt;
+    exclusion still drops it."""
     from app.evidence_store import list_chunks, store_records
     from app.retrieval import RetrievalConfig, retrieve
     from app.search_index import keyword_search, to_fts_query, vector_search
@@ -1312,34 +1313,27 @@ def test_media_indexed_but_excluded_from_retrieve(tmp_path: Path) -> None:
         store_records(session, "case-a", [text_record, media], query_embedder, media_dir=media_dir)
         session.commit()
         assert list_chunks(session, "case-a", media.record_id)
-        # Raw indexes still hold media (for a later retrieval ticket).
-        assert media.record_id in {
-            h.record_id for h in keyword_search(session, "case-a", to_fts_query("uniquezebra"))
-        }
-        assert media.record_id in {
-            h.record_id for h in vector_search(session, "case-a", media_vec, k=5)
-        }
-        # retrieve() excludes media inside the index queries (same path as exclusions).
+        assert keyword_search(session, "case-a", to_fts_query("uniquezebra"))
+        assert vector_search(session, "case-a", media_vec, k=5)
+        # Ranked first (vector + filename keyword match), with no fake text excerpt.
         result = retrieve(session, "case-a", "uniquezebra", query_embedder)
-        assert media.record_id not in {r.record_id for r in result.records}
-        assert result.records and result.records[0].record_id == "rec-text"
-        search_excluded = {media.record_id}
-        assert media.record_id not in {
-            h.record_id
-            for h in keyword_search(
-                session,
-                "case-a",
-                to_fts_query("uniquezebra"),
-                excluded_record_ids=search_excluded,
-            )
-        }
-        assert media.record_id not in {
-            h.record_id
-            for h in vector_search(
-                session, "case-a", media_vec, k=5, excluded_record_ids=search_excluded
-            )
-        }
-        # Small candidate budgets still fill with text when media would otherwise dominate.
+        top = result.records[0]
+        assert (top.record_id, top.modality, top.matched_by) == (media.record_id, "image", "both")
+        assert top.excerpts == []  # the FTS sidecar is never shown as record content
+        assert (top.media_path, top.content_type) == (media.media_path, "image/png")
+        assert result.excerpt_chars == sum(
+            len(e.text) for r in result.records for e in r.excerpts
+        )  # media costs no character budget
+        # Exclusion path: even if media were otherwise a candidate, excluded ids stay out.
+        excluded = retrieve(
+            session,
+            "case-a",
+            "uniquezebra warehouse",
+            query_embedder,
+            excluded_record_ids={media.record_id},
+        )
+        assert media.record_id not in {r.record_id for r in excluded.records}
+        # One candidate slot per list: text keeps its own slot, media gets a separate one.
         crowded = retrieve(
             session,
             "case-a",
@@ -1347,13 +1341,12 @@ def test_media_indexed_but_excluded_from_retrieve(tmp_path: Path) -> None:
             query_embedder,
             config=RetrievalConfig(vector_candidates=1, keyword_candidates=1),
         )
-        assert {r.record_id for r in crowded.records} == {"rec-text"}
-        assert media.record_id not in {r.record_id for r in crowded.records}
+        assert {r.record_id for r in crowded.records} == {"rec-text", media.record_id}
     engine.dispose()
 
 
 def test_many_media_neighbors_do_not_starve_text_recall(tmp_path: Path) -> None:
-    """Photo-heavy cases must not fill k candidate slots then discard them post-search."""
+    """Photo-heavy cases must not fill the k text candidate slots (media has its own pass)."""
     from app.evidence_store import store_records
     from app.retrieval import RetrievalConfig, retrieve
     from app.search_index import keyword_search, to_fts_query, vector_search
@@ -1406,27 +1399,10 @@ def test_many_media_neighbors_do_not_starve_text_recall(tmp_path: Path) -> None:
             config=RetrievalConfig(vector_candidates=k, keyword_candidates=k),
         )
         assert "rec-text" in {r.record_id for r in result.records}
-        assert not media_ids & {r.record_id for r in result.records}
-        # Same exclusion set retrieve() uses: media IDs never appear in those candidate lists.
-        search_excluded = media_ids
-        assert not media_ids & {
-            h.record_id
-            for h in vector_search(
-                session, "case-a", media_vec, k=k, excluded_record_ids=search_excluded
-            )
-        }
-        assert not media_ids & {
-            h.record_id
-            for h in keyword_search(
-                session,
-                "case-a",
-                to_fts_query("uniquezebra"),
-                k=k,
-                excluded_record_ids=search_excluded,
-            )
-        }
-        # Without exclusion, raw keyword can still hit media sidecars (index kept warm).
-        assert media_ids & {h.record_id for h in raw_keyword}
+        # Media still ranks, capped at max_media; the rest are skipped as media_limit.
+        kept = media_ids & {r.record_id for r in result.records}
+        assert 0 < len(kept) <= RetrievalConfig().max_media
+        assert raw_keyword and media_ids & {h.record_id for h in raw_keyword}
     engine.dispose()
 
 

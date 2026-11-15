@@ -10,6 +10,7 @@ export type EvidenceRecord = {
   modality?: "text" | "image" | "pdf";
   media_path?: string;
   content_type?: string;
+  metadata?: Record<string, unknown>;
 };
 type SupportedStatus = "observed" | "reported" | "inferred";
 type ClaimStatus = SupportedStatus | "unresolved";
@@ -58,7 +59,8 @@ export type RetrievalCoverage = {
   max_records: number;
   max_excerpt_chars: number;
   // IDs and ranks only, never content, and never citations.
-  skipped: { record_id: string; rank: number; reason: "budget" | "record_limit"; vector_rank?: number; keyword_rank?: number }[];
+  // reason "media": an image/PDF in the window that was not sent to the model (BLA-70).
+  skipped: { record_id: string; rank: number; reason: "budget" | "record_limit" | "media"; vector_rank?: number; keyword_rank?: number; modality?: "image" | "pdf" }[];
   budget_substituted: boolean;
   // Records one search ranked inside the window but fusion pushed out: "N relevant records were left out".
   left_out_record_ids: string[];

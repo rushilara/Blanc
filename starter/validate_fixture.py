@@ -50,7 +50,7 @@ def _left_out(skipped: list[dict], max_records: int) -> list[str]:
     """Record-limit skips that the vector or keyword search alone ranked in the window."""
     return [
         s['record_id'] for s in sorted(skipped, key=lambda s: s['rank'])
-        if s['reason'] == 'record_limit'
+        if s['reason'] == 'record_limit' and s.get('modality') is None
         and any(s.get(k) is not None and s[k] <= max_records for k in ('vector_rank', 'keyword_rank'))
     ]
 
@@ -78,9 +78,16 @@ def _coverage_errors(analysis: dict, known: set[str]) -> list[str]:
     window = coverage['max_records']
     if len(analysis['retrieved_record_ids']) > window:
         errors.append('retrieval_coverage max_records is below the retrieved count')
+    # Media never takes a text slot (BLA-70): record-limit skips rank past the window, and
+    # budget skips rank before the first record-limit skip.
+    cut = min((s['rank'] for s in skipped if s['reason'] == 'record_limit'), default=None)
     for s in skipped:
-        if (s['reason'] == 'record_limit') == (s['rank'] <= window):
+        if s['reason'] == 'record_limit' and s['rank'] <= window:
             errors.append(f"retrieval_coverage rank {s['rank']} does not fit reason {s['reason']}")
+        if s['reason'] == 'budget' and cut is not None and s['rank'] > cut:
+            errors.append(f"retrieval_coverage rank {s['rank']} does not fit reason {s['reason']}")
+        if (s['reason'] == 'media') != (s.get('modality') is not None) and s['reason'] != 'record_limit':
+            errors.append(f"retrieval_coverage {s['record_id']}: media skips need a modality, budget skips none")
     if coverage['budget_substituted'] and not any(s['reason'] == 'budget' for s in skipped):
         errors.append('retrieval_coverage budget_substituted without a budget skip')
     expected = _left_out(skipped, window)

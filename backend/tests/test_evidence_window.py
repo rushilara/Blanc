@@ -389,9 +389,10 @@ def test_validate_revision_accepts_server_coverage(app, client) -> None:
             "for the record limit at rank 1, inside the 1-record window",
         ),
         (
-            {"skipped": [{"record_id": "rec-b", "rank": 2, "reason": "budget"}],
+            {"skipped": [{"record_id": "rec-c", "rank": 2, "reason": "record_limit"},
+                         {"record_id": "rec-b", "rank": 3, "reason": "budget"}],
              "left_out_record_ids": []},
-            "for the budget at rank 2, outside the 1-record window",
+            "for the budget at rank 3, after the record limit cut the window at rank 2",
         ),
         (
             {"skipped": [{"record_id": "rec-b", "rank": 2, "reason": "record_limit"},

@@ -33,15 +33,13 @@ excluded record is filtered before ranking (inside both index queries, then agai
 ``retrieve``), and ``permitted_records`` checks the result again before the LLM prompt is
 built.
 
-Media records (``modality`` image/pdf) stay indexed for a later evidence-window ticket, but
-``retrieve`` excludes them inside both index queries the same way as revision exclusions, so
-they do not consume ``vector_candidates`` / ``keyword_candidates`` slots while sidecar text
-is still kept out of ``Excerpt.text``.
+Media records (``modality`` image/pdf, BLA-70) rank in the same fused list as text and enter
+the window with no excerpt (their FTS sidecar is never shown as content); see ``retrieve``.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal
 
@@ -71,6 +69,8 @@ DEFAULT_KEYWORD_CANDIDATES = 50
 DEFAULT_RRF_K = 60
 DEFAULT_MAX_RECORDS = 16
 DEFAULT_EXPANDED_MAX_RECORDS = 24
+DEFAULT_MAX_MEDIA = 4
+MEDIA_MODALITIES = ("image", "pdf")
 DEFAULT_MAX_EXCERPT_CHARS = 32000
 DEFAULT_MAX_EXCERPTS_PER_RECORD = 2
 
@@ -87,6 +87,8 @@ class RetrievalConfig:
     max_excerpts_per_record: int = DEFAULT_MAX_EXCERPTS_PER_RECORD
     # Record count of the "expanded" evidence window (BLA-64); see ``for_window``.
     expanded_max_records: int = DEFAULT_EXPANDED_MAX_RECORDS
+    # Image/PDF records kept in the window (BLA-70); see ``retrieve``.
+    max_media: int = DEFAULT_MAX_MEDIA
 
     def for_window(self, window: EvidenceWindow) -> RetrievalConfig:
         """This config for an evidence window: ``standard`` is unchanged; ``expanded`` raises
@@ -107,6 +109,7 @@ class RetrievalConfig:
             max_excerpt_chars=settings.RETRIEVAL_MAX_EXCERPT_CHARS,
             max_excerpts_per_record=settings.RETRIEVAL_MAX_EXCERPTS_PER_RECORD,
             expanded_max_records=settings.RETRIEVAL_EXPANDED_MAX_RECORDS,
+            max_media=settings.RETRIEVAL_MAX_MEDIA,
         )
 
 
@@ -142,7 +145,13 @@ class RetrievedRecord(BaseModel):
     matched_by: Literal["vector", "keyword", "both"]
     vector: RetrieverMatch | None = None
     keyword: RetrieverMatch | None = None
-    excerpts: list[Excerpt]  # best first; never empty
+    # Text records: best first, never empty. Image/PDF records (BLA-70): always empty;
+    # their content is the file, shown through GET /records/{id}/media, never as text.
+    excerpts: list[Excerpt]
+    modality: Literal["text", "image", "pdf"] = "text"
+    rank: int | None = None  # 1-based fused rank among all candidates
+    media_path: str | None = None  # relative to the case folder, for image/PDF records
+    content_type: str | None = None
 
 
 class SkippedRecord(BaseModel):
@@ -152,23 +161,27 @@ class SkippedRecord(BaseModel):
     record_id: str
     rank: int  # 1-based fused rank among all candidates
     score: float  # fused RRF score
-    reason: Literal["budget", "record_limit"]
+    # media_limit: an image/PDF beyond RETRIEVAL_MAX_MEDIA (BLA-70); media never takes a
+    # text slot, so record_limit is for text only.
+    reason: Literal["budget", "record_limit", "media_limit"]
     # budget skips: size of the record's best excerpt, which did not fit; else None
     excerpt_chars: int | None = None
     # Each retriever's own rank for this record (None if that retriever did not find it).
     vector_rank: int | None = None
     keyword_rank: int | None = None
+    modality: Literal["text", "image", "pdf"] = "text"
 
 
 class RetrievalResult(BaseModel):
     case_id: str
     question: str
     fts_query: str | None  # the FTS5 query actually run; None if the keyword search was skipped
-    records: list[RetrievedRecord]  # best first, at most max_records
+    # best first: at most max_records text records plus at most max_media image/PDF records
+    records: list[RetrievedRecord]
     vector_candidates: int  # chunk hits from the vector index
     keyword_candidates: int  # chunk hits from the keyword index
     fused_records: int  # distinct records among all candidates, before the window cut
-    dropped_by_limit: int  # fused records beyond max_records
+    dropped_by_limit: int  # text records beyond the max_records text slots
     dropped_by_budget: int  # records within max_records left out by the character budget
     excerpt_chars: int  # total excerpt characters returned (<= max_excerpt_chars)
     excluded_record_ids: list[str]  # sorted; see ``retrieve``
@@ -299,6 +312,20 @@ def _load_rows(
     return {row.record_id: row for row in rows}
 
 
+def _modalities(session: Session, case_id: str, record_ids: list[str]) -> dict[str, str]:
+    """Image/PDF records among ``record_ids`` (anything else is text)."""
+    if not record_ids:
+        return {}
+    rows = session.execute(
+        select(EvidenceRecordRow.record_id, EvidenceRecordRow.modality).where(
+            EvidenceRecordRow.case_id == case_id,
+            EvidenceRecordRow.record_id.in_(record_ids),
+            EvidenceRecordRow.modality.in_(MEDIA_MODALITIES),
+        )
+    )
+    return {record_id: modality for record_id, modality in rows}
+
+
 def retrieve(
     session: Session,
     case_id: str,
@@ -345,20 +372,21 @@ def retrieve(
     if session.get(Case, case_id) is None:
         raise CaseNotFoundError(f"case {case_id!r} does not exist")
     excluded = set(excluded_record_ids or ())
-    # Media stays indexed but must not consume retrieve() candidate slots yet.
     media_ids = set(
         session.scalars(
             select(EvidenceRecordRow.record_id).where(
                 EvidenceRecordRow.case_id == case_id,
-                EvidenceRecordRow.modality.in_(("image", "pdf")),
+                EvidenceRecordRow.modality.in_(MEDIA_MODALITIES),
             )
         )
     )
+    # Text candidates are searched with media left out, so a photo-heavy case cannot fill
+    # the candidate slots and starve text recall. Media gets its own pass below, and each
+    # list is then merged by raw score, so a record keeps the rank its score earns.
     # Keyword search honors the full exclusion set before LIMIT. Vector search only
     # applies <= VEC_MAX_EXCLUSION_CONSTRAINTS (13) record_id != filters inside the
     # KNN (search_index.py); past that it over-fetches (k + excluded chunk count,
-    # capped at 4096) and filters in Python. Normal photo-heavy cases still get
-    # text hits; recall only falls short if media chunks themselves approach that cap.
+    # capped at 4096) and filters in Python.
     search_excluded = excluded | media_ids
 
     fts_query = to_fts_query(question)
@@ -384,29 +412,43 @@ def retrieve(
             f"embedder {embedder.model!r} produces {embedder.dim}-dim vectors but the vector "
             f"index is {index_dim}-dim"
         )
-    vector_hits = [
-        h
-        for h in vector_search(
-            session,
-            case_id,
-            embedder.embed_query(question),
-            k=cfg.vector_candidates,
-            excluded_record_ids=search_excluded,
-        )
-        if h.record_id not in search_excluded
-    ]
-    keyword_hits = [
-        h
-        for h in keyword_search(
-            session,
-            case_id,
-            fts_query,
-            k=cfg.keyword_candidates,
-            excluded_record_ids=search_excluded,
-        )
-        if h.record_id not in search_excluded
-    ]
+    query_vector = embedder.embed_query(question)
 
+    def vector_pass(skip: set[str], keep: Callable[[str], bool]) -> list[VectorHit]:
+        hits = vector_search(
+            session, case_id, query_vector, k=cfg.vector_candidates, excluded_record_ids=skip
+        )
+        return [h for h in hits if h.record_id not in skip and keep(h.record_id)]
+
+    def keyword_pass(skip: set[str], keep: Callable[[str], bool]) -> list[KeywordHit]:
+        hits = keyword_search(
+            session, case_id, fts_query, k=cfg.keyword_candidates, excluded_record_ids=skip
+        )
+        return [h for h in hits if h.record_id not in skip and keep(h.record_id)]
+
+    def text_only(rid: str) -> bool:
+        return rid not in media_ids
+
+    vector_hits = vector_pass(search_excluded, text_only)
+    keyword_hits = keyword_pass(search_excluded, text_only)
+    if media_ids - excluded:
+
+        def media_only(rid: str) -> bool:
+            return rid in media_ids
+
+        vector_hits = sorted(
+            vector_hits + vector_pass(excluded, media_only), key=lambda h: h.distance
+        )
+        keyword_hits = sorted(
+            keyword_hits + keyword_pass(excluded, media_only), key=lambda h: h.score
+        )
+
+    # Image/PDF records (BLA-70) rank in the same fused list as text: their vector is the
+    # multimodal embedding of the file and their keyword match is the FTS sidecar
+    # (filename, parent email subject). They never take a text slot: the window holds up to
+    # ``max_records`` text records plus up to ``max_media`` media records, which carry no
+    # excerpt (the sidecar is not record content) and cost no character budget. Media past
+    # the cap is skipped as ``media_limit``; ranks stay the fused rank among all candidates.
     fused = fuse(
         vector_hits,
         keyword_hits,
@@ -414,7 +456,14 @@ def retrieve(
         vector_weight=cfg.vector_weight,
         keyword_weight=cfg.keyword_weight,
     )
-    window = fused[:max_records]
+    modality_of = _modalities(session, case_id, [f.record_id for f in fused])
+    ranked = list(enumerate(fused, start=1))
+    text_ranked = [(rank, f) for rank, f in ranked if f.record_id not in modality_of]
+    window_ranks = {rank for rank, _ in text_ranked[:max_records]} | {
+        rank for rank, f in ranked if f.record_id in modality_of
+    }
+    window = [f for rank, f in ranked if rank in window_ranks]
+    beyond = text_ranked[max_records:]
     rows = _load_rows(session, case_id, (f.record_id for f in window))
     chunk_ids = [cid for f in window for cid in f.chunk_scores]
     spans = {
@@ -426,9 +475,50 @@ def retrieve(
     remaining = budget
     dropped_by_budget = 0
     budget_substituted = False
-    for rank, f in enumerate(window, start=1):
+    media_kept = 0
+    for rank, f in ranked:
+        if rank not in window_ranks:
+            continue
         row = rows.get(f.record_id)
         if row is None:  # pragma: no cover - index and tables are kept consistent
+            continue
+        modality = row.modality if row.modality in MEDIA_MODALITIES else "text"
+        if modality != "text":
+            ranks = {
+                "vector_rank": f.vector.rank if f.vector else None,
+                "keyword_rank": f.keyword.rank if f.keyword else None,
+            }
+            if media_kept >= cfg.max_media:
+                skipped.append(
+                    SkippedRecord(
+                        record_id=f.record_id,
+                        rank=rank,
+                        score=f.score,
+                        reason="media_limit",
+                        modality=modality,
+                        **ranks,
+                    )
+                )
+                continue
+            media_kept += 1
+            records.append(
+                RetrievedRecord(
+                    record_id=row.record_id,
+                    source_file=row.source_file,
+                    source_locator=row.source_locator,
+                    timestamp=row.timestamp,
+                    timestamp_kind=row.timestamp_kind,
+                    score=f.score,
+                    matched_by=f.matched_by,
+                    vector=f.vector,
+                    keyword=f.keyword,
+                    excerpts=[],
+                    modality=modality,
+                    rank=rank,
+                    media_path=row.media_path,
+                    content_type=row.content_type,
+                )
+            )
             continue
         excerpts: list[Excerpt] = []
         candidate_spans = _excerpt_spans(f.chunk_scores, spans, cfg.max_excerpts_per_record)
@@ -438,7 +528,7 @@ def retrieve(
             if length > remaining:
                 # Only the very first excerpt of the window is cut to fit, so a tiny budget
                 # still returns something; otherwise skip what does not fit.
-                if records or excerpts:
+                if any(r.modality == "text" for r in records) or excerpts:
                     continue
                 length, truncated = remaining, True
             end = span.start + length
@@ -482,6 +572,7 @@ def retrieve(
                 vector=f.vector,
                 keyword=f.keyword,
                 excerpts=excerpts,
+                rank=rank,
             )
         )
 
@@ -494,8 +585,9 @@ def retrieve(
             vector_rank=f.vector.rank if f.vector else None,
             keyword_rank=f.keyword.rank if f.keyword else None,
         )
-        for rank, f in enumerate(fused[max_records:], start=max_records + 1)
+        for rank, f in beyond
     )
+    skipped.sort(key=lambda skip: skip.rank)
     return empty.model_copy(
         update={
             "records": records,
@@ -504,7 +596,7 @@ def retrieve(
             "vector_candidates": len(vector_hits),
             "keyword_candidates": len(keyword_hits),
             "fused_records": len(fused),
-            "dropped_by_limit": len(fused) - len(window),
+            "dropped_by_limit": len(beyond),
             "dropped_by_budget": dropped_by_budget,
             "excerpt_chars": budget - remaining,
         }

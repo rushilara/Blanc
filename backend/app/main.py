@@ -31,6 +31,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.analysis_llm = make_analysis_llm(settings)
         app.state.retrieval_config = RetrievalConfig.from_settings(settings)
         app.state.evidence_root = settings.EVIDENCE_ROOT
+        app.state.cases_dir = settings.CASES_DIR
         try:
             yield
         finally:

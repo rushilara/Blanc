@@ -62,6 +62,20 @@ class TestRetrievalCoverage(unittest.TestCase):
         far['retrieval_coverage'].update({'left_out_record_ids':['rec-02'],'offer_expanded_window':True})
         self.assertTrue(validate_revision(records,far))
 
+    def test_media_skips_need_a_modality_and_never_count_as_left_out(self):
+        media=covered()
+        media['retrieval_coverage'].update({'skipped':[{'record_id':'rec-02','rank':1,'reason':'media','modality':'image'}],
+            'left_out_record_ids':[],'offer_expanded_window':False})
+        media['retrieval_coverage']['max_records']=2
+        self.assertEqual(validate_revision(records,media),[])
+        no_modality=deepcopy(media); del no_modality['retrieval_coverage']['skipped'][0]['modality']
+        self.assertTrue(validate_revision(records,no_modality))
+        image_past=covered(); image_past['retrieval_coverage']['skipped'][0]['modality']='image'
+        image_past['retrieval_coverage'].update({'left_out_record_ids':[],'offer_expanded_window':False})
+        self.assertEqual(validate_revision(records,image_past),[])
+        image_past['retrieval_coverage'].update({'left_out_record_ids':['rec-02'],'offer_expanded_window':True})
+        self.assertTrue(validate_revision(records,image_past))
+
     def test_inconsistent_coverage_is_rejected(self):
         cases=[
             ('retrieved_record_ids',['rec-01','rec-02'],'lists retrieved_record_ids as skipped'),
@@ -77,6 +91,7 @@ class TestRetrievalCoverage(unittest.TestCase):
             ({'budget_substituted':True},'budget_substituted without a budget skip'),
             ({'skipped':[{'record_id':'rec-02','rank':1,'reason':'record_limit','vector_rank':1}]},'does not fit reason'),
             ({'skipped':[{'record_id':'rec-99','rank':2,'reason':'record_limit'}],'left_out_record_ids':[],'offer_expanded_window':False},'not in the case corpus'),
+            ({'skipped':[{'record_id':'rec-02','rank':2,'reason':'record_limit','vector_rank':1},{'record_id':'rec-03','rank':3,'reason':'budget'}],'left_out_record_ids':['rec-02']},'does not fit reason'),
         ]
         for change,message in changes:
             broken=covered(); broken['retrieval_coverage'].update(change)

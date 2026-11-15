@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     # the record count; RETRIEVAL_MAX_EXCERPT_CHARS stays the same. Must exceed
     # RETRIEVAL_MAX_RECORDS (the "standard" window).
     RETRIEVAL_EXPANDED_MAX_RECORDS: int = Field(default=24, ge=2, le=200)
+    # Most image/PDF records the evidence window keeps (BLA-70); they count toward
+    # RETRIEVAL_MAX_RECORDS but not the character budget. Extra media are listed as skipped.
+    RETRIEVAL_MAX_MEDIA: int = Field(default=4, ge=0, le=50)
 
     # Storage: one SQLite file holds tables, the sqlite-vec vector index and the FTS5 index.
     DATABASE_URL: str = "sqlite:///./data/blanc.db"
