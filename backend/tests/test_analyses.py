@@ -150,8 +150,16 @@ def test_history_lists_newest_first_with_lineage(app, client, seeded) -> None:
     ]
     assert all(r["needs_review"] is False for r in history)
     assert set(history[0]) == {
-        "analysis_id", "parent_analysis_id", "question", "needs_review", "created_at",
+        "analysis_id",
+        "parent_analysis_id",
+        "question",
+        "needs_review",
+        "created_at",
+        "excluded_record_ids",
+        "restored_from_analysis_id",
     }
+    assert [r["excluded_record_ids"] for r in history] == [["rec-02"], ["rec-02"], []]
+    assert all(r["restored_from_analysis_id"] is None for r in history)
     lineage = client.get(f"/cases/{seeded.case_id}/analyses/analysis-synthetic-3/lineage")
     assert [r["analysis_id"] for r in lineage.json()] == [
         BASE_ID,
