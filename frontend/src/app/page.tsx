@@ -1,3 +1,4 @@
+import records from "../../../fixtures/synthetic_records.json";
 import fixture from "../../../fixtures/synthetic_analysis_revision.json";
 
 import { AnalysisWorkspace } from "@/components/AnalysisWorkspace";
@@ -18,7 +19,7 @@ export default function Home() {
       <aside aria-label="Synthetic data notice" className="border-b border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100 sm:px-6">
         <strong>Synthetic example.</strong> Fictional records for UI development; these are not real case findings.
       </aside>
-      <AnalysisWorkspace revision={revision} />
+      <AnalysisWorkspace revision={revision} records={records} />
     </div>
   );
 }
