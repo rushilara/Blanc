@@ -529,18 +529,17 @@ def test_oversized_loose_media_rejected_before_read(tmp_path: Path, monkeypatch)
         import_file(path, "case-a", source_root=tmp_path, media_dir=media_dir)
 
 
-def test_oversized_email_image_rejected_before_decode(tmp_path: Path, monkeypatch) -> None:
-    """Email image size is gated on Content-Length / estimate before get_payload decode."""
-    import base64
-
-    from app.evidence import importer as importer_mod
-
-    monkeypatch.setattr(importer_mod, "MAX_MEDIA_BYTES", 10)
-    # Real PNG bytes would decode fine; Content-Length claims oversized so the gate
-    # must fire before decode. Spy get_payload to ensure decode=True is never used
-    # for the image part once the hint rejects it.
-    png_b64 = base64.b64encode(PNG_BYTES).decode("ascii")
-    raw = (
+def _email_with_png_attachment(
+    *,
+    png_b64: str,
+    content_length: str | None,
+    filename: str = "huge.png",
+) -> bytes:
+    if content_length is not None:
+        length_header = f"Content-Length: {content_length}\r\n".encode("ascii")
+    else:
+        length_header = b""
+    return (
         b"From: Alex <alex@example.test>\r\n"
         b"To: Jordan <jordan@example.test>\r\n"
         b"Date: Fri, 10 Apr 2026 09:15:00 -0400\r\n"
@@ -556,14 +555,16 @@ def test_oversized_email_image_rejected_before_decode(tmp_path: Path, monkeypatc
         b"--bound\r\n"
         b"Content-Type: image/png\r\n"
         b"Content-Transfer-Encoding: base64\r\n"
-        b"Content-Length: 99999\r\n"
-        b'Content-Disposition: attachment; filename="huge.png"\r\n'
-        b"\r\n" + png_b64.encode("ascii") + b"\r\n"
-        b"--bound--\r\n"
+        + length_header
+        + f'Content-Disposition: attachment; filename="{filename}"\r\n'.encode("ascii")
+        + b"\r\n"
+        + png_b64.encode("ascii")
+        + b"\r\n"
+        + b"--bound--\r\n"
     )
-    path = write_bytes(tmp_path, "huge.eml", raw)
-    media_dir = tmp_path / "media"
 
+
+def _spy_image_decode_calls(monkeypatch) -> dict[str, int]:
     decoded_image_calls = {"n": 0}
     real_get_payload = EmailMessage.get_payload
 
@@ -574,6 +575,27 @@ def test_oversized_email_image_rejected_before_decode(tmp_path: Path, monkeypatc
         return real_get_payload(self, *args, **kwargs)
 
     monkeypatch.setattr(EmailMessage, "get_payload", spied_get_payload)
+    return decoded_image_calls
+
+
+def test_oversized_email_image_rejected_before_decode(tmp_path: Path, monkeypatch) -> None:
+    """Large Content-Length is taken as max with the body estimate; gate before decode."""
+    import base64
+
+    from app.evidence import importer as importer_mod
+
+    monkeypatch.setattr(importer_mod, "MAX_MEDIA_BYTES", 10)
+    # Real PNG is already > 10 bytes; a large Content-Length must not be required
+    # for rejection, but when present the more conservative max is used for
+    # attachments[].size_bytes and still blocks decode=True.
+    png_b64 = base64.b64encode(PNG_BYTES).decode("ascii")
+    path = write_bytes(
+        tmp_path,
+        "huge.eml",
+        _email_with_png_attachment(png_b64=png_b64, content_length="99999"),
+    )
+    media_dir = tmp_path / "media"
+    decoded_image_calls = _spy_image_decode_calls(monkeypatch)
 
     sink = ImportSink()
     records = import_file(path, "case-a", source_root=tmp_path, media_dir=media_dir, sink=sink)
@@ -581,6 +603,40 @@ def test_oversized_email_image_rejected_before_decode(tmp_path: Path, monkeypatc
     assert records[1].content == "Body survives."
     assert records[0].metadata["attachments"][0]["filename"] == "huge.png"
     assert records[0].metadata["attachments"][0]["size_bytes"] == 99999
+    assert sink.warnings
+    assert "media limit" in sink.warnings[0].reason
+    assert decoded_image_calls["n"] == 0
+    assert not media_dir.exists() or list(media_dir.iterdir()) == []
+
+
+def test_tiny_content_length_huge_base64_rejected_before_decode(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A small Content-Length must not skip the gate when the base64 body is huge."""
+    import base64
+
+    from app.evidence import importer as importer_mod
+
+    monkeypatch.setattr(importer_mod, "MAX_MEDIA_BYTES", 10)
+    # Body estimate from base64 is ~len(PNG_BYTES) (> 10); Content-Length lies small.
+    # Old hint trusted Content-Length and would have called get_payload(decode=True).
+    png_b64 = base64.b64encode(PNG_BYTES).decode("ascii")
+    body_estimate = (sum(1 for c in png_b64 if not c.isspace()) * 3) // 4
+    assert body_estimate > 10
+
+    path = write_bytes(
+        tmp_path,
+        "lie.eml",
+        _email_with_png_attachment(png_b64=png_b64, content_length="1"),
+    )
+    media_dir = tmp_path / "media"
+    decoded_image_calls = _spy_image_decode_calls(monkeypatch)
+
+    sink = ImportSink()
+    records = import_file(path, "case-a", source_root=tmp_path, media_dir=media_dir, sink=sink)
+    assert [r.source_locator for r in records] == ["headers", "part 1"]
+    assert records[1].content == "Body survives."
+    assert records[0].metadata["attachments"][0]["size_bytes"] == body_estimate
     assert sink.warnings
     assert "media limit" in sink.warnings[0].reason
     assert decoded_image_calls["n"] == 0

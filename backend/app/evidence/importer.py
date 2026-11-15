@@ -1055,36 +1055,51 @@ def _collect_parts(
 def _part_decoded_size_hint(part: EmailMessage) -> int | None:
     """Best-effort decoded payload size without decoding, or None if unknown.
 
-    Prefers Content-Length; otherwise estimates from the undecoded body and
-    Content-Transfer-Encoding (base64 ≈ 3/4 of non-whitespace length).
+    Estimates from the undecoded body and Content-Transfer-Encoding first
+    (base64 ≈ 3/4 of non-whitespace length; quoted-printable ≈ encoded length).
+    Content-Length is used only when there is no body estimate, or when it is
+    larger than that estimate (prefer the more conservative larger value). A
+    smaller Content-Length must not skip the gate.
     """
-    raw_length = part.get("Content-Length")
-    if raw_length is not None:
-        try:
-            return int(str(raw_length).strip())
-        except ValueError:
-            pass
+    body_estimate: int | None = None
+    encoded_len: int | None = None
+    non_ws: int | None = None
     payload = part.get_payload(decode=False)
     if payload is None:
-        return 0
-    if isinstance(payload, list | EmailMessage):
-        return None
-    if isinstance(payload, str):
+        body_estimate = 0
+    elif isinstance(payload, list | EmailMessage):
+        pass
+    elif isinstance(payload, str):
         encoded_len = len(payload)
         non_ws = sum(1 for char in payload if not char.isspace())
     elif isinstance(payload, bytes | bytearray):
         encoded_len = len(payload)
         non_ws = sum(1 for byte in payload if byte not in b" \t\r\n")
-    else:
-        return None
-    cte = (part.get("Content-Transfer-Encoding") or "").strip().lower()
-    if cte == "base64":
-        return (non_ws * 3) // 4
-    if cte == "quoted-printable":
-        # QP is roughly 1:1 aside from soft line breaks and =XX escapes; encoded
-        # length is a safe upper bound for the gate.
-        return encoded_len
-    return encoded_len
+
+    if encoded_len is not None and non_ws is not None:
+        cte = (part.get("Content-Transfer-Encoding") or "").strip().lower()
+        if cte == "base64":
+            body_estimate = (non_ws * 3) // 4
+        elif cte == "quoted-printable":
+            # QP is roughly 1:1 aside from soft line breaks and =XX escapes;
+            # encoded length is a safe upper bound for the gate.
+            body_estimate = encoded_len
+        else:
+            body_estimate = encoded_len
+
+    content_length: int | None = None
+    raw_length = part.get("Content-Length")
+    if raw_length is not None:
+        try:
+            content_length = int(str(raw_length).strip())
+        except ValueError:
+            pass
+
+    if body_estimate is not None and content_length is not None:
+        return max(body_estimate, content_length)
+    if body_estimate is not None:
+        return body_estimate
+    return content_length
 
 
 def _email_image_record(
