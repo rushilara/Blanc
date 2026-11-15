@@ -32,3 +32,20 @@ class AnalysisCreate(BaseModel):
         if to_fts_query(value) is None:
             raise ValueError(EMPTY_QUESTION)
         return value
+
+
+class FollowUpCreate(BaseModel):
+    """Body of ``POST /cases/{case_id}/analyses/{analysis_id}/follow-up``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    question: Annotated[str, Field(max_length=4000)]
+    # Optional board of this case whose topic and pinned findings give the follow-up context.
+    board_id: Id | None = None
+
+    @field_validator("question")
+    @classmethod
+    def _searchable(cls, value: str) -> str:
+        if to_fts_query(value) is None:
+            raise ValueError(EMPTY_QUESTION)
+        return value
