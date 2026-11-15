@@ -17,7 +17,9 @@ Faithfulness rules the report keeps:
   with its file, locator and timestamp. Permitted sources also carry an exact slice of
   content (``content[char_start:char_end]``). The excerpt is omitted only when the record
   is excluded in the report's scope revision (the board's active revision, or the single
-  exported revision); ``excluded_in`` still lists every reported revision that excludes it.
+  exported revision). A board with no active revision has no current evidence state, so
+  the excerpt is omitted when *any* reported revision excludes the record. ``excluded_in``
+  still lists every reported revision that excludes it.
 - **Excluded evidence is listed apart**, by record ID and locator, with no content, and
   is never counted as support. A record excluded in a non-active board source but
   permitted in the active revision keeps its excerpt; a stale pin must not hide restored
@@ -441,17 +443,22 @@ class _Builder:
         excluded_in: dict[str, list[str]] = {}
         for exclusion in exclusions:
             excluded_in.setdefault(exclusion.record_id, []).append(exclusion.analysis_id)
-        # Withhold excerpts for records excluded in the scope revision only: the board's
-        # active revision, or the single exported analysis. Stale pins from older
-        # exclusions must not hide evidence the investigator has restored.
-        if board is not None and board.active_analysis_id:
+        # Withhold excerpts from the scope revision when there is one: the board's active
+        # revision, or the single exported analysis. Stale pins from older exclusions must
+        # not hide evidence the investigator has restored. A board with no active revision
+        # has no current evidence state, so fall back to withholding whenever any reported
+        # revision excludes the record (pin order must not decide whether text is shown).
+        if board is not None and not board.active_analysis_id:
+            scope_excluded = set(excluded_in)
+        elif board is not None and board.active_analysis_id:
             scope = next(
                 (r for r in self.revisions if r.analysis_id == board.active_analysis_id),
                 None,
             )
+            scope_excluded = set(scope.excluded_record_ids) if scope else set()
         else:
             scope = self.revisions[0] if self.revisions else None
-        scope_excluded = set(scope.excluded_record_ids) if scope else set()
+            scope_excluded = set(scope.excluded_record_ids) if scope else set()
         sources = [
             _source(
                 records[rid],

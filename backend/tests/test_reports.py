@@ -459,6 +459,43 @@ def test_stale_exclusion_pin_does_not_hide_restored_excerpt(client, seeded) -> N
     assert "the excerpt is shown" in markdown
 
 
+@pytest.mark.parametrize(
+    "pins",
+    [
+        # Permitting source first, then excluding source — pin order must not matter.
+        [
+            {"kind": "claim", "source_analysis_id": BASE_ID, "ref_id": "claim-2"},
+            {"kind": "claim", "source_analysis_id": CHILD_ID, "ref_id": "claim-1"},
+        ],
+        [
+            {"kind": "claim", "source_analysis_id": CHILD_ID, "ref_id": "claim-1"},
+            {"kind": "claim", "source_analysis_id": BASE_ID, "ref_id": "claim-2"},
+        ],
+    ],
+    ids=["permit_then_exclude", "exclude_then_permit"],
+)
+def test_board_without_active_withholds_when_any_revision_excludes(client, seeded, pins) -> None:
+    # No active revision → no current evidence state; withhold if any reported revision
+    # excludes the record, regardless of pin order.
+    board = client.post(f"/cases/{seeded.case_id}/boards", json={"title": "No active"}).json()
+    assert board["active_analysis_id"] is None
+    response = client.patch(
+        f"/cases/{seeded.case_id}/boards/{board['board_id']}", json={"pin": pins}
+    )
+    assert response.status_code == 200, response.text
+
+    report = export(client, seeded.case_id, "boards", board["board_id"], "json").json()
+    assert report["board"]["active_analysis_id"] is None
+    rec02 = next(s for s in report["sources"] if s["record_id"] == "rec-02")
+    assert rec02["excluded_in"] == [CHILD_ID]
+    assert rec02["excerpt"] is None
+    assert RAW["records"][1]["content"] not in str(report["sources"])
+
+    markdown = export(client, seeded.case_id, "boards", board["board_id"], "md").text
+    assert RAW["records"][1]["content"] not in markdown
+    assert "Excerpt: omitted" in markdown
+
+
 def test_board_notes_are_separate_and_attributed(client, seeded) -> None:
     report = export(client, seeded.case_id, "boards", seeded.board_id, "json").json()
     notes = report["investigator_notes"]
