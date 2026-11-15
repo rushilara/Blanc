@@ -6,6 +6,7 @@ import { groupTimeline, normalizeEvents, type NormalizedTimeline, type TimelineE
 import { collectEventTypes, filterTimeline } from "@/lib/timelineFilter";
 import { supportChanged, supportLabel, type SupportStatus } from "@/lib/comparison";
 import { timelineCaption } from "@/lib/timeline-presentation";
+import { presentSource } from "@/lib/source-presentation";
 import { SourceReferences } from "./SourceReferences";
 
 const PRECISION = { exact: "Exact time", day: "Day only", month: "Month only", approximate: "Approximate", unknown: "Undated / uncertain" };
@@ -18,6 +19,8 @@ export function TimelineView({
   onExclude,
   onAnnotate,
   eventSupport,
+  onOpenSource,
+  openSourceId,
 }: {
   events: TimelineEvent[];
   caseId: string;
@@ -26,6 +29,11 @@ export function TimelineView({
   onExclude?: (recordId: string) => void;
   onAnnotate?: (recordId: string) => void;
   eventSupport?: Record<string, SupportStatus>;
+  /** Open a record in the workspace's source panel (the same one Findings uses).
+   *  Without it, sources open in the standalone SourceReferences drawer. */
+  onOpenSource?: (recordId: string) => void;
+  /** The record currently open in that panel, to mark its button. */
+  openSourceId?: string;
 }) {
   const [result, setResult] = useState<{ input: TimelineEvent[]; data: NormalizedTimeline } | null>(null);
   const [failed, setFailed] = useState<TimelineEvent[] | null>(null);
@@ -68,9 +76,17 @@ export function TimelineView({
             <article className="blanc-event-body">
               <div className="blanc-event-meta"><span className={`blanc-status blanc-status-${event.status}`}>{event.status}</span>{support && <span className={`blanc-support blanc-support-${support}`}>{supportLabel(support)}</span>}</div>
               <p className="blanc-event-description">{event.description}</p>
-              <SourceReferences records={records} caseId={caseId} ids={event.evidence_ids}
-                triggerLabel={`View ${sourceCount} source${sourceCount === 1 ? "" : "s"}`}
-                excludedRecordIds={excludedRecordIds} onExclude={onExclude} onAnnotate={onAnnotate} />
+              {onOpenSource
+                ? <div className="blanc-event-sources">{[...new Set(event.evidence_ids)].map(id => {
+                    const record = records.find(item => item.record_id === id);
+                    const name = (record && presentSource(record)?.name) ?? id;
+                    return <button key={id} type="button" aria-pressed={openSourceId === id} onClick={() => onOpenSource(id)}>
+                      {sourceCount === 1 ? "View source" : name}{excludedRecordIds?.includes(id) ? " · excluded" : ""}
+                    </button>;
+                  })}</div>
+                : <SourceReferences records={records} caseId={caseId} ids={event.evidence_ids}
+                  triggerLabel={`View ${sourceCount} source${sourceCount === 1 ? "" : "s"}`}
+                  excludedRecordIds={excludedRecordIds} onExclude={onExclude} onAnnotate={onAnnotate} />}
               <details className="blanc-event-details"><summary>Time and provenance</summary>
                 <dl><div><dt>Precision</dt><dd>{time ? PRECISION[time.precision] : "Not normalized"}</dd></div>
                   <div><dt>Time source</dt><dd>{(event.timestamp_kind ?? "unknown").replaceAll("_", " ")}</dd></div>

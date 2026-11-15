@@ -24,8 +24,25 @@ html body .blanc-investigation-open strong{font:500 19px/1.25 Arial,sans-serif;l
 html body .blanc-investigation-open small{font:10px/1.6 'Courier New',monospace;color:#777367;margin-top:12px}
 html body .blanc-investigation-history{font:10px Arial,sans-serif;color:#8c3038}
 html body .blanc-home-evidence{font:10px Arial,sans-serif;letter-spacing:.3px;text-transform:uppercase}
-html body .blanc-investigation,html body .blanc-investigation.is-map{width:94%;margin:24px auto 0;grid-template-columns:190px minmax(0,1fr);gap:35px}
-html body .blanc-case-rail{background:none;border-right:1px solid #26241f50;padding:5px 22px 30px 0;min-height:70vh}
+html body .blanc-investigation,html body .blanc-investigation.is-map{width:94%;margin:24px auto 0;grid-template-columns:var(--blanc-rail,250px) minmax(0,1fr);gap:35px}
+html body .blanc-case-rail{background:none;border-right:1px solid #26241f50;padding:5px 22px 30px 0;min-height:70vh;width:auto;margin-left:0}
+/* Drag handle on the rail's border: the border itself is the line. Hover shows the width cue. */
+html body .blanc-rail-resizer{position:absolute;top:0;bottom:0;right:-7px;width:13px;cursor:col-resize;touch-action:none;z-index:4;outline:none}
+html body .blanc-rail-resizer:after{content:"";position:absolute;top:0;bottom:0;left:6px;width:1px;background:transparent;transition:background .15s}
+html body .blanc-rail-resizer:hover:after,html body .blanc-rail-resizer:focus-visible:after,html body .is-resizing .blanc-rail-resizer:after{background:#822b33}
+/* Follow-up thread: earlier answers stay above the latest one, compact, reasoning folded. */
+html body .blanc-turn{margin:0 0 22px;padding:4px 0 4px 18px;border-left:2px solid #a99e89}
+html body .blanc-turn:first-of-type{margin-top:8px}
+html body .blanc-turn-label{margin:0;font:600 10px/1.4 Arial,sans-serif;letter-spacing:.08em;text-transform:uppercase;color:#8a7a68}
+html body .blanc-turn-question{margin:4px 0 10px;font:400 18px/1.35 Georgia,serif;color:#372416}
+html body .blanc-turn-kicker{margin:14px 0 4px;font:600 10px Arial,sans-serif;letter-spacing:.2px;text-transform:uppercase;color:#372416}
+html body .blanc-turn-answer{margin:0;font:14px/1.75 Arial,sans-serif;color:#4a3a2c}
+html body .blanc-turn-details{margin:10px 0 12px}
+html body .blanc-turn-details>summary{cursor:pointer;font:12px Arial,sans-serif;color:#822b33;padding:2px 0}
+html body .blanc-turn-details p{font:14px/1.7 Arial,sans-serif;margin:0 0 6px}
+html body .blanc-turn-current{margin-top:14px;padding-top:20px;border-top:2px solid #372416;scroll-margin-top:16px}
+html body .blanc-turn-current .blanc-turn-question{font-size:22px;margin-bottom:0}
+html body .blanc-investigation.is-resizing,html body .blanc-investigation.is-resizing *{cursor:col-resize!important;user-select:none!important;transition:none!important}
 html body .blanc-case-picker select{font:15px Arial,sans-serif}
 html body .blanc-case-rail .blanc-investigations-heading{border:0;padding:10px 0}
 html body .blanc-case-rail .blanc-investigation-open strong{font-size:13px;letter-spacing:0}
@@ -50,15 +67,21 @@ html body .blanc-home-evidence{grid-column:1;margin:0}
 html body .blanc-entry>[role]{grid-column:1}
 html body .blanc-entry .blanc-investigations-recent{align-self:start}
 html body .blanc-report{min-width:0;padding-top:4px}
+/* Reading column: centred in the free space when no source is open; the side padding
+   eases away when the source panel opens, so the text slides left to make room. */
+html body .blanc-investigation:not(.is-map)>.blanc-report{--blanc-read:780px;padding-inline:max(0px,calc((100% - var(--blanc-read))/2));transition:padding .32s cubic-bezier(.2,.7,.2,1)}
+html body .blanc-investigation.has-source:not(.is-map)>.blanc-report{padding-inline:0}
+@media(prefers-reduced-motion:reduce){html body .blanc-investigation>.blanc-report{transition:none}}
 html body .blanc-investigation-heading h1{margin:8px 0 14px}
 html body .blanc-revision-switch{display:inline-block;margin:0 20px 18px 0}
 html body .blanc-revision-switch button{font:11px Arial,sans-serif;font-weight:400}
-html body .blanc-investigation.has-source,html body .blanc-investigation.is-map.has-source{grid-template-columns:170px minmax(0,1fr) minmax(300px,370px);gap:28px}
+html body .blanc-investigation.has-source,html body .blanc-investigation.is-map.has-source{grid-template-columns:var(--blanc-rail,250px) minmax(0,1fr) minmax(300px,370px);gap:28px}
 html body .blanc-history-session h3,html body .blanc-source-fields dt{font-family:Arial,sans-serif}
 html body .blanc-spatial-list{font:12px/1.6 Arial,sans-serif}
 html body .blanc-spatial-frame{height:720px}
 html body .blanc-workspace button:focus-visible,html body .blanc-workspace select:focus-visible,html body .blanc-workspace input:focus-visible{outline:2px solid #8c3038;outline-offset:3px}
-@media(max-width:1100px){html body .blanc-investigation.has-source,html body .blanc-investigation.is-map.has-source{grid-template-columns:190px minmax(0,1fr)}}
+@media(max-width:1100px){html body .blanc-investigation.has-source,html body .blanc-investigation.is-map.has-source{grid-template-columns:var(--blanc-rail,250px) minmax(0,1fr)}}
+@media(max-width:900px){html body .blanc-rail-resizer{display:none}}
 @media(max-width:900px){html body .blanc-investigation.has-source,html body .blanc-investigation.is-map.has-source{grid-template-columns:1fr}html body .blanc-header nav{gap:12px}html body .blanc-header nav button{font-size:11px}html body .blanc-header:after{font-size:9px}}
 @media(max-width:600px){html body .blanc-header{flex-wrap:wrap;gap:16px;padding:20px 0}html body .blanc-header nav{width:100%}html body .blanc-entry>h1{font-size:30px;letter-spacing:-1px}html body .blanc-entry textarea{font-size:17px}}
 
@@ -104,6 +127,23 @@ html body .blanc-event-body{min-width:0;padding:0 0 22px;border-bottom:1px solid
 html body .blanc-event-meta{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:8px}
 html body .blanc-event-description{font:15px/1.75 Arial,sans-serif;margin:0 0 12px;overflow-wrap:anywhere}
 html body .blanc-event-body>div>button{font:11px Arial,sans-serif;color:#822b33;background:none;border:0;border-radius:0;padding:0;text-decoration:underline;cursor:pointer}
+html body .blanc-rail-investigations .blanc-investigations-heading{display:none}
+html body .blanc-ruled .blanc-followup-window{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 18px;margin:0;padding:0;border:0}
+html body .blanc-ruled .blanc-followup-window legend{float:left;margin:0 2px 0 0;padding:0;font:400 12px/1.4 Arial,sans-serif;color:#7a6a5a}
+html body .blanc-ruled .blanc-followup-window label{position:relative;display:inline-block;font:400 12px/1.4 Arial,sans-serif;color:#7a6a5a;padding:3px 0;border-bottom:1px solid transparent;cursor:pointer}
+html body .blanc-ruled .blanc-followup-window label:hover{color:#372416;border-bottom-color:#a99e89}
+html body .blanc-ruled .blanc-followup-window label:has(input:checked){color:#822b33;font-weight:500;border-bottom-color:#822b33}
+html body .blanc-ruled .blanc-followup-window label:has(input:focus-visible){outline:2px solid #822b33;outline-offset:2px}
+html body .blanc-ruled .blanc-followup-window input{position:absolute;opacity:0;width:1px;height:1px;margin:0;padding:0;border:0;pointer-events:none}
+html body .blanc-evidence-progress{display:flex;align-items:center;gap:10px;margin:4px 0 8px;font:14px/1.5 Arial,sans-serif;color:#372416}
+html body .blanc-evidence-progress>span{flex:none;width:14px;height:14px;border:2px solid #822b3344;border-top-color:#822b33;border-radius:50%;animation:blanc-spin .9s linear infinite}
+@keyframes blanc-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){html body .blanc-evidence-progress>span{animation:none;border-color:#822b33}}
+html body .blanc-expanded-note{margin:8px 0 12px;padding:8px 12px;border-left:3px solid #822b33;background:#f3e9d6;font:13px/1.5 Arial,sans-serif;color:#372416}
+html body .blanc-rail-investigations>summary{list-style-position:inside}
+html body .blanc-event-sources{display:flex;flex-wrap:wrap;gap:4px 16px;margin:0 0 10px}
+html body .blanc-event-sources>button{font:15px/1.5 Georgia,serif;text-underline-offset:3px}
+html body .blanc-event-sources>button[aria-pressed="true"]{text-decoration-thickness:2px;font-weight:600}
 html body .blanc-event-details{margin-top:12px;font:11px/1.7 Arial,sans-serif;color:#7a6a5a}
 html body .blanc-event-details>summary{cursor:pointer;font:10px Arial,sans-serif}
 html body .blanc-event-details dl{margin:12px 0 0;display:grid;gap:8px}
@@ -134,3 +174,32 @@ html body .blanc-evidence-offer.is-details-only{padding:12px 0;background:transp
 html body .blanc-skipped-details>summary{font:11px/1.6 Arial,sans-serif;color:#7a6a5a;cursor:pointer}
 html body .blanc-skipped-details[open]>summary{margin-bottom:12px}
 html body .blanc-evidence-offer .blanc-skipped{max-height:210px;overflow:auto;overscroll-behavior:contain;padding:0 8px 0 0;margin:0}
+
+/* Follow-up and evidence actions share the Archive page's functional typography. */
+html body .blanc-followup input{font:400 15px/1.5 Arial,sans-serif;font-style:normal;letter-spacing:0;background:transparent;color:#372416;border:0;border-bottom:1px solid #a99e89;border-radius:0;padding:12px 0;min-width:0;width:100%}
+html body .blanc-followup input::placeholder{font-style:normal;color:#8a7a68}
+html body .blanc-followup button{font:400 12px/1.5 Arial,sans-serif;margin-top:8px}
+html body .blanc-ruled:has(.blanc-followup)>h3{font:600 12px/1.4 Arial,sans-serif;letter-spacing:.2px;margin-bottom:12px}
+html body .blanc-evidence-offer{margin:28px 0 24px;padding:18px 0 0;border:0;border-top:1px solid #a99e8977;background:transparent;color:#372416}
+html body .blanc-evidence-offer h2{font:500 16px/1.5 Arial,sans-serif;letter-spacing:0;margin:0 0 14px;max-width:75ch}
+html body .blanc-evidence-offer form>ul{list-style:none;margin:0 0 16px;padding:0;display:grid;gap:9px;max-width:85ch}
+html body .blanc-evidence-offer form>ul li{font:12px/1.7 Arial,sans-serif;color:#7a6a5a;margin:0}
+html body .blanc-evidence-offer form>ul strong{font-weight:600;color:#554634}
+html body .blanc-evidence-actions{gap:20px;margin:0 0 15px}
+html body .blanc-evidence-yes{font:500 12px/1.4 Arial,sans-serif;background:transparent;border:0;border-bottom:1px solid #822b33;border-radius:0;color:#822b33;padding:3px 0;cursor:pointer}
+html body .blanc-evidence-no{font:400 12px/1.4 Arial,sans-serif;color:#7a6a5a;padding:3px 0;text-decoration:none;border-bottom:1px solid transparent}
+html body .blanc-evidence-no:hover{color:#372416;border-bottom-color:#a99e89}
+html body .blanc-evidence-offer>p{font:12px/1.7 Arial,sans-serif;color:#7a6a5a}
+html body .blanc-evidence-offer.is-details-only{padding:12px 0;margin-top:24px}
+
+/* Display headings in the greeting's Baskerville (trial; delete this block to revert).
+   Small uppercase labels (FINDING, WHY…) stay in Arial, as on the greeting page. */
+html body .blanc-investigation-heading h1,
+html body .blanc-turn-question,
+html body .blanc-source-panel h2,
+html body .blanc-revision-intro h2,
+html body .blanc-evidence-offer h2,
+html body .blanc-source-disclosure>summary{font-family:Baskerville,"Baskerville Old Face",Georgia,serif;font-weight:400;letter-spacing:-.015em}
+html body .blanc-investigation-heading h1{font-size:40px;line-height:1.1}
+html body .blanc-evidence-offer h2{font-size:19px;line-height:1.4}
+html body .blanc-source-disclosure>summary{font-size:16px}

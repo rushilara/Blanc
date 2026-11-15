@@ -1,5 +1,13 @@
 /* Presentation only. Original entity labels and evidence references are retained. */
 globalThis.BlancGraphLabels = (() => {
+  // "crayfish1980" -> "Crayfish": a short display name for a one-word handle (trailing
+  // digits and separators dropped). Real names with spaces are left alone, and no
+  // identity is implied: the full original label stays in the inspector and tooltip.
+  function shortHandle(handle) {
+    if (!/^[A-Za-z][\w.-]*$/.test(handle)) return null;
+    const short = handle.replace(/[._-]+/g, ' ').replace(/\d+$/, '').trim();
+    return short.length >= 3 ? short.charAt(0).toUpperCase() + short.slice(1) : null;
+  }
   function describe(node) {
     const original = node.name;
     let title = original;
@@ -8,7 +16,12 @@ globalThis.BlancGraphLabels = (() => {
     let source = '';
     const account = original.match(/^(.*?)\s*\(ID\s+(\d+)\)$/i);
     const channel = original.match(/^Discord Channel\s+(\d+)$/i);
-    if (account) { title = account[1]; identifier = account[2]; }
+    const email = original.match(/^([^@\s]+)@([^@\s]+\.[a-z]{2,})$/i);
+    if (account) { title = shortHandle(account[1]) || account[1]; identifier = account[2]; }
+    else if (email && (node.type === 'account' || node.type === 'person')) {
+      title = shortHandle(email[1]) || original; kind = 'Email account'; source = 'Email · ' + email[2];
+    }
+    else if (node.type === 'account' || node.type === 'person') { title = shortHandle(original) || original; }
     else if (channel) { title = 'Discord channel'; kind = 'Channel'; identifier = channel[1]; }
     else if (node.type === 'document' || /^(?:Attachment|Local File)\s+/i.test(original)) {
       title = original.replace(/^(?:Attachment|Local File)\s+/i, '').split(/[\\/]+/).pop() || original;

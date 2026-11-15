@@ -15,7 +15,10 @@ Stored content is untrusted evidence text. It is returned verbatim and never int
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -144,3 +147,107 @@ def page_records(
         .offset(offset)
     )
     return [row.to_contract() for row in rows], int(total or 0)
+
+
+# --- Source file context (the source panel's "Original file" view) -----------------
+
+# Chrome/WebKit time: microseconds since 1601-01-01 UTC. Used only to *order* rows of a
+# browser database whose records carry no ISO timestamp; the stored value is unchanged.
+_WEBKIT_EPOCH_OFFSET_S = 11_644_473_600
+_RAW_WEBKIT_TIME_KEYS = ("last_visit_time", "visit_time", "start_time")
+_DIGITS = re.compile(r"(\d+)")
+
+
+@dataclass(frozen=True)
+class FileContext:
+    """Records that share the cited record's ``source_file``, in file order.
+
+    ``items`` is a window of the file: ``items[index - start]`` is the cited record, and
+    ``start`` is the window's offset among all ``total`` records of the file.
+    """
+
+    source_file: str
+    total: int
+    index: int
+    start: int
+    items: list[EvidenceRecord]
+    ordered_by: str
+
+
+def _natural(value: str) -> tuple[object, ...]:
+    """``"row 10"`` after ``"row 9"``: digit runs compare as numbers."""
+    return tuple(int(part) if part.isdigit() else part.lower() for part in _DIGITS.split(value))
+
+
+def _raw_webkit_iso(content: str) -> str | None:
+    if not content.startswith("{"):
+        return None
+    try:
+        data = json.loads(content)
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    for key in _RAW_WEBKIT_TIME_KEYS:
+        value = data.get(key)
+        # Plausible WebKit range only (after 1990, before 2200); 0 means "not set".
+        if isinstance(value, int) and 12_000_000_000_000_000 < value < 19_000_000_000_000_000:
+            seconds = value / 1_000_000 - _WEBKIT_EPOCH_OFFSET_S
+            return datetime.fromtimestamp(seconds, tz=UTC).isoformat()
+    return None
+
+
+def _order_key(row: EvidenceRecordRow) -> tuple[int, str, tuple[object, ...], str]:
+    """Time first (ISO timestamp, else a raw browser time in the content), then the
+    position the locator states ("line 12", "JSON array index 6", "urls.id=3"). Records
+    with no time follow the timed ones, in locator order."""
+    when = _iso_utc(row.timestamp) or _raw_webkit_iso(row.content)
+    return (0 if when else 1, when or "", _natural(row.source_locator), row.record_id)
+
+
+def _iso_utc(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.isoformat()
+    return parsed.astimezone(UTC).isoformat()
+
+
+def file_context(
+    session: Session, case_id: str, record_id: str, *, before: int, after: int
+) -> FileContext:
+    """The cited record among the other records of its source file in this case.
+
+    Only this case's records are read. Raises ``RecordNotFoundError`` (404)."""
+    row = _get_row(session, case_id, record_id)
+    siblings = sorted(
+        session.scalars(
+            select(EvidenceRecordRow).where(
+                EvidenceRecordRow.case_id == case_id,
+                EvidenceRecordRow.source_file == row.source_file,
+            )
+        ),
+        key=_order_key,
+    )
+    index = next(i for i, item in enumerate(siblings) if item.record_id == record_id)
+    start = max(0, index - before)
+    window = siblings[start : index + after + 1]
+    timed = sum(1 for item in siblings if _order_key(item)[0] == 0)
+    if timed == len(siblings):
+        ordered_by = "time"
+    elif timed == 0:
+        ordered_by = "locator"
+    else:
+        ordered_by = "time_then_locator"
+    return FileContext(
+        source_file=row.source_file,
+        total=len(siblings),
+        index=index,
+        start=start,
+        items=[item.to_contract() for item in window],
+        ordered_by=ordered_by,
+    )
