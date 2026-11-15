@@ -1,0 +1,47 @@
+# Blanc on one laptop: `docker compose up --build`, then open http://localhost:3000.
+# Evidence stays on this machine: the case database and imported media live in the
+# `blanc-data` Docker volume. Only Gemini calls leave it. Both ports are bound to
+# 127.0.0.1, so other machines on the network cannot reach them.
+#
+# Settings come from .env in this folder (copy .env.example): GEMINI_API_KEY, and
+# optionally BLANC_AUTH_SECRET for sign-in. See docs/07_LAPTOP_INSTALL.md.
+
+services:
+  backend:
+    build: ./backend
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Fixed inside the container, whatever .env says for a local (non-Docker) run.
+      DATABASE_URL: sqlite:////data/blanc.db
+      CASES_DIR: /data/cases
+      EVIDENCE_ROOT: ""
+      CORS_ORIGINS: http://localhost:3000
+    volumes:
+      - blanc-data:/data
+    ports:
+      - "127.0.0.1:8000:8000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      BLANC_HOSTED: ""
+    volumes:
+      # Sign-in users (scrypt hashes), created with the auth:add-user command.
+      - ./.blanc:/app/.blanc
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  blanc-data:

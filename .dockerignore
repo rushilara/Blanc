@@ -1,0 +1,16 @@
+# Build context for frontend/Dockerfile (the repo root). Never send evidence, databases,
+# secrets, sign-in users or local builds to the image build.
+.git
+.env
+.env.*
+!.env.example
+.blanc
+**/*.db
+**/*.db-*
+backend
+starter
+docs
+**/node_modules
+frontend/.next
+frontend/tsconfig.tsbuildinfo
+**/.DS_Store
