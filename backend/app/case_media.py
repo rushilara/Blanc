@@ -120,7 +120,11 @@ class PdfEmbeddingPrep:
     embedding_pages: int | None = None
 
     def coverage_metadata(self) -> dict[str, Any] | None:
-        """Record ``metadata`` keys when the embed does not cover the whole PDF, else None."""
+        """Chunk ``embedding_coverage`` keys when the embed does not cover the whole PDF.
+
+        Returned for the PDF's ``EvidenceChunk`` only — never written onto
+        ``evidence_records.metadata`` (stored evidence stays immutable).
+        """
         if not self.truncated:
             return None
         meta: dict[str, Any] = {"embedding_truncated": True}
@@ -185,8 +189,8 @@ def prepare_media_for_embedding(
 ) -> tuple[bytes, str, dict[str, Any] | None]:
     """Bytes + MIME ready for ``Embedder.embed_media`` (PDF page truncation applied).
 
-    The optional third value is coverage ``metadata`` to merge onto the record when a PDF
-    was truncated (``embedding_truncated`` / page counts). Images always return ``None``.
+    The optional third value is coverage for the PDF chunk's ``embedding_coverage`` when a
+    PDF was truncated (``embedding_truncated`` / page counts). Images always return ``None``.
     """
     if mime_type == "application/pdf":
         prep = truncate_pdf_for_embedding(data)

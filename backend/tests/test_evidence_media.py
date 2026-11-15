@@ -1385,13 +1385,13 @@ def test_pdf_six_vs_seven_pages_and_truncation_warning(
 
 
 def test_seven_page_pdf_store_and_reembed_sets_truncation_flag(tmp_path: Path) -> None:
-    """Truncation must be visible on the stored record, not only in logs."""
+    """Truncation lives on the PDF chunk's embedding_coverage, not the evidence record."""
     from io import BytesIO
 
     from pypdf import PdfWriter
 
     from app.case_media import GEMINI_PDF_MAX_PAGES
-    from app.evidence_store import get_record, reembed_stale_chunks, store_records
+    from app.evidence_store import get_record, list_chunks, reembed_stale_chunks, store_records
 
     writer = PdfWriter()
     for _ in range(GEMINI_PDF_MAX_PAGES + 1):
@@ -1414,20 +1414,31 @@ def test_seven_page_pdf_store_and_reembed_sets_truncation_flag(tmp_path: Path) -
         session.commit()
         stored = get_record(session, "case-a", record.record_id)
         assert stored is not None
-        assert stored.metadata["embedding_truncated"] is True
-        assert stored.metadata["embedding_pages"] == GEMINI_PDF_MAX_PAGES
-        assert stored.metadata["embedding_page_count"] == GEMINI_PDF_MAX_PAGES + 1
-        # Re-import still matches (coverage keys are not part of content_hash).
+        # GET /records/{id} must not expose index coverage as evidence metadata.
+        assert "embedding_truncated" not in (stored.metadata or {})
+        chunks = list_chunks(session, "case-a", record.record_id)
+        assert len(chunks) == 1
+        assert chunks[0].embedding_coverage == {
+            "embedding_truncated": True,
+            "embedding_pages": GEMINI_PDF_MAX_PAGES,
+            "embedding_page_count": GEMINI_PDF_MAX_PAGES + 1,
+        }
+        # Re-import still matches (coverage is not on the record / content_hash).
         again = store_records(session, "case-a", [record], embedder, media_dir=media_dir)
         assert again.unchanged == 1 and again.inserted == 0
-        # Re-embed keeps the flag.
+        # Re-embed keeps the flag on the chunk; record metadata stays untouched.
         new = FakeEmbedder(model="fake-embedding-v2")
         assert reembed_stale_chunks(session, "case-a", new, media_dir=media_dir) == 1
         session.commit()
         reembedded = get_record(session, "case-a", record.record_id)
         assert reembedded is not None
-        assert reembedded.metadata["embedding_truncated"] is True
-        assert reembedded.metadata["embedding_page_count"] == GEMINI_PDF_MAX_PAGES + 1
+        assert "embedding_truncated" not in (reembedded.metadata or {})
+        rechunks = list_chunks(session, "case-a", record.record_id)
+        assert rechunks[0].embedding_coverage == {
+            "embedding_truncated": True,
+            "embedding_pages": GEMINI_PDF_MAX_PAGES,
+            "embedding_page_count": GEMINI_PDF_MAX_PAGES + 1,
+        }
     engine.dispose()
 
 

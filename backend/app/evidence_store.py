@@ -67,12 +67,6 @@ _IN_BATCH = 500
 
 _MEDIA_MODALITIES = frozenset({"image", "pdf"})
 
-# Set on PDF records when embed time drops pages past Gemini's limit. Excluded from
-# ``content_hash`` / conflict compares so re-import still matches the source record.
-EMBEDDING_COVERAGE_META_KEYS = frozenset(
-    {"embedding_truncated", "embedding_pages", "embedding_page_count"}
-)
-
 
 class CaseNotFoundError(LookupError):
     """The target case does not exist."""
@@ -107,31 +101,10 @@ class StoreResult:
 PROVENANCE_FIELDS: frozenset[str] = frozenset({"original_sha256"})
 
 
-def _metadata_without_embedding_coverage(meta: dict[str, Any] | None) -> dict[str, Any] | None:
-    if meta is None:
-        return None
-    return {k: v for k, v in meta.items() if k not in EMBEDDING_COVERAGE_META_KEYS}
-
-
-def _contract_json_for_hash(record: EvidenceRecord) -> dict[str, Any]:
-    """Contract JSON with embed-coverage metadata stripped (not part of source identity)."""
-    data = record.to_contract_json()
-    if "metadata" in data:
-        data = {**data, "metadata": _metadata_without_embedding_coverage(data.get("metadata"))}
-    return data
-
-
 def content_hash(record: EvidenceRecord) -> str:
-    """SHA-256 of the record's canonical (sorted-key) contract JSON.
-
-    Embed-coverage keys (``embedding_truncated`` / page counts) are omitted so a store that
-    flags a truncated PDF still hashes as the same source record on re-import.
-    """
+    """SHA-256 of the record's canonical (sorted-key) contract JSON."""
     canonical = json.dumps(
-        _contract_json_for_hash(record),
-        sort_keys=True,
-        ensure_ascii=False,
-        separators=(",", ":"),
+        record.to_contract_json(), sort_keys=True, ensure_ascii=False, separators=(",", ":")
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -140,12 +113,8 @@ _MISSING = object()
 
 
 def differing_fields(a: EvidenceRecord, b: EvidenceRecord) -> list[str]:
-    """Sorted contract fields whose values differ (a field absent on one side counts).
-
-    Embed-coverage metadata keys are ignored so truncated-PDF flags do not look like a
-    content change on re-import.
-    """
-    ja, jb = _contract_json_for_hash(a), _contract_json_for_hash(b)
+    """Sorted contract fields whose values differ (a field absent on one side counts)."""
+    ja, jb = a.to_contract_json(), b.to_contract_json()
     keys = ja.keys() | jb.keys()
     return sorted(k for k in keys if ja.get(k, _MISSING) != jb.get(k, _MISSING))
 
@@ -297,29 +266,6 @@ def _write_index(session: Session, chunks: list[EvidenceChunk], vectors: list[li
     insert_keywords(session, indexed)
 
 
-def _merge_embedding_coverage(
-    meta: dict[str, Any] | None, coverage: dict[str, Any] | None, *, clear_when_full: bool
-) -> dict[str, Any] | None:
-    """Merge or clear embed-coverage keys on record metadata."""
-    base = dict(meta) if meta is not None else {}
-    for key in EMBEDDING_COVERAGE_META_KEYS:
-        base.pop(key, None)
-    if coverage:
-        base.update(coverage)
-    elif not clear_when_full and meta is None:
-        return None
-    if not base and meta is None:
-        return None
-    return base
-
-
-def _apply_embedding_coverage(row: EvidenceRecordRow, coverage: dict[str, Any] | None) -> None:
-    """Persist truncation coverage on a stored row (clears flags when embed covers all pages)."""
-    updated = _merge_embedding_coverage(row.record_metadata, coverage, clear_when_full=True)
-    if updated != row.record_metadata:
-        row.record_metadata = updated
-
-
 def _media_input_for(
     case_id: str,
     record: EvidenceRecord,
@@ -346,14 +292,17 @@ def _chunks_for_record(
     *,
     cases_dir: Path | None,
     media_dir: Path | None,
-) -> tuple[list[tuple[EvidenceChunk, str | MediaInput]], dict[str, Any] | None]:
+) -> list[tuple[EvidenceChunk, str | MediaInput]]:
     """Build chunk rows + embed payloads for one newly stored record.
 
-    Returns ``(pending, coverage_metadata)``. ``coverage_metadata`` is set when a PDF was
-    truncated for embedding so the caller can flag the stored record.
+    PDF truncation coverage is stored on the media chunk's ``embedding_coverage``, never on
+    the evidence record (records stay immutable after insert).
     """
     if is_media_record(record):
         sidecar = lexical_sidecar(record)
+        media_input, coverage = _media_input_for(
+            case_id, record, cases_dir=cases_dir, media_dir=media_dir
+        )
         chunk = EvidenceChunk(
             case_id=case_id,
             record_id=record.record_id,
@@ -363,11 +312,9 @@ def _chunks_for_record(
             text=sidecar,
             embedding_model=embedder.model,
             embedding_dim=embedder.dim,
+            embedding_coverage=coverage,
         )
-        media_input, coverage = _media_input_for(
-            case_id, record, cases_dir=cases_dir, media_dir=media_dir
-        )
-        return [(chunk, media_input)], coverage
+        return [(chunk, media_input)]
     pending: list[tuple[EvidenceChunk, str | MediaInput]] = []
     for index, (start, end) in enumerate(chunk_spans(record.content)):
         text = record.content[start:end]
@@ -382,7 +329,7 @@ def _chunks_for_record(
             embedding_dim=embedder.dim,
         )
         pending.append((chunk, text))
-    return pending, None
+    return pending
 
 
 def store_records(
@@ -452,10 +399,9 @@ def store_records(
     rows: list[EvidenceRecordRow] = []
     pending: list[tuple[EvidenceChunk, str | MediaInput]] = []
     for record, digest in new_records:
-        record_pending, coverage = _chunks_for_record(
+        record_pending = _chunks_for_record(
             case_id, record, embedder, cases_dir=cases_dir, media_dir=media_dir
         )
-        metadata = _merge_embedding_coverage(record.metadata, coverage, clear_when_full=False)
         rows.append(
             EvidenceRecordRow(
                 case_id=case_id,
@@ -469,7 +415,7 @@ def store_records(
                 modality=record.modality,
                 media_path=record.media_path,
                 content_type=record.content_type,
-                record_metadata=metadata,
+                record_metadata=record.metadata,
                 content_hash=digest,
             )
         )
@@ -566,7 +512,6 @@ def _ensure_media_chunks(
                 exc,
             )
             continue
-        _apply_embedding_coverage(row, coverage)
         chunk = EvidenceChunk(
             case_id=case_id,
             record_id=record.record_id,
@@ -576,6 +521,7 @@ def _ensure_media_chunks(
             text=sidecar,
             embedding_model=embedder.model,
             embedding_dim=embedder.dim,
+            embedding_coverage=coverage,
         )
         session.add(chunk)
         created.append(chunk)
@@ -643,7 +589,6 @@ def reembed_stale_chunks(
     records = _stored_records(session, case_id, [c.record_id for c in stale])
     pending: list[tuple[EvidenceChunk, str | MediaInput]] = []
     skipped_chunk_ids: set[str] = set()
-    coverage_by_record: dict[str, dict[str, Any] | None] = {}
     for chunk in stale:
         record = records.get(chunk.record_id)
         if record is not None and is_media_record(record):
@@ -661,7 +606,8 @@ def reembed_stale_chunks(
                 )
                 skipped_chunk_ids.add(chunk.chunk_id)
                 continue
-            coverage_by_record[chunk.record_id] = coverage
+            # Index metadata only — never mutate the stored evidence record.
+            chunk.embedding_coverage = coverage
             pending.append((chunk, payload))
         else:
             pending.append((chunk, chunk.text))
@@ -683,15 +629,6 @@ def reembed_stale_chunks(
     for chunk in updated:
         chunk.embedding_model = embedder.model
         chunk.embedding_dim = embedder.dim
-    if coverage_by_record:
-        rows = session.scalars(
-            select(EvidenceRecordRow).where(
-                EvidenceRecordRow.case_id == case_id,
-                EvidenceRecordRow.record_id.in_(list(coverage_by_record)),
-            )
-        )
-        for row in rows:
-            _apply_embedding_coverage(row, coverage_by_record.get(row.record_id))
     session.flush()
     return len(updated)
 

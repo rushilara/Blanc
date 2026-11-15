@@ -169,6 +169,9 @@ class EvidenceChunk(Base):
     # current embedder means the vector is stale.
     embedding_model: Mapped[str] = mapped_column(String(200), nullable=False)
     embedding_dim: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Index-time PDF coverage (``embedding_truncated`` / page counts). Not evidence: leave
+    # ``evidence_records.metadata`` alone. None when the embed covers the whole file / non-PDF.
+    embedding_coverage: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, default=utcnow)
 
 
