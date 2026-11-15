@@ -8,6 +8,16 @@ LLM words and numbers its claims differently on every run. "A claim citing
 rec-07 and rec-12" is something a human can verify once and a script can check
 every time.
 
+Limitation: one record can support several unrelated findings, so matching by
+citations is fuzzy when a finding has no counterpart citing the same records.
+Keep the `evidence_ids` of expected findings and expected changes specific: name
+exactly the records the finding rests on. The runner prefers a finding citing
+exactly those records over a broader one that merely includes them.
+
+`expect_unresolved` is for questions the evidence cannot answer. It requires the
+analysis to list at least one unresolved question and to assert no claim as
+observed, reported or inferred.
+
 See `tests/examples/synthetic_question_set.json` for a complete example.
 """
 
@@ -54,7 +64,8 @@ class Question(_Model):
     # Records a correct answer has to draw on; checked against what was retrieved.
     expected_record_ids: list[str] = Field(default_factory=list)
     expected_findings: list[ExpectedFinding] = Field(default_factory=list)
-    # For unanswerable or conflicting questions: the analysis must say so.
+    # For unanswerable or conflicting questions: the analysis must say so, and must
+    # not assert any claim (every claim, if any, has status "unresolved").
     expect_unresolved: bool = False
     # Text that must never appear in the output, e.g. the payload of an injected instruction.
     must_not_contain: list[str] = Field(default_factory=list)

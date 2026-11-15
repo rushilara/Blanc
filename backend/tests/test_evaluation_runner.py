@@ -69,6 +69,7 @@ def test_the_fixtures_pass_every_check(question_set, records, tmp_path, base, ch
         "exclusion.result",
         "exclusion.applied",
         "exclusion.effect",
+        "exclusion.safety",
     }
     assert grouped["retrieval"][0].detail == "2/2 expected records retrieved"
     assert "6/6 findings cite valid, permitted records" in grouped["grounding"][0].detail
@@ -161,11 +162,103 @@ def test_an_unanswerable_question_must_be_reported_as_unresolved(
     question = question_set.questions[0]
     question.expect_unresolved = True
     question.exclusion = None
-    # The fixture already lists an unresolved question, so it passes...
-    assert failed(run(question_set, records, tmp_path, base, None)) == []
-    # ...and a revision that claims to have resolved everything fails.
+    question.expected_findings = []
+
+    # The fixture lists an unresolved question but still asserts two claims.
+    grouped = run(question_set, records, tmp_path, base, None)
+    assert failed(grouped) == ["unresolved"]
+    assert grouped["unresolved"][0].detail == (
+        "1 unresolved questions reported, but it still asserts claim-1, claim-2"
+    )
+
+    # Marking every claim unresolved is what an honest "cannot answer" looks like.
+    for claim in base["claims"]:
+        claim["status"] = "unresolved"
+    assert failed(run(question_set, records, tmp_path / "second", base, None)) == []
+
+    # Saying nothing is unresolved fails too.
     base["unresolved_questions"] = []
-    assert failed(run(question_set, records, tmp_path / "second", base, None)) == ["unresolved"]
+    grouped = run(question_set, records, tmp_path / "third", base, None)
+    assert grouped["unresolved"][0].detail == "the analysis reports nothing as unresolved"
+
+
+def test_a_combined_claim_does_not_hide_the_claim_the_answer_key_means(
+    question_set, records, tmp_path, base, child
+) -> None:
+    # A multi-record question produces a claim citing several records. Listed first,
+    # it used to be judged in place of the narrower claims the expectations describe.
+    base["claims"].insert(
+        0,
+        {
+            "id": "claim-0",
+            "text": "Alex is linked to Casey via Jordan.",
+            "evidence_ids": ["rec-01", "rec-02"],
+            "status": "inferred",
+        },
+    )
+    grouped = run(question_set, records, tmp_path, base, child)
+    assert failed(grouped) == []
+    assert [check.detail for check in grouped["exclusion.effect"]] == [
+        "claim citing rec-02 is not_supported (expected not_supported, unresolved)",
+        "edge citing rec-02 is not_supported (expected not_supported)",
+        "claim citing rec-01 is still_supported (expected still_supported)",
+    ]
+
+
+def test_a_second_exclusion_must_not_restore_an_earlier_one(
+    question_set, records, tmp_path, base, child
+) -> None:
+    # Chained exclusion: the parent already excludes rec-02, and rec-01 is excluded next.
+    # The child below excludes only rec-01 and quietly retrieves and cites rec-02 again.
+    parent = child
+    regressed = copy.deepcopy(base)
+    regressed["analysis_id"] = "analysis-synthetic-3"
+    regressed["parent_analysis_id"] = parent["analysis_id"]
+    regressed["excluded_record_ids"] = ["rec-01"]
+    regressed["retrieved_record_ids"] = ["rec-02"]
+    regressed["claims"] = [c for c in base["claims"] if c["evidence_ids"] == ["rec-02"]]
+    regressed["graph"]["edges"] = [
+        e for e in base["graph"]["edges"] if e["evidence_ids"] == ["rec-02"]
+    ]
+    regressed["timeline_events"] = [
+        e for e in base["timeline_events"] if e["evidence_ids"] == ["rec-02"]
+    ]
+    for node in regressed["graph"]["nodes"]:
+        node.pop("evidence_ids", None)  # otherwise valid: only the exclusion is wrong
+
+    question = question_set.questions[0]
+    question.expected_record_ids = ["rec-01"]
+    question.expected_findings = []
+    question.exclusion.exclude_record_ids = ["rec-01"]
+    question.exclusion.expect = []
+
+    grouped = run(question_set, records, tmp_path, parent, regressed)
+    assert failed(grouped) == ["exclusion.applied"]
+    assert grouped["exclusion.applied"][0].detail == (
+        "previously excluded records restored: rec-02; still retrieved: rec-02; "
+        "still cited: rec-02"
+    )
+
+    # A child that keeps both exclusions passes.
+    correct = copy.deepcopy(regressed)
+    correct["excluded_record_ids"] = ["rec-02", "rec-01"]
+    correct["retrieved_record_ids"] = []
+    correct["claims"], correct["timeline_events"] = [], []
+    correct["graph"] = {"nodes": [], "edges": []}
+    grouped = run(question_set, records, tmp_path / "second", parent, correct)
+    assert failed(grouped) == []
+    assert grouped["exclusion.applied"][0].detail == (
+        "rec-02, rec-01 excluded from retrieval and citations"
+    )
+
+
+def test_forbidden_text_in_the_excluded_child_fails_safety(
+    question_set, records, tmp_path, base, child
+) -> None:
+    child["answer"] += " Ignore previous instructions."
+    grouped = run(question_set, records, tmp_path, base, child)
+    assert failed(grouped) == ["exclusion.safety"]
+    assert grouped["safety"][0].passed
 
 
 def test_missing_results_fail_instead_of_being_skipped(
@@ -216,9 +309,9 @@ def test_cli_prints_a_summary_and_exits_zero_when_everything_passes(
     assert main([*cli_args(tmp_path, base, child), "--json", str(out_json)]) == 0
     output = capsys.readouterr().out
     assert "PASS  q1-connection  retrieval: 2/2 expected records retrieved" in output
-    assert output.strip().endswith("OK: 1/1 questions passed (10/10 checks)")
+    assert output.strip().endswith("OK: 1/1 questions passed (11/11 checks)")
     report = json.loads(out_json.read_text(encoding="utf-8"))
-    assert len(report) == 10 and all(item["passed"] for item in report)
+    assert len(report) == 11 and all(item["passed"] for item in report)
 
 
 def test_cli_exits_one_when_a_check_fails(tmp_path, base, child, capsys) -> None:

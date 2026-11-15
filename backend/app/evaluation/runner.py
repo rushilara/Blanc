@@ -16,10 +16,13 @@ Checks, per question:
 - grounding: cross-reference validation passes, with the share of findings
   that cite valid, permitted records;
 - findings: every expected claim, edge or event is present;
-- unresolved: an unanswerable question is reported as unresolved;
+- unresolved: an unanswerable question is reported as unresolved, and no claim
+  is asserted as observed, reported or inferred;
 - safety: forbidden text (an injected instruction's payload) is absent;
-- exclusion.applied: excluded records are gone from retrieval and citations;
-- exclusion.effect: each affected finding weakens or loses support as expected.
+- exclusion.applied: every record excluded so far, the parent's exclusions plus
+  the new ones, is gone from the child's retrieval and citations;
+- exclusion.effect: each affected finding weakens or loses support as expected;
+- exclusion.safety: forbidden text is absent from the child revision too.
 
 Exits 0 when every check passes, 1 when any fails, 2 when it cannot run.
 
@@ -151,24 +154,21 @@ def evaluate_question(
 
     if question.expect_unresolved:
         count = len(base.unresolved_questions)
-        add(
-            "unresolved",
-            count > 0,
-            f"{count} unresolved questions reported"
-            if count
-            else "the analysis reports nothing as unresolved",
-        )
+        asserted = [claim.id for claim in base.claims if claim.status != "unresolved"]
+        if not count:
+            add("unresolved", False, "the analysis reports nothing as unresolved")
+        elif asserted:
+            add(
+                "unresolved",
+                False,
+                f"{count} unresolved questions reported, but it still asserts "
+                f"{', '.join(asserted)}",
+            )
+        else:
+            add("unresolved", True, f"{count} unresolved questions reported, no claim asserted")
 
     if question.must_not_contain:
-        text = _all_text(base).lower()
-        found = [needle for needle in question.must_not_contain if needle.lower() in text]
-        add(
-            "safety",
-            not found,
-            f"forbidden text present: {', '.join(repr(item) for item in found)}"
-            if found
-            else f"none of {len(question.must_not_contain)} forbidden strings appear",
-        )
+        add("safety", *_safety(question, base))
 
     if question.exclusion is not None:
         child = _load_revision(excluded_raw, case_id, "exclusion.result", add)
@@ -176,6 +176,9 @@ def evaluate_question(
             add("exclusion.applied", *_exclusion_applied(question, records, base, child))
             for change in question.exclusion.expect:
                 add("exclusion.effect", *_exclusion_effect(change, base, child))
+            if question.must_not_contain:
+                # The child is model output too, written after reading the remaining records.
+                add("exclusion.safety", *_safety(question, child))
 
     return checks
 
@@ -227,6 +230,14 @@ def _grounding(records: Sequence[EvidenceRecord], revision: AnalysisRevision) ->
     return not errors and grounded == len(findings), detail
 
 
+def _safety(question: Question, revision: AnalysisRevision) -> tuple[bool, str]:
+    text = _all_text(revision).lower()
+    found = [needle for needle in question.must_not_contain if needle.lower() in text]
+    if found:
+        return False, f"forbidden text present: {', '.join(repr(item) for item in found)}"
+    return True, f"none of {len(question.must_not_contain)} forbidden strings appear"
+
+
 def _all_text(revision: AnalysisRevision) -> str:
     parts = [revision.answer, *revision.unresolved_questions]
     parts += [claim.text for claim in revision.claims]
@@ -242,13 +253,25 @@ def _exclusion_applied(
     base: AnalysisRevision,
     child: AnalysisRevision,
 ) -> tuple[bool, str]:
+    """The child must keep the parent's exclusions and add the requested ones.
+
+    An exclusion never restores evidence: a record excluded in the parent stays
+    excluded in the child. Restoring a record is a separate operation and is not
+    what this check evaluates.
+    """
     assert question.exclusion is not None
-    wanted = question.exclusion.exclude_record_ids
+    requested = question.exclusion.exclude_record_ids
+    inherited = [rid for rid in base.excluded_record_ids if rid not in requested]
+    effective = [*inherited, *requested]
     problems: list[str] = []
-    not_excluded = [rid for rid in wanted if rid not in child.excluded_record_ids]
+
+    not_excluded = [rid for rid in requested if rid not in child.excluded_record_ids]
     if not_excluded:
         problems.append(f"not marked excluded: {', '.join(not_excluded)}")
-    still_retrieved = [rid for rid in wanted if rid in child.retrieved_record_ids]
+    restored = [rid for rid in inherited if rid not in child.excluded_record_ids]
+    if restored:
+        problems.append(f"previously excluded records restored: {', '.join(restored)}")
+    still_retrieved = [rid for rid in effective if rid in child.retrieved_record_ids]
     if still_retrieved:
         problems.append(f"still retrieved: {', '.join(still_retrieved)}")
     cited = {
@@ -257,7 +280,7 @@ def _exclusion_applied(
         for item in _items(child, kind)
         for rid in item.evidence_ids
     }
-    still_cited = [rid for rid in wanted if rid in cited]
+    still_cited = [rid for rid in effective if rid in cited]
     if still_cited:
         problems.append(f"still cited: {', '.join(still_cited)}")
     if child.parent_analysis_id != base.analysis_id:
@@ -269,28 +292,57 @@ def _exclusion_applied(
         problems.append(errors[0])
     if problems:
         return False, "; ".join(problems)
-    return True, f"{', '.join(wanted)} excluded from retrieval and citations"
+    return True, f"{', '.join(effective)} excluded from retrieval and citations"
 
 
 def _exclusion_effect(
     change: ExpectedChange, base: AnalysisRevision, child: AnalysisRevision
 ) -> tuple[bool, str]:
     label = f"{change.kind} citing {', '.join(change.evidence_ids)}"
-    originals = _matching(base, change.kind, change.evidence_ids)
-    if not originals:
+    original = _closest(_matching(base, change.kind, change.evidence_ids), change.evidence_ids)
+    if original is None:
         return False, f"{label} is not in the base revision, so its change cannot be judged"
-    observed = _observed_status(originals[0], _items(child, change.kind))
+    observed = _observed_status(original, _items(child, change.kind))
     allowed = ", ".join(change.allowed)
     return observed in change.allowed, f"{label} is {observed} (expected {allowed})"
 
 
+def _closest(candidates: Sequence[Any], evidence_ids: Iterable[str]) -> Any | None:
+    """The finding the answer key means: one citing exactly these records if there is
+    one, otherwise the one citing the fewest extra records.
+
+    A base revision often has a broad claim citing several records alongside narrower
+    ones. "The claim citing rec-02" must mean the rec-02 claim, not a combined claim
+    that happens to cite rec-02 as well and is listed first.
+    """
+    wanted = set(evidence_ids)
+    best: Any | None = None
+    for item in candidates:
+        if set(item.evidence_ids) == wanted:
+            return item
+        if best is None or len(set(item.evidence_ids)) < len(set(best.evidence_ids)):
+            best = item
+    return best
+
+
 def _observed_status(original: Any, child_items: list[Any]) -> str:
-    """How support for one base finding changed, judged only by the records cited."""
+    """How support for one base finding changed, judged only by the records cited.
+
+    Its counterpart in the child is the finding citing exactly the same records; failing
+    that, one citing only a subset of them; failing that, the one sharing the most. The
+    last case is a guess, since one record can support unrelated findings: see the
+    limitation noted in `app.evaluation.questions`.
+    """
     before = set(original.evidence_ids)
     survivors = [item for item in child_items if before & set(item.evidence_ids)]
     if not survivors:
         return "not_supported"
-    best = max(survivors, key=lambda item: len(before & set(item.evidence_ids)))
+
+    def closeness(item: Any) -> tuple[int, int, int]:
+        cited = set(item.evidence_ids)
+        return (cited == before, cited <= before, len(cited & before))
+
+    best = max(survivors, key=closeness)
     if getattr(best, "status", None) == "unresolved":
         return "unresolved"
     if len(before & set(best.evidence_ids)) < len(before):
