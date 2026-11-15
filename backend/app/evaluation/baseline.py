@@ -15,6 +15,14 @@ Run it through the evaluation runner (from `backend/`):
     python -m app.evaluation --questions q.json --records r.json --results out/ --keyword-baseline
     python -m app.evaluation --questions q.json --records r.json --keyword-only
 
+Only the question set's case is searched: records and saved revisions from any
+other case are ignored, as in the main runner, because record IDs can repeat
+across cases.
+
+The keyword side is plain BM25 with word tokens and no stemming, so it is not
+the pipeline's own FTS5 retriever (which stems); a gap between the columns is
+hybrid retrieval against a search box, not against the pipeline's keyword half.
+
 How to read the numbers: on a handful of questions this is a demonstration on
 one case, not a benchmark. A record that both methods find tells you nothing; a
 record only the pipeline finds is the interesting one, so the table lists what
@@ -86,8 +94,10 @@ class RetrievalComparison:
     question_id: str
     expected: int
     keyword_missing: list[str]
-    # None when there is no saved pipeline result for the question.
+    # None when there is no usable saved pipeline result for the question.
     pipeline_missing: list[str] | None
+    # Why there is no usable result: "no result", "invalid result" or "wrong case".
+    pipeline_problem: str | None = None
 
     @property
     def keyword_hits(self) -> int:
@@ -105,28 +115,49 @@ def compare_retrieval(
     *,
     k: int = DEFAULT_K,
 ) -> list[RetrievalComparison]:
-    """One row per question that has expected records. `results=None` is keyword-only."""
+    """One row per question that has expected records. `results=None` is keyword-only.
+
+    Only records and revisions of `question_set.case_id` are used.
+    """
+    case_id = question_set.case_id
+    case_records = [record for record in records if record.case_id == case_id]
     rows: list[RetrievalComparison] = []
     for question in question_set.questions:
         expected = question.expected_record_ids
         if not expected:
             continue
-        keyword_top = keyword_rank(question.question, records, k)
+        keyword_top = keyword_rank(question.question, case_records, k)
         pipeline_missing: list[str] | None = None
+        problem: str | None = None
         if results is not None:
-            revision, _ = schema_errors(AnalysisRevision, results.base(question.question_id) or {})
-            if revision is not None:
-                pipeline_top = revision.retrieved_record_ids[:k]
-                pipeline_missing = [rid for rid in expected if rid not in pipeline_top]
+            pipeline_missing, problem = _pipeline_missing(
+                results.base(question.question_id), case_id, expected, k
+            )
         rows.append(
             RetrievalComparison(
                 question_id=question.question_id,
                 expected=len(expected),
                 keyword_missing=[rid for rid in expected if rid not in keyword_top],
                 pipeline_missing=pipeline_missing,
+                pipeline_problem=problem,
             )
         )
     return rows
+
+
+def _pipeline_missing(
+    raw: object, case_id: str, expected: Sequence[str], k: int
+) -> tuple[list[str] | None, str | None]:
+    """Expected records missing from the saved revision's top k, or why it cannot be used."""
+    if raw is None:
+        return None, "no result"
+    revision, _ = schema_errors(AnalysisRevision, raw)
+    if revision is None:
+        return None, "invalid result"
+    if revision.case_id != case_id:
+        return None, "wrong case"
+    top = revision.retrieved_record_ids[:k]
+    return [rid for rid in expected if rid not in top], None
 
 
 def keyword_only_checks(
@@ -151,10 +182,11 @@ def format_comparison(rows: Sequence[RetrievalComparison], k: int = DEFAULT_K) -
     width = max(len("question"), len("TOTAL"), *(len(row.question_id) for row in rows))
     lines = [
         f"Retrieval, top {k}: keyword-only search next to the pipeline",
+        "(keyword: plain BM25, no stemming; not the pipeline's own keyword retriever)",
         f"{'question':<{width}}  expected  keyword  pipeline",
     ]
     for row in rows:
-        pipeline = "no result"
+        pipeline = row.pipeline_problem or "no result"
         if row.pipeline_hits is not None:
             pipeline = f"{row.pipeline_hits}/{row.expected}"
         lines.append(

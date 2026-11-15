@@ -407,12 +407,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--records", type=Path, required=True, help="The case's records JSON.")
     parser.add_argument("--results", type=Path, help="Folder of saved revisions.")
     parser.add_argument("--top-k", type=int, help="Only count the first K retrieved records.")
-    parser.add_argument(
+    keyword = parser.add_mutually_exclusive_group()
+    keyword.add_argument(
         "--keyword-baseline",
         action="store_true",
         help="Also print keyword-only top-k hit rates next to the pipeline's.",
     )
-    parser.add_argument(
+    keyword.add_argument(
         "--keyword-only",
         action="store_true",
         help="Run only the retrieval check, using keyword search; --results is not needed.",

@@ -22,10 +22,10 @@ QUESTION_SET_PATH = Path(__file__).parent / "examples" / "synthetic_question_set
 QID = "q1-connection"
 
 
-def record(record_id: str, content: str) -> EvidenceRecord:
+def record(record_id: str, content: str, case_id: str = "synthetic-demo") -> EvidenceRecord:
     return EvidenceRecord(
         record_id=record_id,
-        case_id="synthetic-demo",
+        case_id=case_id,
         source_file="notes.txt",
         source_locator=f"line {record_id}",
         content=content,
@@ -128,7 +128,46 @@ def test_a_missing_pipeline_result_is_shown_not_counted(question_set, records, t
     assert row.pipeline_hits is None
     table = format_comparison([row])
     assert "no result" in table
-    assert table.splitlines()[3].endswith("n/a")
+    assert table.splitlines()[4].endswith("n/a")
+
+
+def test_only_the_question_sets_case_is_searched(question_set, records) -> None:
+    # Another case reuses the record ID rec-01 for a record that matches the question.
+    question = question_set.questions[0]
+    question.question = "Who arranged the handover of the paperwork?"
+    question.expected_record_ids = ["rec-01"]
+    other = record("rec-01", "Bram arranged the handover of the paperwork.", case_id="other-case")
+    assert keyword_rank(question.question, [*records, other]) == ["rec-01"]  # unscoped
+    (row,) = compare_retrieval(question_set, [*records, other])
+    assert row.keyword_hits == 0 and row.keyword_missing == ["rec-01"]
+    # The other case's records do not change the scores either.
+    assert compare_retrieval(question_set, [*records, other], k=1) == compare_retrieval(
+        question_set, records, k=1
+    )
+
+
+@pytest.mark.parametrize(
+    ("change", "problem"),
+    [({"case_id": "other-case"}, "wrong case"), ({"analysis_id": ""}, "invalid result")],
+)
+def test_an_unusable_pipeline_result_is_named_not_counted(
+    question_set, records, tmp_path, change, problem
+) -> None:
+    base = {**copy.deepcopy(RAW["revision"]), **change}
+    (row,) = compare_retrieval(question_set, records, FileResults(save_base(tmp_path, base)))
+    assert row.pipeline_hits is None and row.pipeline_problem == problem
+    table = format_comparison([row])
+    assert problem in table.splitlines()[3]
+    assert table.splitlines()[4].endswith("n/a")
+
+
+def test_the_table_says_the_keyword_side_is_not_the_pipelines_retriever(
+    question_set, records
+) -> None:
+    table = format_comparison(compare_retrieval(question_set, records))
+    assert table.splitlines()[1] == (
+        "(keyword: plain BM25, no stemming; not the pipeline's own keyword retriever)"
+    )
 
 
 def test_questions_without_expected_records_are_left_out(question_set, records) -> None:
@@ -188,3 +227,10 @@ def test_cli_keyword_only_needs_no_results_folder(tmp_path, capsys) -> None:
 def test_cli_still_requires_results_for_a_full_run(tmp_path, capsys) -> None:
     assert main(cli_base(tmp_path)) == 2
     assert "--results is required unless --keyword-only is given" in capsys.readouterr().err
+
+
+def test_cli_rejects_both_keyword_flags(tmp_path, capsys) -> None:
+    with pytest.raises(SystemExit) as raised:
+        main([*cli_base(tmp_path), "--keyword-only", "--keyword-baseline"])
+    assert raised.value.code == 2
+    assert "not allowed with argument" in capsys.readouterr().err
