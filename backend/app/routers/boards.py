@@ -8,6 +8,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 
+from app.analyses import saved_revision_lookup
 from app.boards import (
     BoardConflictError,
     BoardNotFoundError,
@@ -17,7 +18,6 @@ from app.boards import (
     get_board,
     list_boards,
     list_revisions,
-    no_saved_revisions,
     update_board,
 )
 from app.contracts import InvestigationBoard
@@ -30,12 +30,9 @@ BOARD = {"model": InvestigationBoard}
 
 
 def get_revision_lookup() -> RevisionLookup:
-    """Dependency: how boards find saved analysis revisions.
-
-    BLA-28 (save and reload revisions) should return its lookup here. Until then no
-    revision is known, so pins are rejected with a 422 that says so.
-    """
-    return no_saved_revisions
+    """Dependency: how boards find analysis revisions: the saved ones (``app.analyses``).
+    Tests can override it to inject revisions directly."""
+    return saved_revision_lookup
 
 
 LookupDep = Annotated[RevisionLookup, Depends(get_revision_lookup)]
