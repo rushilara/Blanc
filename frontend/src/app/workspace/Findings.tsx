@@ -7,6 +7,7 @@ import { TimelineView } from "@/components/TimelineView";
 import { useEffect, useRef, useSyncExternalStore, useState } from "react";
 import type { AnalysisRevision, EvidenceRecord } from "@/lib/analysis";
 import { citedRecordIds } from "@/lib/citations";
+import { splitCitations } from "@/lib/inline-citations";
 import { analyzeCase, listCaseRecordsPage, listCases, loadRevisionSources, type CaseSummary } from "@/lib/live-api";
 
 const views = ["Findings", "Connections", "Timeline", "Revisions"] as const;
@@ -62,7 +63,26 @@ export function Findings() {
   const [view, setView] = useState<(typeof views)[number]>("Findings");
   const [open, setOpen] = useState<string>();
   const sources = records;
-  const citedOrder = revision ? citedRecordIds(revision) : [];
+  // Record IDs the model wrote into its prose become numbered citations too. Numbering
+  // follows citation order, then any loaded source mentioned only in prose.
+  const knownIds = revision ? [...citedRecordIds(revision), ...records.map(record => record.record_id)] : [];
+  const prose = (text: string) => splitCitations(text, knownIds);
+  const proseIds = revision
+    ? [revision.answer, ...revision.claims.map(claim => claim.text), ...revision.unresolved_questions, ...revision.graph.edges.map(edge => edge.description ?? "")]
+      .flatMap(text => prose(text).flatMap(part => "ids" in part ? part.ids : []))
+    : [];
+  const citedOrder = [...new Set([...(revision ? citedRecordIds(revision) : []), ...proseIds])];
+
+  function withCitations(text: string, extra: string[] = []) {
+    const parts = prose(text);
+    const extraIds = [...new Set(extra)].filter(id => !parts.some(part => "ids" in part && part.ids.includes(id)));
+    return <>
+      {parts.map((part, index) => "ids" in part
+        ? <sup key={index}>{part.ids.map(id => citation(id))}</sup>
+        : <span key={index}>{part.text}</span>)}
+      {extraIds.length > 0 && <> <sup>{extraIds.map(id => citation(id))}</sup></>}
+    </>;
+  }
   const nodes = new Map(revision?.graph.nodes.map(node => [node.id, node.label]));
 
   async function ask() {
@@ -155,12 +175,12 @@ export function Findings() {
       {revision.needs_review && <p>This analysis needs investigator review.</p>}
       {view === "Findings" && <>
         <h2>Finding</h2>
-        <p>{revision.answer || "No answer in this revision."}</p>
+        <p>{revision.answer ? withCitations(revision.answer) : "No answer in this revision."}</p>
         <h2>Why</h2>
-        {revision.claims.map(claim => <p key={claim.id}><StatusLabel value={claim.status} />{claim.text} <sup>{[...new Set(claim.evidence_ids)].map(id => citation(id))}</sup></p>)}
-        {revision.unresolved_questions.length > 0 && <><h2>What remains unresolved</h2>{revision.unresolved_questions.map((question, index) => <p key={`${index}-${question}`}>{question}</p>)}</>}
+        {revision.claims.map(claim => <p key={claim.id}><StatusLabel value={claim.status} />{withCitations(claim.text, claim.evidence_ids)}</p>)}
+        {revision.unresolved_questions.length > 0 && <><h2>What remains unresolved</h2>{revision.unresolved_questions.map((question, index) => <p key={`${index}-${question}`}>{withCitations(question)}</p>)}</>}
       </>}
-      {view === "Connections" && <><h2>Connections</h2>{revision.graph.edges.map(edge => <p key={edge.id}><StatusLabel value={edge.status} />{nodes.get(edge.source) ?? edge.source} → {nodes.get(edge.target) ?? edge.target}<br />{edge.description ?? edge.type.replaceAll("_", " ")} <sup>{[...new Set(edge.evidence_ids)].map(id => citation(id))}</sup></p>)}</>}
+      {view === "Connections" && <><h2>Connections</h2>{revision.graph.edges.map(edge => <p key={edge.id}><StatusLabel value={edge.status} />{nodes.get(edge.source) ?? edge.source} → {nodes.get(edge.target) ?? edge.target}<br />{edge.description ? withCitations(edge.description, edge.evidence_ids) : withCitations(edge.type.replaceAll("_", " "), edge.evidence_ids)}</p>)}</>}
       {view === "Timeline" && <><h2>Timeline</h2><TimelineView key={revision.analysis_id} events={revision.timeline_events} caseId={revision.case_id} records={sources} excludedRecordIds={revision.excluded_record_ids} /></>}
       {view === "Revisions" && <><h2>Current revision</h2><p>{revision.analysis_id}</p><p>Excluded records: {revision.excluded_record_ids.join(", ") || "None"}</p></>}
       {open && <SourceReferences key={open} ids={[open]} caseId={revision.case_id} records={sources} excludedRecordIds={revision.excluded_record_ids} autoOpen hideTriggers onClose={() => setOpen(undefined)} />}
@@ -301,7 +321,7 @@ function TypedGreeting({ text }: { text: string }) {
 }
 
 function sourceTitle(record: EvidenceRecord) {
-  return presentSource(record)?.title ?? (record.source_file.split(/[\\/]/).filter(Boolean).at(-1) || "Evidence record");
+  return presentSource(record)?.label ?? (record.source_file.split(/[\\/]/).filter(Boolean).at(-1) || "Evidence record");
 }
 
 function StatusLabel({ value }: { value: string }) {

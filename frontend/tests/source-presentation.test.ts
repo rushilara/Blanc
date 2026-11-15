@@ -52,3 +52,17 @@ test("optional invalid byte values are not presented as exact file sizes", () =>
   const view = presentSource(record({ ...download, received_bytes: -1, total_bytes: Number.MAX_SAFE_INTEGER + 1 }))!;
   assert.ok(!view.fields.some(f => /bytes/.test(f.label)));
 });
+
+test("each record gets a short distinct label from its own fields", () => {
+  const history = (url: string, title: string) =>
+    presentSource(record({ url, title }, "SQLite urls.id=1"))!.label;
+  assert.equal(presentSource(record(download))!.label, "Download: Example Setup.exe");
+  assert.equal(history("https://www.google.com/search?q=test+tool&oq=x", "test tool - Google Search"), 'Search: "test tool"');
+  assert.equal(history("https://www.google.co.nz/search?q=a%20b", "x"), 'Search: "a b"');
+  assert.equal(history("https://www.google.com/maps/dir/A/B", "Google Maps"), "Page: Google Maps");
+  assert.equal(history("https://example.test/page", ""), "Page: example.test");
+  assert.equal(history("https://example.test/page", "x".repeat(80)).length, "Page: ".length + 48);
+  const discord = { ...record({ author: { username: "account-one" }, content: "hi" }),
+    source_file: "Users/Test/Discord/Cache/data_2", source_locator: "Discord message id 123" };
+  assert.equal(presentSource(discord)!.label, "Discord: account-one");
+});

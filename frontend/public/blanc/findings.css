@@ -16,7 +16,9 @@
 .blanc-ruled { border-top: 1px solid #a99e89; margin-top: 22px; padding-top: 16px; }
 .blanc-ruled li { display: flex; gap: 16px; align-items: baseline; margin: 5px 0; }
 .blanc-ruled li > span:first-child, .blanc-citation { color: #822b33; }
-.blanc-citation { position: relative; display: inline-block; margin-right: .35em; }
+.blanc-citation { position: relative; display: inline-block; }
+/* Space between neighbouring numbers only, so punctuation after a citation stays tight. */
+.blanc-citation + .blanc-citation { margin-left: .35em; }
 .blanc-citation button { text-decoration: underline; text-underline-offset: 3px; text-align: left; }
 .blanc-preview { display: none; position: absolute; z-index: 1; left: 0; top: 100%; width: min(19rem, 65vw); padding: 12px; background: #f5eddf; color: #372416; border: 1px solid #a99e89; font: 13px/1.4 Georgia, serif; overflow-wrap: anywhere; }
 .blanc-citation:hover .blanc-preview, .blanc-citation:focus-within .blanc-preview { display: grid; gap: 4px; }
@@ -117,8 +119,8 @@
 .blanc-case-rail h2 { margin: 4px 0 18px; font-size: 17px; line-height: 1.25; }
 .blanc-rail-sources { border-top: 1px solid #b8ac97; padding-top: 10px; }
 .blanc-rail-sources h3 { margin-bottom: 6px; font-size: 12px; }
-.blanc-rail-sources li { display: grid; grid-template-columns: 1ch minmax(0, 1fr); gap: 8px; margin-bottom: 7px; font-size: 12px; }
-.blanc-rail-sources li > span:first-child { color: #822b33; }
+.blanc-rail-sources li { display: grid; grid-template-columns: 2.5ch minmax(0, 1fr); gap: 8px; margin-bottom: 7px; font-size: 12px; }
+.blanc-rail-sources li > span:first-child { color: #822b33; text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .blanc-rail-sources .blanc-citation { margin: 0; }
 @media (max-width: 900px) {
   .blanc-investigation { grid-template-columns: minmax(0, 560px); gap: 20px; }
