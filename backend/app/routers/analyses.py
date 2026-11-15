@@ -14,11 +14,14 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from app.analyses import (
+    InvalidExclusionError,
     InvalidRestoreError,
     NoPriorStateError,
     RevisionConflictError,
     RevisionNotFoundError,
     RevisionSummary,
+    compare_to_parent,
+    exclude_records,
     get_revision,
     list_revisions,
     restore_records,
@@ -26,7 +29,7 @@ from app.analyses import (
     run_case_analysis,
 )
 from app.analysis_llm import AnalysisLLMError
-from app.contracts import AnalysisRevision
+from app.contracts import AnalysisRevision, RevisionComparison
 from app.deps import AnalysisLLMDep, CaseDep, EmbedderDep, SessionDep
 from app.retrieval import ExcludedRecordLeakError, RetrievalConfig
 from app.routers.search import get_retrieval_config
@@ -167,3 +170,77 @@ def restore_analysis_records(
         status_code=status.HTTP_201_CREATED,
         headers={"X-Restored-From": result.restored_from.analysis_id},
     )
+
+
+class ExcludeRequest(BaseModel):
+    """Body of ``POST .../exclude``: records to exclude, on top of the base's exclusions."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    record_ids: Annotated[
+        list[Annotated[str, StringConstraints(min_length=1)]], Field(min_length=1, max_length=200)
+    ]
+
+
+@router.post(
+    "/{analysis_id}/exclude",
+    status_code=status.HTTP_201_CREATED,
+    responses={201: {"model": AnalysisRevision}},
+)
+def exclude_analysis_records(
+    analysis_id: str,
+    body: ExcludeRequest,
+    case: CaseDep,
+    session: SessionDep,
+    embedder: EmbedderDep,
+    llm: AnalysisLLMDep,
+    config: RetrievalConfigDep,
+) -> Any:
+    """Exclude records and rerun this revision's question on the remaining evidence (BLA-33).
+
+    Retrieval filters every chunk of the excluded records; the new revision is generated
+    from permitted evidence only, saved as a child of ``analysis_id`` and returned (201).
+    The excluded records stay in the corpus. ``GET .../{new_id}/comparison`` gives the
+    support diff against this revision.
+
+    404 for an unknown revision; 422 if a record is not in this case, none is given, or all
+    are already excluded; 503 when the LLM is unavailable.
+    """
+    try:
+        revision = exclude_records(
+            session,
+            case.case_id,
+            analysis_id,
+            body.record_ids,
+            llm,
+            embedder,
+            retrieval_config=config,
+        )
+    except RevisionNotFoundError as error:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Analysis not found") from error
+    except InvalidExclusionError as error:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)) from error
+    except AnalysisLLMError as error:
+        logger.warning("analysis LLM unavailable for case %s: %s", case.case_id, error)
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=LLM_UNAVAILABLE) from error
+    except ExcludedRecordLeakError:
+        logger.exception(
+            "excluded record leaked into analysis for case %s; this is a server bug",
+            case.case_id,
+        )
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error"
+        ) from None
+    return JSONResponse(revision.to_contract_json(), status_code=status.HTTP_201_CREATED)
+
+
+@router.get("/{analysis_id}/comparison", responses={200: {"model": RevisionComparison}})
+def get_analysis_comparison(analysis_id: str, case: CaseDep, session: SessionDep) -> Any:
+    """How each finding's support changed from this revision's parent to it (BLA-34):
+    ``still_supported``, ``weakened``, ``not_supported``, ``newly_supported`` or
+    ``unresolved``. Deterministic. 404 if the revision is unknown or has no parent."""
+    try:
+        comparison = compare_to_parent(session, case.case_id, analysis_id)
+    except RevisionNotFoundError as error:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    return JSONResponse(comparison.to_contract_json())
