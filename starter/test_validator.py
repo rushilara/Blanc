@@ -206,6 +206,148 @@ class TestComparison(unittest.TestCase):
         self.assertEqual(validate_comparison(revisions,broken),[])
         self.assertEqual(list(comparison_schema.iter_errors(broken)),[])
 
+def linked_case():
+    """BLA-63: base claim-2 cites rec-02 and rec-01; rec-02 is excluded and the child rewords
+    it as claim-x on rec-01. Both items list the advisory possible match."""
+    base=deepcopy(revision); kid=deepcopy(child); cmp=deepcopy(comparison)
+    base['claims'][1]['evidence_ids']=['rec-02','rec-01']
+    kid['claims'].append({'id':'claim-x','text':'Jordan may meet Casey.','evidence_ids':['rec-01'],'status':'reported'})
+    link={'shared_evidence_ids':['rec-01'],'remaining_sources':1,'original_sources':2}
+    cmp['items'][1].update(support_status='unresolved',base_evidence_ids=['rec-02','rec-01'],
+        possible_matches=[{'ref_id':'claim-x',**link}])
+    cmp['items'].append({'kind':'claim','base_ref_id':None,'compared_ref_id':'claim-x','support_status':'newly_supported',
+        'base_evidence_ids':[],'compared_evidence_ids':['rec-01'],'possible_matches':[{'ref_id':'claim-2',**link}]})
+    return [base,kid],cmp
+
+class TestPossibleMatches(unittest.TestCase):
+    def test_valid_link(self):
+        revs,cmp=linked_case()
+        self.assertEqual(validate_comparison(revs,cmp),[])
+        self.assertEqual(list(comparison_schema.iter_errors(cmp)),[])
+
+    def test_link_to_unknown_item(self):
+        revs,cmp=linked_case()
+        cmp['items'][1]['possible_matches'][0]['ref_id']='claim-9'
+        self.assertTrue(validate_comparison(revs,cmp))
+
+    def test_link_must_be_mirrored(self):
+        revs,cmp=linked_case()
+        del cmp['items'][-1]['possible_matches']
+        self.assertTrue(validate_comparison(revs,cmp))
+
+    def test_shared_must_equal_new_item_citations(self):
+        revs,cmp=linked_case()
+        for item in (cmp['items'][1],cmp['items'][-1]):
+            item['possible_matches'][0]['shared_evidence_ids']=['rec-02']
+        errors=validate_comparison(revs,cmp)
+        self.assertTrue(any('shared_evidence_ids must equal' in e for e in errors))
+        self.assertTrue(any('shares excluded records' in e for e in errors))
+
+    def test_new_item_citations_must_be_permitted_base_subset(self):
+        revs,cmp=linked_case()
+        cmp['items'][-1]['compared_evidence_ids']=['rec-01','rec-04']
+        revs[1]['claims'][-1]['evidence_ids']=['rec-01','rec-04']
+        for item in (cmp['items'][1],cmp['items'][-1]):
+            item['possible_matches'][0]['shared_evidence_ids']=['rec-01']
+        errors=validate_comparison(revs,cmp)
+        self.assertTrue(any('still-permitted citations' in e for e in errors))
+
+    def test_edge_link_requires_same_direction_endpoints(self):
+        base=deepcopy(revision); kid=deepcopy(child); cmp=deepcopy(comparison)
+        base['graph']['edges'][0]['evidence_ids']=['rec-01','rec-02']
+        rev=deepcopy(base['graph']['edges'][0])
+        rev['id']='edge-rev'
+        rev['source'],rev['target']=rev['target'],rev['source']
+        rev['evidence_ids']=['rec-01']
+        kid['graph']['edges']=[e for e in kid['graph']['edges'] if e['id']!='edge-1']+[rev]
+        # Drop the matched edge item; add unmatched base + newly_supported reversed edge.
+        cmp['items']=[i for i in cmp['items'] if not (i.get('kind')=='edge' and i.get('base_ref_id')=='edge-1')]
+        link={'shared_evidence_ids':['rec-01'],'remaining_sources':1,'original_sources':2}
+        cmp['items'].append({'kind':'edge','base_ref_id':'edge-1','compared_ref_id':None,
+            'support_status':'unresolved','base_evidence_ids':['rec-01','rec-02'],
+            'compared_evidence_ids':[],'possible_matches':[{'ref_id':'edge-rev',**link}]})
+        cmp['items'].append({'kind':'edge','base_ref_id':None,'compared_ref_id':'edge-rev',
+            'support_status':'newly_supported','base_evidence_ids':[],
+            'compared_evidence_ids':['rec-01'],'possible_matches':[{'ref_id':'edge-1',**link}]})
+        errors=validate_comparison([base,kid],cmp)
+        self.assertTrue(any('edge endpoints must match' in e for e in errors))
+
+    def _reject_edge_after_endpoint_change(self,**node_update):
+        base=deepcopy(revision); kid=deepcopy(child); cmp=deepcopy(comparison)
+        base['graph']['edges'][0]['evidence_ids']=['rec-01','rec-02']
+        edge=deepcopy(base['graph']['edges'][0]); edge['id']='edge-x'; edge['evidence_ids']=['rec-01']
+        for node in kid['graph']['nodes']:
+            if node['id']=='jordan': node.update(node_update)
+        kid['graph']['edges']=[e for e in kid['graph']['edges'] if e['id']!='edge-1']+[edge]
+        cmp['items']=[i for i in cmp['items'] if not (i.get('kind')=='edge' and i.get('base_ref_id')=='edge-1')]
+        link={'shared_evidence_ids':['rec-01'],'remaining_sources':1,'original_sources':2}
+        cmp['items'].append({'kind':'edge','base_ref_id':'edge-1','compared_ref_id':None,
+            'support_status':'unresolved','base_evidence_ids':['rec-01','rec-02'],
+            'compared_evidence_ids':[],'possible_matches':[{'ref_id':'edge-x',**link}]})
+        cmp['items'].append({'kind':'edge','base_ref_id':None,'compared_ref_id':'edge-x',
+            'support_status':'newly_supported','base_evidence_ids':[],
+            'compared_evidence_ids':['rec-01'],'possible_matches':[{'ref_id':'edge-1',**link}]})
+        errors=validate_comparison([base,kid],cmp)
+        self.assertTrue(any('edge endpoints must match' in e for e in errors))
+
+    def test_edge_link_rejects_relabelled_endpoint(self):
+        self._reject_edge_after_endpoint_change(label='Morgan')
+
+    def test_edge_link_rejects_endpoint_type_change(self):
+        self._reject_edge_after_endpoint_change(type='organization')
+
+    def test_edge_link_allows_normalised_label_differences(self):
+        # Case/spacing-only label differences still match (_wording); without normalisation
+        # this hand-written link would fail the endpoint check.
+        base=deepcopy(revision); kid=deepcopy(child); cmp=deepcopy(comparison)
+        base['graph']['edges'][0]['evidence_ids']=['rec-01','rec-02']
+        edge=deepcopy(base['graph']['edges'][0]); edge['id']='edge-x'; edge['type']='emailed'
+        edge['evidence_ids']=['rec-01']
+        for node in kid['graph']['nodes']:
+            if node['id']=='jordan': node['label']='  jordan. '
+        kid['graph']['edges']=[e for e in kid['graph']['edges'] if e['id']!='edge-1']+[edge]
+        cmp['items']=[i for i in cmp['items'] if not (i.get('kind')=='edge' and i.get('base_ref_id')=='edge-1')]
+        link={'shared_evidence_ids':['rec-01'],'remaining_sources':1,'original_sources':2}
+        cmp['items'].append({'kind':'edge','base_ref_id':'edge-1','compared_ref_id':None,
+            'support_status':'unresolved','base_evidence_ids':['rec-01','rec-02'],
+            'compared_evidence_ids':[],'possible_matches':[{'ref_id':'edge-x',**link}]})
+        cmp['items'].append({'kind':'edge','base_ref_id':None,'compared_ref_id':'edge-x',
+            'support_status':'newly_supported','base_evidence_ids':[],
+            'compared_evidence_ids':['rec-01'],'possible_matches':[{'ref_id':'edge-1',**link}]})
+        self.assertEqual(validate_comparison([base,kid],cmp),[])
+
+    def test_counts_must_match(self):
+        revs,cmp=linked_case()
+        for item in (cmp['items'][1],cmp['items'][-1]):
+            item['possible_matches'][0]['remaining_sources']=2
+        self.assertTrue(validate_comparison(revs,cmp))
+
+    def test_base_item_must_have_lost_a_source(self):
+        revs,cmp=linked_case()
+        revs[0]['claims'][1]['evidence_ids']=['rec-01']
+        cmp['items'][1]['base_evidence_ids']=['rec-01']
+        for item in (cmp['items'][1],cmp['items'][-1]):
+            item['possible_matches'][0].update(remaining_sources=1,original_sources=1)
+        errors=validate_comparison(revs,cmp)
+        self.assertTrue(any('lost no cited source' in e for e in errors))
+        self.assertTrue(any('fewer remaining than original' in e for e in errors))
+
+    def test_link_only_on_unmatched_items(self):
+        revs,cmp=linked_case()
+        cmp['items'][0]['possible_matches']=cmp['items'][1]['possible_matches']
+        self.assertTrue(list(comparison_schema.iter_errors(cmp)))
+        revs,cmp=linked_case()
+        cmp['items'][-1]['support_status']='unresolved'
+        self.assertTrue(validate_comparison(revs,cmp))
+
+    def test_link_schema_shape(self):
+        revs,cmp=linked_case()
+        cmp['items'][1]['possible_matches']=[]
+        self.assertTrue(list(comparison_schema.iter_errors(cmp)))
+        revs,cmp=linked_case()
+        cmp['items'][1]['possible_matches'][0]['shared_evidence_ids']=[]
+        self.assertTrue(list(comparison_schema.iter_errors(cmp)))
+
     def test_must_be_parent_child(self):
         broken=deepcopy(comparison)
         broken['base_analysis_id'],broken['compared_analysis_id']=broken['compared_analysis_id'],broken['base_analysis_id']

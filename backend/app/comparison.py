@@ -35,6 +35,21 @@ conclusion being shown as surviving.
 
 Support is counted in unique record IDs, so a record cited twice counts once.
 
+Possibly the same finding (BLA-63). Strict identity means a finding the rerun merely
+rewords shows up twice: the base one `unresolved`, the child one `newly_supported`. To
+help the investigator see that, an advisory link is added in `possible_matches`, on both
+items. A base finding with no identity match that lost at least one cited record to this
+exclusion is linked to a `newly_supported` child finding of the same kind when the child
+cites at least one record and every record it cites was cited by the base finding and is
+still permitted (an edge must also join the same two entities, of any type). So a link
+always has fewer remaining than original sources, and a rewording on records the
+exclusion did not touch is never linked. The link never changes `support_status` and only appends
+cautious wording to the explanation: "Possibly the same finding as claim-a in the active
+analysis: 2 of 3 cited sources remain; please confirm." Model-reused IDs are still not
+used, for the reason above: an ID shared by two different findings would make a changed
+conclusion look like the same one with less support. Confirming a link is the
+investigator's call (the UI is BLA-36).
+
 Wording rule (contracts/README.md): an exclusion changes what the active analysis
 can conclude, not what happened. Explanations say "no longer supported by the
 remaining evidence", never "did not happen" or "disproved".
@@ -49,6 +64,7 @@ from app.contracts import (
     AnalysisRevision,
     ComparisonItem,
     ComparisonItemKind,
+    PossibleMatch,
     RevisionComparison,
     SupportStatus,
 )
@@ -83,19 +99,31 @@ def compare_revisions(
     excluded_before = set(base.excluded_record_ids)
     newly_excluded = [rid for rid in compared.excluded_record_ids if rid not in excluded_before]
     excluded_now = set(compared.excluded_record_ids)
+    base_entities, compared_entities = _entities(base), _entities(compared)
 
     items: list[ComparisonItem] = []
     for kind in _KINDS:
         base_items = _items(base, kind)
         compared_items = _items(compared, kind)
-        pairs = _match(kind, base_items, compared_items, _entities(base), _entities(compared))
+        pairs = _match(kind, base_items, compared_items, base_entities, compared_entities)
         matched_compared = {id(after) for after in pairs.values()}
+        vanished: list[tuple[Any, ComparisonItem]] = []
+        new: list[tuple[Any, ComparisonItem]] = []
         for before in base_items:
             after = pairs.get(id(before))
-            items.append(_classify(kind, before, after, excluded_now))
+            item = _classify(kind, before, after, excluded_now)
+            items.append(item)
+            if after is None:
+                vanished.append((before, item))
         for after in compared_items:
             if id(after) not in matched_compared:
-                items.append(_new_item(kind, after))
+                item = _new_item(kind, after)
+                items.append(item)
+                new.append((after, item))
+        linked = _possible_matches(
+            kind, vanished, new, set(newly_excluded), base_entities, compared_entities
+        )
+        items = [linked.get(id(item), item) for item in items]
 
     return RevisionComparison(
         schema_version="1.0",
@@ -180,10 +208,102 @@ def _identity(kind: ComparisonItemKind, item: Any) -> tuple[str, str | None]:
 
 def _edge_identity(edge: Any, entities: dict[str, tuple[str, str]]) -> tuple[Any, ...] | None:
     """What must be equal for an edge to be the same finding; None if an endpoint is unknown."""
+    endpoints = _edge_endpoints(edge, entities)
+    return None if endpoints is None else (*endpoints, edge.type)
+
+
+def _edge_endpoints(edge: Any, entities: dict[str, tuple[str, str]]) -> tuple[Any, ...] | None:
+    """The two entities an edge joins, in order (node ID and what it names, for each end);
+    None if an endpoint is unknown."""
     source, target = entities.get(edge.source), entities.get(edge.target)
     if source is None or target is None:
         return None
-    return (edge.source, source, edge.target, target, edge.type)
+    return (edge.source, source, edge.target, target)
+
+
+def _possible_matches(
+    kind: ComparisonItemKind,
+    vanished: Sequence[tuple[Any, ComparisonItem]],
+    new: Sequence[tuple[Any, ComparisonItem]],
+    newly_excluded: set[str],
+    base_entities: dict[str, tuple[str, str]],
+    compared_entities: dict[str, tuple[str, str]],
+) -> dict[int, ComparisonItem]:
+    """Advisory links between unmatched base findings and newly supported child findings.
+
+    A base finding with no identity match (`unresolved` or `not_supported`) that lost at
+    least one cited record to this exclusion is linked to a `newly_supported` child finding
+    of the same kind when the child cites at least one record and every record it cites was
+    cited by the base finding and is still permitted. Edges must also join the same two
+    entities (as in `_edge_identity`, but any type). Nothing else is compared: the link
+    only says "possibly the same finding" and leaves both statuses as they are. The link is
+    listed on both items; each list is ordered by the number of shared records (most
+    first), then ref ID.
+
+    A base finding that lost nothing is never linked: the exclusion cannot explain why it
+    was restated, so a rewording on untouched records (which may as well be a reversal,
+    such as an added "never") is left as `unresolved` plus `newly_supported` alone.
+
+    Returns the linked items, with `possible_matches` set and a cautious sentence appended
+    to their explanation, keyed by `id()` of the item they replace.
+    """
+    base_links: dict[int, list[PossibleMatch]] = {}
+    new_links: dict[int, list[PossibleMatch]] = {}
+    for before, base_item in vanished:
+        cited = base_item.base_evidence_ids
+        remaining = [rid for rid in cited if rid not in newly_excluded]
+        if len(remaining) == len(cited):
+            continue  # lost no source to this exclusion
+        for after, new_item in new:
+            child_cited = set(new_item.compared_evidence_ids)
+            if not child_cited or not child_cited <= set(remaining):
+                continue
+            if kind == "edge":
+                ends = _edge_endpoints(before, base_entities)
+                if ends is None or ends != _edge_endpoints(after, compared_entities):
+                    continue
+            shared = [rid for rid in cited if rid in child_cited]
+            counts = {"remaining_sources": len(remaining), "original_sources": len(cited)}
+            base_links.setdefault(id(base_item), []).append(
+                PossibleMatch(ref_id=after.id, shared_evidence_ids=shared, **counts)
+            )
+            new_links.setdefault(id(new_item), []).append(
+                PossibleMatch(ref_id=before.id, shared_evidence_ids=shared, **counts)
+            )
+
+    linked: dict[int, ComparisonItem] = {}
+    for side, links, items in (
+        ("base", base_links, [item for _, item in vanished]),
+        ("compared", new_links, [item for _, item in new]),
+    ):
+        for item in items:
+            matches = links.get(id(item))
+            if not matches:
+                continue
+            matches.sort(key=lambda m: (-len(m.shared_evidence_ids), m.ref_id))
+            explanation = f"{item.explanation} {_link_sentence(side, matches)}"
+            linked[id(item)] = item.model_copy(
+                update={"possible_matches": matches, "explanation": explanation}
+            )
+    return linked
+
+
+def _link_sentence(side: str, matches: Sequence[PossibleMatch]) -> str:
+    """Cautious wording for a link: possibly the same finding, N of M remain, please confirm."""
+    if side == "base":
+        first = matches[0]
+        refs = " or ".join(m.ref_id for m in matches)
+        return (
+            f"Possibly the same finding as {refs} in the active analysis: "
+            f"{_remain(first)}; please confirm."
+        )
+    refs = " or ".join(f"{m.ref_id} ({_remain(m)})" for m in matches)
+    return f"Possibly the same finding as {refs} in the base revision; please confirm."
+
+
+def _remain(match: PossibleMatch) -> str:
+    n, m = match.remaining_sources, match.original_sources
+    return f"{n} of {m} cited {'source remains' if m == 1 else 'sources remain'}"
 
 
 def _wording(text: str) -> str:

@@ -4,13 +4,17 @@ import copy
 from datetime import UTC, datetime
 
 import pytest
-from _paths import RAW
+from _paths import CONTRACTS_DIR, RAW, load_json
+from jsonschema import Draft202012Validator
 
 from app.comparison import compare_revisions
-from app.contracts import AnalysisRevision, RevisionComparison
+from app.contracts import AnalysisRevision, ComparisonItem, RevisionComparison
 from app.validation import validate_comparison
 
 FORBIDDEN_WORDING = ("disproved", "disproven", "is false", "was false", "never happened")
+COMPARISON_SCHEMA = Draft202012Validator(
+    load_json(CONTRACTS_DIR / "revision_comparison.schema.json")
+)
 
 
 def revision(raw: dict) -> AnalysisRevision:
@@ -394,3 +398,309 @@ def test_created_at_defaults_to_an_offset_aware_time(base_raw, child_raw) -> Non
     first = compare_revisions(revision(base_raw), revision(child_raw), created_at=stamp)
     assert first == compare_revisions(revision(base_raw), revision(child_raw), created_at=stamp)
     assert comparison.to_contract_json()["schema_version"] == "1.0"
+
+
+# --- Possibly the same finding (BLA-63) -----------------------------------------------------
+
+OWNER = "The owner of the phone is Sarah."
+OWNER_REWORDED = "Sarah owns the phone."
+NO_LINK_WORDING = ("weakened", "confirmed", "is the same", "are the same")
+STAMP = datetime(2026, 11, 14, tzinfo=UTC)
+
+
+def claim(claim_id: str, text: str, evidence_ids: list[str]) -> dict:
+    return {"id": claim_id, "text": text, "evidence_ids": evidence_ids, "status": "reported"}
+
+
+def item_for(
+    comparison: RevisionComparison, kind: str, base: str | None, compared: str | None
+) -> ComparisonItem:
+    return next(
+        i
+        for i in comparison.items
+        if (i.kind, i.base_ref_id, i.compared_ref_id) == (kind, base, compared)
+    )
+
+
+def links(item: ComparisonItem) -> list[tuple[str, list[str], int, int]]:
+    return [
+        (m.ref_id, m.shared_evidence_ids, m.remaining_sources, m.original_sources)
+        for m in item.possible_matches or []
+    ]
+
+
+def owl_q2(base_raw: dict, child_raw: dict) -> None:
+    """'Owner is Sarah' cites three records; rec-02 is excluded and the rerun rewords it."""
+    base_raw["claims"] = [claim("claim-owner", OWNER, ["rec-01", "rec-03", "rec-02"])]
+    child_raw["claims"] = [claim("claim-x", OWNER_REWORDED, ["rec-01", "rec-03"])]
+
+
+def test_a_reworded_finding_that_lost_a_source_is_possibly_the_same(base_raw, child_raw) -> None:
+    owl_q2(base_raw, child_raw)
+    comparison = compare(base_raw, child_raw)
+    before = item_for(comparison, "claim", "claim-owner", None)
+    after = item_for(comparison, "claim", None, "claim-x")
+    # The strict statuses are exactly what they were before BLA-63.
+    assert before.support_status == "unresolved"
+    assert after.support_status == "newly_supported"
+    # The link is listed on both items, pointing at the other side's ref ID.
+    assert links(before) == [("claim-x", ["rec-01", "rec-03"], 2, 3)]
+    assert links(after) == [("claim-owner", ["rec-01", "rec-03"], 2, 3)]
+    assert before.explanation == (
+        "rec-01, rec-03 are still permitted, but no finding in the active analysis could be "
+        "identified as this one, so it is not established by the remaining evidence. That "
+        "does not show it did not happen. Possibly the same finding as claim-x in the active "
+        "analysis: 2 of 3 cited sources remain; please confirm."
+    )
+    assert after.explanation == (
+        "Appears only in this revision, supported by rec-01, rec-03. Possibly the same "
+        "finding as claim-owner (2 of 3 cited sources remain) in the base revision; "
+        "please confirm."
+    )
+    for item in (before, after):
+        lowered = item.explanation.lower()
+        assert "possibly" in lowered and "please confirm" in lowered
+        assert not any(word in lowered for word in NO_LINK_WORDING + FORBIDDEN_WORDING)
+
+
+def test_a_child_citing_a_record_the_base_did_not_cite_is_not_linked(
+    base_raw, child_raw
+) -> None:
+    owl_q2(base_raw, child_raw)
+    child_raw["claims"][0]["evidence_ids"] = ["rec-01", "rec-04"]
+    comparison = compare(base_raw, child_raw)
+    assert item_for(comparison, "claim", "claim-owner", None).possible_matches is None
+    assert item_for(comparison, "claim", None, "claim-x").possible_matches is None
+
+
+def test_a_child_citing_the_excluded_record_is_not_linked(base_raw, child_raw) -> None:
+    # Not a valid child (validate_revision rejects citing an excluded record), but the link
+    # must still require every shared record to be permitted.
+    owl_q2(base_raw, child_raw)
+    child_raw["claims"][0]["evidence_ids"] = ["rec-02"]
+    comparison = compare_revisions(revision(base_raw), revision(child_raw), created_at=STAMP)
+    assert all(item.possible_matches is None for item in comparison.items)
+
+
+def test_a_finding_whose_records_were_all_excluded_is_never_linked(base_raw, child_raw) -> None:
+    # Base claim-2 rests on rec-02 alone; the child adds a reworded claim on rec-01.
+    child_raw["claims"].append(claim("claim-x", "Jordan may meet Casey.", ["rec-01"]))
+    comparison = compare(base_raw, child_raw)
+    vanished = item_for(comparison, "claim", "claim-2", None)
+    assert vanished.support_status == "not_supported"
+    assert vanished.possible_matches is None
+
+
+def test_findings_of_different_kinds_are_not_linked(base_raw, child_raw) -> None:
+    base_raw["claims"] = [claim("claim-owner", OWNER, ["rec-01", "rec-02"])]
+    child_raw["claims"] = []
+    # The child's only new finding is an event on rec-01.
+    child_raw["timeline_events"].append(
+        {**child_raw["timeline_events"][0], "id": "event-x", "description": OWNER_REWORDED}
+    )
+    comparison = compare(base_raw, child_raw)
+    assert item_for(comparison, "claim", "claim-owner", None).possible_matches is None
+    assert item_for(comparison, "event", None, "event-x").possible_matches is None
+
+
+def two_source_edge(base_raw: dict, child_raw: dict) -> None:
+    """Base edge-1 (alex -> jordan) cites rec-01 and rec-02; rec-02 is excluded."""
+    base_raw["graph"]["edges"][0]["evidence_ids"] = ["rec-01", "rec-02"]
+    child_raw["graph"]["edges"][0]["id"] = "edge-x"
+
+
+def test_an_edge_between_the_same_entities_with_another_type_is_linked(
+    base_raw, child_raw
+) -> None:
+    two_source_edge(base_raw, child_raw)
+    child_raw["graph"]["edges"][0]["type"] = "emailed"
+    comparison = compare(base_raw, child_raw)
+    before = item_for(comparison, "edge", "edge-1", None)
+    assert before.support_status == "unresolved"
+    assert item_for(comparison, "edge", None, "edge-x").support_status == "newly_supported"
+    assert links(before) == [("edge-x", ["rec-01"], 1, 2)]
+    assert before.explanation.endswith("1 of 2 cited sources remain; please confirm.")
+
+
+def test_an_edge_between_other_entities_is_not_linked(base_raw, child_raw) -> None:
+    two_source_edge(base_raw, child_raw)
+    edge = child_raw["graph"]["edges"][0]
+    edge.update(type="emailed", source="jordan", target="alex")  # reversed
+    comparison = compare(base_raw, child_raw)
+    assert item_for(comparison, "edge", "edge-1", None).possible_matches is None
+
+    # The same node IDs, but one of them now names someone else.
+    edge.update(source="alex", target="jordan")
+    child_raw["graph"]["nodes"][0]["label"] = "Morgan"
+    comparison = compare(base_raw, child_raw)
+    assert item_for(comparison, "edge", "edge-1", None).possible_matches is None
+    assert item_for(comparison, "edge", None, "edge-x").possible_matches is None
+
+
+def test_an_edge_to_an_unknown_node_is_never_linked(base_raw, child_raw) -> None:
+    two_source_edge(base_raw, child_raw)
+    base_raw["graph"]["edges"][0]["source"] = "ghost"
+    child_raw["graph"]["edges"][0]["source"] = "ghost"
+    comparison = compare_revisions(revision(base_raw), revision(child_raw), created_at=STAMP)
+    assert all(item.possible_matches is None for item in comparison.items)
+
+
+def test_a_reworded_event_is_linked_whatever_its_timestamp(base_raw, child_raw) -> None:
+    base_raw["timeline_events"][0]["evidence_ids"] = ["rec-01", "rec-02"]
+    child_raw["timeline_events"][0].update(
+        id="event-x", description="Alex emailed Jordan.", timestamp=None
+    )
+    comparison = compare(base_raw, child_raw)
+    assert links(item_for(comparison, "event", None, "event-x")) == [
+        ("event-1", ["rec-01"], 1, 2)
+    ]
+
+
+def test_a_child_with_no_citations_is_not_linked() -> None:
+    # The contract requires evidence, so the empty citation is set after validation.
+    base = revision(copy.deepcopy(RAW["revision"]))
+    child = revision(copy.deepcopy(RAW["child"]))
+    base.claims[0].evidence_ids = ["rec-01", "rec-02"]
+    child.claims[0].text = "Reworded."
+    child.claims[0].evidence_ids = []
+    comparison = compare_revisions(base, child, created_at=STAMP)
+    assert item_for(comparison, "claim", None, "claim-1").support_status == "newly_supported"
+    assert all(item.possible_matches is None for item in comparison.items)
+
+
+def test_duplicate_citations_are_counted_once(base_raw, child_raw) -> None:
+    owl_q2(base_raw, child_raw)
+    base_raw["claims"][0]["evidence_ids"] = ["rec-01", "rec-03", "rec-01", "rec-02", "rec-03"]
+    child_raw["claims"][0]["evidence_ids"] = ["rec-03", "rec-01", "rec-03"]
+    comparison = compare(base_raw, child_raw)
+    assert links(item_for(comparison, "claim", "claim-owner", None)) == [
+        ("claim-x", ["rec-01", "rec-03"], 2, 3)
+    ]
+
+
+def test_one_base_finding_can_be_linked_to_two_child_findings(base_raw, child_raw) -> None:
+    owl_q2(base_raw, child_raw)
+    child_raw["claims"] = [
+        claim("claim-y", "Sarah has the phone.", ["rec-03"]),
+        claim("claim-x", OWNER_REWORDED, ["rec-01", "rec-03"]),
+        claim("claim-w", "Sarah is the phone's owner.", ["rec-01"]),
+    ]
+    comparison = compare(base_raw, child_raw)
+    before = item_for(comparison, "claim", "claim-owner", None)
+    # Most shared records first, then ref ID.
+    assert links(before) == [
+        ("claim-x", ["rec-01", "rec-03"], 2, 3),
+        ("claim-w", ["rec-01"], 2, 3),
+        ("claim-y", ["rec-03"], 2, 3),
+    ]
+    assert before.explanation.endswith(
+        "Possibly the same finding as claim-x or claim-w or claim-y in the active analysis: "
+        "2 of 3 cited sources remain; please confirm."
+    )
+    for ref in ("claim-x", "claim-w", "claim-y"):
+        assert [m.ref_id for m in item_for(comparison, "claim", None, ref).possible_matches] == [
+            "claim-owner"
+        ]
+
+
+def test_two_base_findings_can_be_linked_to_one_child_finding(base_raw, child_raw) -> None:
+    base_raw["claims"] = [
+        claim("claim-b", "Sarah has a phone.", ["rec-01", "rec-02"]),
+        claim("claim-a", OWNER, ["rec-01", "rec-03", "rec-02"]),
+    ]
+    child_raw["claims"] = [claim("claim-x", OWNER_REWORDED, ["rec-01"])]
+    comparison = compare(base_raw, child_raw)
+    after = item_for(comparison, "claim", None, "claim-x")
+    # Equal shared records, so ordered by ref ID; each link keeps its own counts.
+    assert links(after) == [("claim-a", ["rec-01"], 2, 3), ("claim-b", ["rec-01"], 1, 2)]
+    assert after.explanation.endswith(
+        "Possibly the same finding as claim-a (2 of 3 cited sources remain) or claim-b "
+        "(1 of 2 cited sources remain) in the base revision; please confirm."
+    )
+
+
+def test_links_do_not_depend_on_input_order(base_raw, child_raw) -> None:
+    owl_q2(base_raw, child_raw)
+    base_raw["claims"].append(claim("claim-b", "Sarah has a phone.", ["rec-01", "rec-02"]))
+    child_raw["claims"].append(claim("claim-w", "Sarah is the owner.", ["rec-01"]))
+    first = compare(base_raw, child_raw)
+    assert first == compare(base_raw, child_raw)
+    base_raw["claims"].reverse()
+    child_raw["claims"].reverse()
+    reordered = compare(base_raw, child_raw)
+
+    def by_ref(comparison: RevisionComparison) -> dict:
+        return {(i.kind, i.base_ref_id, i.compared_ref_id): i for i in comparison.items}
+
+    assert by_ref(first) == by_ref(reordered)
+    assert links(item_for(first, "claim", "claim-owner", None)) == [
+        ("claim-x", ["rec-01", "rec-03"], 2, 3),
+        ("claim-w", ["rec-01"], 2, 3),
+    ]
+
+
+def test_a_negation_on_records_the_exclusion_did_not_touch_is_not_linked(
+    base_raw, child_raw
+) -> None:
+    # claim-1 cites rec-01 only and rec-02 is excluded: the exclusion cannot explain the
+    # change, and citations cannot tell a negation from a rewording.
+    base_raw["claims"][0]["text"] = TRANSFER
+    negated = TRANSFER.replace("transferred", "never transferred")
+    child_raw["claims"][0].update(id="claim-a", text=negated)
+    comparison = compare(base_raw, child_raw)
+    before = item_for(comparison, "claim", "claim-1", None)
+    after = item_for(comparison, "claim", None, "claim-a")
+    assert (before.support_status, after.support_status) == ("unresolved", "newly_supported")
+    assert before.possible_matches is None and after.possible_matches is None
+    assert "possibly" not in before.explanation.lower()
+
+
+def test_a_base_finding_that_lost_no_source_is_never_linked(base_raw, child_raw) -> None:
+    # Base cites rec-01 and rec-03, neither excluded; the reworded child cites a subset.
+    base_raw["claims"] = [claim("claim-owner", OWNER, ["rec-01", "rec-03"])]
+    child_raw["claims"] = [claim("claim-x", OWNER_REWORDED, ["rec-01"])]
+    comparison = compare(base_raw, child_raw)
+    assert item_for(comparison, "claim", "claim-owner", None).possible_matches is None
+    assert item_for(comparison, "claim", None, "claim-x").possible_matches is None
+
+    # Once the base finding also cited the excluded rec-02, the same child links.
+    base_raw["claims"][0]["evidence_ids"].append("rec-02")
+    comparison = compare(base_raw, child_raw)
+    assert links(item_for(comparison, "claim", None, "claim-x")) == [
+        ("claim-owner", ["rec-01"], 2, 3)
+    ]
+
+
+def test_every_link_has_fewer_remaining_than_original_sources(base_raw, child_raw) -> None:
+    owl_q2(base_raw, child_raw)
+    base_raw["claims"].append(claim("claim-b", "Sarah has a phone.", ["rec-01"]))
+    child_raw["claims"].append(claim("claim-w", "Sarah is the owner.", ["rec-01"]))
+    comparison = compare(base_raw, child_raw)
+    matches = [m for i in comparison.items for m in i.possible_matches or []]
+    assert matches and all(m.remaining_sources < m.original_sources for m in matches)
+    assert item_for(comparison, "claim", "claim-b", None).possible_matches is None
+
+
+def test_items_without_links_omit_the_field_and_validate(base_raw, child_raw) -> None:
+    owl_q2(base_raw, child_raw)
+    data = compare(base_raw, child_raw).to_contract_json()
+    assert list(COMPARISON_SCHEMA.iter_errors(data)) == []
+    linked = [i for i in data["items"] if "possible_matches" in i]
+    assert [(i["base_ref_id"], i["compared_ref_id"]) for i in linked] == [
+        ("claim-owner", None),
+        (None, "claim-x"),
+    ]
+    assert linked[0]["possible_matches"] == [
+        {
+            "ref_id": "claim-x",
+            "shared_evidence_ids": ["rec-01", "rec-03"],
+            "remaining_sources": 2,
+            "original_sources": 3,
+        }
+    ]
+    assert len(data["items"]) > len(linked)
+    # The fixture comparison has no links, so no item carries the field.
+    plain = compare(copy.deepcopy(RAW["revision"]), copy.deepcopy(RAW["child"]))
+    plain_data = plain.to_contract_json()
+    assert all("possible_matches" not in i for i in plain_data["items"])
+    assert list(COMPARISON_SCHEMA.iter_errors(plain_data)) == []

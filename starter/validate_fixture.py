@@ -5,6 +5,7 @@ must be enforced server-side in the actual application.
 """
 from __future__ import annotations
 import json
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 
@@ -244,6 +245,94 @@ def validate_comparison(revisions: list[dict], comparison: dict) -> list[str]:
             errors.append(f"{label} newly_supported needs only compared_ref_id")
         if status == 'not_supported' and (b is None or item['compared_evidence_ids']):
             errors.append(f"{label} not_supported needs base_ref_id and no compared evidence")
+    errors += _possible_match_errors(comparison, base, compared)
+    return errors
+
+
+def _wording(text: str) -> str:
+    return ' '.join(unicodedata.normalize('NFKC', text).casefold().split()).rstrip(' .')
+
+
+def _edge_ends(revision: dict, edge_id: str) -> tuple | None:
+    """Same shape as compare_revisions._edge_endpoints: ID + normalised label + type per end."""
+    edge = next((e for e in revision['graph']['edges'] if e['id'] == edge_id), None)
+    if edge is None:
+        return None
+    entities = {n['id']: (_wording(n['label']), n['type']) for n in revision['graph']['nodes']}
+    source, target = entities.get(edge['source']), entities.get(edge['target'])
+    if source is None or target is None:
+        return None
+    return (edge['source'], source, edge['target'], target)
+
+
+def _possible_match_errors(comparison: dict, base: dict, compared: dict) -> list[str]:
+    """Optional possible_matches (BLA-63): an advisory link, listed on both items, between an
+    unmatched unresolved/not_supported base item that lost at least one cited source to this
+    exclusion and a newly_supported item of the same kind (so remaining < original).
+
+    Every record the new item cites must be among the base item's still-permitted citations,
+    shared_evidence_ids must equal that cited set, and edge links must keep the same
+    endpoints in the same direction (node ID + normalised label + type at each end).
+    """
+    errors: list[str] = []
+    excluded = set(comparison['excluded_record_ids'])
+    items = comparison['items']
+    vanished = {(i['kind'], i['base_ref_id']): i for i in items
+                if i['compared_ref_id'] is None and i['support_status'] in ('unresolved', 'not_supported')}
+    new = {(i['kind'], i['compared_ref_id']): i for i in items
+           if i['base_ref_id'] is None and i['support_status'] == 'newly_supported'}
+    for n, item in enumerate(items):
+        if 'possible_matches' not in item:
+            continue
+        label = f"comparison item {n}"
+        on_base = item['compared_ref_id'] is None
+        own = (item['kind'], item['base_ref_id'] if on_base else item['compared_ref_id'])
+        if own not in (vanished if on_base else new):
+            errors.append(f"{label} possible_matches is only for an unmatched base item or a newly_supported item")
+            continue
+        others = new if on_base else vanished
+        refs = [m['ref_id'] for m in item['possible_matches']]
+        if len(refs) != len(set(refs)):
+            errors.append(f"{label} possible_matches repeats a ref_id")
+        for match in item['possible_matches']:
+            other = others.get((item['kind'], match['ref_id']))
+            if other is None:
+                errors.append(f"{label} possible match {match['ref_id']} is not on the other side")
+                continue
+            base_item, new_item = (item, other) if on_base else (other, item)
+            shared = set(match['shared_evidence_ids'])
+            child_cited = set(new_item['compared_evidence_ids'])
+            remaining = set(base_item['base_evidence_ids']) - excluded
+            if not child_cited or not child_cited <= remaining:
+                errors.append(
+                    f"{label} possible match {match['ref_id']} cites records that are not among "
+                    "the base item's still-permitted citations"
+                )
+            if shared != child_cited:
+                errors.append(
+                    f"{label} possible match {match['ref_id']} shared_evidence_ids must equal "
+                    "the new item's unique cited records"
+                )
+            if shared & excluded:
+                errors.append(f"{label} possible match {match['ref_id']} shares excluded records")
+            cited = set(base_item['base_evidence_ids'])
+            if not cited & excluded:
+                errors.append(f"{label} possible match {match['ref_id']} links a base item that lost no cited source to this exclusion")
+            if match['remaining_sources'] >= match['original_sources']:
+                errors.append(f"{label} possible match {match['ref_id']} must have fewer remaining than original sources")
+            if match['original_sources'] != len(cited) or match['remaining_sources'] != len(cited - excluded):
+                errors.append(f"{label} possible match {match['ref_id']} source counts do not match the base item")
+            if item['kind'] == 'edge':
+                base_ends = _edge_ends(base, base_item['base_ref_id'] or '')
+                new_ends = _edge_ends(compared, new_item['compared_ref_id'] or '')
+                if base_ends is None or new_ends is None or base_ends != new_ends:
+                    errors.append(
+                        f"{label} possible match {match['ref_id']} edge endpoints must match "
+                        "in the same direction"
+                    )
+            back = [dict(m, ref_id=match['ref_id']) for m in other.get('possible_matches', []) if m['ref_id'] == own[1]]
+            if back != [match]:
+                errors.append(f"{label} possible match {match['ref_id']} is not listed the same way on the other item")
     return errors
 
 
