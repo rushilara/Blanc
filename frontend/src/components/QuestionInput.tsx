@@ -10,8 +10,7 @@ export function QuestionInput({ question, onAsk }: {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function ask() {
     if (!onAsk || pending || !draft.trim()) return;
     setPending(true);
     setError("");
@@ -22,6 +21,11 @@ export function QuestionInput({ question, onAsk }: {
     } finally {
       setPending(false);
     }
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await ask();
   }
 
   return (
@@ -39,7 +43,12 @@ export function QuestionInput({ question, onAsk }: {
       <p id="question-help" className="text-xs text-zinc-500">
         {onAsk ? "Results below show the saved analysis until a new answer is returned." : "Preview mode: the saved analysis is shown below. New questions cannot be submitted yet."}
       </p>
-      {error && <p role="alert" className="text-sm text-red-700 dark:text-red-300">{error}</p>}
+      {error && (
+        <p role="alert" className="text-sm text-red-700 [overflow-wrap:anywhere] dark:text-red-300">
+          {error}{" "}
+          <button type="button" className="underline" onClick={() => void ask()}>Retry</button>
+        </p>
+      )}
     </form>
   );
 }

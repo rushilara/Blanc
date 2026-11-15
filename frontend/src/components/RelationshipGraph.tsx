@@ -1,7 +1,16 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  Component,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
 import type { AnalysisRevision, EvidenceRecord } from "@/lib/analysis";
 import { SourceReferences } from "@/components/SourceReferences";
@@ -16,14 +25,42 @@ import {
   type GraphEdge,
 } from "@/lib/graphElements";
 
-const RelationshipGraphCanvas = dynamic(() => import("./RelationshipGraphCanvas"), {
-  ssr: false,
-  loading: () => (
-    <p role="status" className="p-5 text-sm text-zinc-500">
-      Loading relationship graph…
-    </p>
-  ),
-});
+const RelationshipGraphCanvas = dynamic(
+  () =>
+    import("./RelationshipGraphCanvas").catch(() => ({
+      default: function GraphLoadError(): never {
+        throw new Error("Relationship graph failed to load.");
+      },
+    })),
+  {
+    ssr: false,
+    loading: () => (
+      <p role="status" className="p-5 text-sm text-zinc-500">
+        Loading relationship graph…
+      </p>
+    ),
+  },
+);
+
+class GraphCanvasBoundary extends Component<
+  { children: ReactNode; onError: () => void },
+  { failed: boolean }
+> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidCatch() {
+    this.props.onError();
+  }
+
+  render() {
+    if (this.state.failed) return null;
+    return this.props.children;
+  }
+}
 
 type Graph = AnalysisRevision["graph"];
 
@@ -46,6 +83,8 @@ export function RelationshipGraph({
   const [openToken, setOpenToken] = useState(0);
   const [status, setStatus] = useState<string | null>(null);
   const [pair, setPair] = useState<GraphEdge[] | null>(null);
+  const [canvasKey, setCanvasKey] = useState(0);
+  const [canvasFailed, setCanvasFailed] = useState(false);
   const pairHeading = useRef<HTMLHeadingElement>(null);
   const pairTitleId = useId();
   const { drawable, dangling } = useMemo(() => partitionEdges(graph.nodes, graph.edges), [graph]);
@@ -53,6 +92,7 @@ export function RelationshipGraph({
   const names = new Map(graph.nodes.map((node) => [node.id, node.label]));
   const name = (id: string) => names.get(id) ?? id;
   const sourceProps = { records, caseId, excludedRecordIds, onExclude, onAnnotate };
+  const emptyGraph = graph.nodes.length === 0 && graph.edges.length === 0;
 
   useEffect(() => {
     if (pair) pairHeading.current?.focus();
@@ -104,16 +144,41 @@ export function RelationshipGraph({
           </li>
         ))}
       </ul>
-      <div className="h-[min(28rem,55vh)] min-h-[18rem] overflow-hidden rounded-lg border border-zinc-200 dark:border-zinc-800">
-        <RelationshipGraphCanvas
-          nodes={graph.nodes}
-          edges={drawable}
-          onInspectNode={onInspectNode}
-          onSelectEdge={onSelectEdge}
-        />
-      </div>
+      {emptyGraph ? (
+        <p className="text-sm text-zinc-500">No supported relationships.</p>
+      ) : (
+        <div className="h-[min(28rem,55vh)] min-h-[18rem] overflow-hidden rounded-lg border border-zinc-200 dark:border-zinc-800">
+          {canvasFailed ? (
+            <p role="alert" className="space-y-2 p-5 text-sm text-red-700 [overflow-wrap:anywhere] dark:text-red-300">
+              <span>The relationship graph could not be drawn.</span>{" "}
+              <button
+                type="button"
+                className="underline"
+                onClick={() => {
+                  setCanvasFailed(false);
+                  setCanvasKey((key) => key + 1);
+                }}
+              >
+                Retry
+              </button>
+            </p>
+          ) : (
+            <GraphCanvasBoundary
+              key={canvasKey}
+              onError={() => setCanvasFailed(true)}
+            >
+              <RelationshipGraphCanvas
+                nodes={graph.nodes}
+                edges={drawable}
+                onInspectNode={onInspectNode}
+                onSelectEdge={onSelectEdge}
+              />
+            </GraphCanvasBoundary>
+          )}
+        </div>
+      )}
       {status && (
-        <p role="status" className="text-xs text-amber-800 dark:text-amber-300">
+        <p role="status" className="text-xs text-amber-800 dark:text-amber-300 [overflow-wrap:anywhere]">
           {status}
         </p>
       )}
@@ -145,7 +210,7 @@ export function RelationshipGraph({
           </ul>
         </section>
       )}
-      {graph.edges.length > 0 ? (
+      {!emptyGraph && (graph.edges.length > 0 ? (
         <ul aria-label="Relationships" className="space-y-3">
           {graph.edges.map((edge) => (
             <li key={edge.id} data-edge-id={edge.id} className="space-y-2 rounded-lg bg-zinc-50 p-3 dark:bg-zinc-900">
@@ -166,7 +231,7 @@ export function RelationshipGraph({
         </ul>
       ) : (
         <p className="text-sm text-zinc-500">No supported relationships.</p>
-      )}
+      ))}
       {drawerIds.length > 0 && (
         <SourceReferences
           key={openToken}

@@ -7,6 +7,10 @@ import { SourceReferences } from "./SourceReferences";
 import { analyzeCase, ApiError, getSource, getRevision, listCases, loadRevisionSources, searchCase, type CaseSummary, type SearchResult } from "@/lib/live-api";
 import type { AnalysisRevision, EvidenceRecord } from "@/lib/analysis";
 
+type RetryAction =
+  | { kind: "search" | "analysis" }
+  | { kind: "revision"; analysisId: string };
+
 export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: string }) {
   const [cases, setCases] = useState<CaseSummary[]>([]);
   const [selected, setSelected] = useState("");
@@ -15,6 +19,7 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
   const [question, setQuestion] = useState("");
   const [pending, setPending] = useState<"search" | "analysis" | "revision" | null>(null);
   const [error, setError] = useState("");
+  const [retryAction, setRetryAction] = useState<RetryAction | null>(null);
   const [search, setSearch] = useState<SearchResult | null>(null);
   const [analysis, setAnalysis] = useState<AnalysisRevision | null>(null);
   const [sources, setSources] = useState<EvidenceRecord[]>([]);
@@ -34,17 +39,21 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
   function changeCase(id: string) {
     active.current?.abort();
     active.current = null;
-    setSelected(id); setSearch(null); setAnalysis(null); setSources([]); setError(""); setPending(null);
+    setSelected(id); setSearch(null); setAnalysis(null); setSources([]); setError(""); setRetryAction(null); setPending(null);
   }
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  function cancelRequest() {
+    active.current?.abort();
+    active.current = null;
+    setPending(null);
+    // Keep the question so an interrupted ask can be retried.
+  }
+
+  async function run(mode: "search" | "analysis") {
     if (!selected || !question.trim() || pending) return;
-    const submitter = (event.nativeEvent as SubmitEvent).submitter as HTMLButtonElement | null;
-    const mode = submitter?.value === "analysis" ? "analysis" : "search";
     const controller = new AbortController();
     active.current?.abort(); active.current = controller;
-    setPending(mode); setError(""); setAnalysis(null); setSearch(null); setSources([]);
+    setPending(mode); setError(""); setRetryAction(null); setAnalysis(null); setSearch(null); setSources([]);
     const ask = question.trim();
     try {
       if (mode === "search") {
@@ -59,17 +68,26 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
         }
       }
     } catch (e) {
-      if (!controller.signal.aborted) setError(e instanceof ApiError ? e.message : "Could not reach the backend. Check that it is running, then try again.");
+      if (!controller.signal.aborted) {
+        setError(e instanceof ApiError ? e.message : "Could not reach the backend. Check that it is running, then try again.");
+        setRetryAction({ kind: mode });
+      }
     } finally {
       if (active.current === controller) { setPending(null); active.current = null; }
     }
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const submitter = (event.nativeEvent as SubmitEvent).submitter as HTMLButtonElement | null;
+    await run(submitter?.value === "analysis" ? "analysis" : "search");
   }
 
   async function openRevision(analysisId: string): Promise<boolean> {
     if (!selected || pending) return false;
     const controller = new AbortController();
     active.current?.abort(); active.current = controller;
-    setPending("revision"); setError("");
+    setPending("revision"); setError(""); setRetryAction(null);
     try {
       const revision = await getRevision(selected, analysisId, controller.signal);
       const records = await loadRevisionSources(revision, controller.signal);
@@ -77,7 +95,10 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
       setAnalysis(revision); setSources(records); setSearch(null); setQuestion(revision.question);
       return true;
     } catch (e) {
-      if (!controller.signal.aborted) setError(e instanceof ApiError ? e.message : "Could not open the saved version. Check the backend connection.");
+      if (!controller.signal.aborted) {
+        setError(e instanceof ApiError ? e.message : "Could not open the saved version. Check the backend connection.");
+        setRetryAction({ kind: "revision", analysisId });
+      }
       return false;
     } finally {
       if (active.current === controller) { setPending(null); active.current = null; }
@@ -94,12 +115,18 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
     } catch { return null; }
   }
 
+  function retryFailed() {
+    if (!retryAction || pending) return;
+    if (retryAction.kind === "revision") void openRevision(retryAction.analysisId);
+    else void run(retryAction.kind);
+  }
+
   return (
     <>
       <section aria-label="Live investigation" className="mx-auto w-full max-w-7xl space-y-5 p-4 sm:p-6">
         <div><h1 className="text-2xl font-semibold">Explore case evidence</h1><p className="mt-2 text-sm text-zinc-500">Search the selected case and inspect its original sources. Generated findings require investigator review.</p></div>
         {caseState === "loading" && <p role="status">Loading cases…</p>}
-        {caseState === "error" && <div role="alert">Could not load cases. Check the backend connection. <button className="underline" onClick={() => { setCaseState("loading"); setReload(n => n + 1); }}>Retry</button></div>}
+        {caseState === "error" && <div role="alert">Could not load cases. Check the backend connection. <button type="button" className="underline" onClick={() => { setCaseState("loading"); setReload(n => n + 1); }}>Retry</button></div>}
         {caseState === "ready" && !cases.length && <p role="status">No cases are available. Import evidence into the backend before searching.</p>}
         {selected && <VersionsDrawer key={selected} caseId={selected} caseTitle={cases.find(c => c.case_id === selected)?.title ?? selected}
           activeId={analysis?.analysis_id} busy={!!pending} onSelect={openRevision} />}
@@ -118,10 +145,16 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
             <button type="submit" value="analysis" disabled={!!pending || !question.trim()} className="rounded border border-zinc-400 px-5 py-3 font-semibold disabled:opacity-40">{pending === "analysis" ? "Generating…" : "Generate analysis"}</button>
           </div>
         </form>}
-        {pending && <p role="status">{pending === "search" ? "Retrieving source excerpts…" : pending === "revision" ? "Opening saved version…" : "Waiting for a validated analysis…"}</p>}
-        {error && <p role="alert" className="rounded border border-red-400 p-4 text-sm">{error}</p>}
+        {pending && <p role="status" className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span>{pending === "search" ? "Retrieving source excerpts…" : pending === "revision" ? "Opening saved version…" : "Waiting for a validated analysis…"}</span>
+          <button type="button" className="underline" onClick={cancelRequest}>Cancel</button>
+        </p>}
+        {error && <div role="alert" className="space-y-2 rounded border border-red-400 p-4 text-sm [overflow-wrap:anywhere]">
+          <p>{error}</p>
+          {retryAction && <button type="button" className="underline" onClick={retryFailed}>Retry</button>}
+        </div>}
         {search && <div className="space-y-4" aria-label="Search results">
-          <h2 className="text-lg font-semibold">Evidence for: {search.question}</h2>
+          <h2 className="text-lg font-semibold [overflow-wrap:anywhere]">Evidence for: {search.question}</h2>
           <p className="text-sm text-zinc-500">{search.records.length} retrieved records. These excerpts are evidence, not a generated answer.</p>
           {!search.records.length && <p role="status">No records returned for this question.</p>}
           {(search.dropped_by_limit > 0 || search.dropped_by_budget > 0) && <p className="text-sm">The evidence window omitted {search.dropped_by_limit + search.dropped_by_budget} candidate records. Results do not cover the entire case.</p>}
@@ -149,5 +182,9 @@ function SearchSources({ recordId, caseId, load }: { recordId: string; caseId: s
     if (!mounted.current) return;
     if (source) { setRecord(source); setState("idle"); } else setState("error");
   }}>{state === "loading" ? "Loading original…" : "Inspect original source"}</button>
-    {state === "error" && <p role="alert" className="text-sm">Source unavailable. Try loading it again.</p>}</div>;
+    {state === "error" && <p role="alert" className="text-sm [overflow-wrap:anywhere]">Source unavailable. <button type="button" className="underline" onClick={async () => {
+      setState("loading"); const source = await load(recordId);
+      if (!mounted.current) return;
+      if (source) { setRecord(source); setState("idle"); } else setState("error");
+    }}>Retry</button></p>}</div>;
 }

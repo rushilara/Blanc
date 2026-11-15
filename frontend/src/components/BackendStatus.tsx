@@ -20,6 +20,7 @@ const DOT: Record<Status, string> = {
 
 export function BackendStatus() {
   const [status, setStatus] = useState<Status>("checking");
+  const [reload, setReload] = useState(0);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -29,15 +30,28 @@ export function BackendStatus() {
         if (!controller.signal.aborted) setStatus("unreachable");
       });
     return () => controller.abort();
-  }, []);
+  }, [reload]);
 
   return (
     <span
-      className="flex items-center gap-2 text-sm text-zinc-600 dark:text-zinc-400"
+      role={status === "unreachable" ? "alert" : "status"}
+      className="flex flex-wrap items-center gap-2 text-sm text-zinc-600 dark:text-zinc-400"
       title={API_BASE_URL}
     >
-      <span className={`h-2 w-2 rounded-full ${DOT[status]}`} aria-hidden />
+      <span className={`h-2 w-2 shrink-0 rounded-full ${DOT[status]}`} aria-hidden />
       {LABELS[status]}
+      {status === "unreachable" && (
+        <button
+          type="button"
+          className="underline"
+          onClick={() => {
+            setStatus("checking");
+            setReload((n) => n + 1);
+          }}
+        >
+          Retry
+        </button>
+      )}
     </span>
   );
 }

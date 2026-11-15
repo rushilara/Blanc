@@ -43,6 +43,7 @@ export function SourcePanel({ caseId, recordId, number, total, records, excluded
 }) {
   const preloaded = records.find(item => item.case_id === caseId && item.record_id === recordId);
   const [remote, setRemote] = useState<Remote>({ status: "loading" });
+  const [reload, setReload] = useState(0);
   const heading = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => {
@@ -55,7 +56,7 @@ export function SourcePanel({ caseId, recordId, number, total, records, excluded
         setRemote({ status: "error", message: error instanceof RecordFetchError ? error.message : "Could not load this source record." });
       });
     return () => controller.abort();
-  }, [caseId, recordId, preloaded]);
+  }, [caseId, recordId, preloaded, reload]);
 
   useEffect(() => { heading.current?.focus({ preventScroll: true }); }, [recordId]);
 
@@ -85,7 +86,8 @@ export function SourcePanel({ caseId, recordId, number, total, records, excluded
     </header>
 
     {!record && remote.status === "loading" && <p role="status">Loading the original record…</p>}
-    {!record && remote.status === "error" && <p role="alert">{remote.message} Its content cannot be verified here.</p>}
+    {!record && remote.status === "error" && <p role="alert">{remote.message} Its content cannot be verified here.{" "}
+      <button type="button" className="blanc-retry" onClick={() => { setRemote({ status: "loading" }); setReload(n => n + 1); }}>Retry</button></p>}
 
     {record && <>
       {localImageName(record) && <SourceImage key={record.record_id} caseId={caseId} recordId={record.record_id} name={localImageName(record)!} />}

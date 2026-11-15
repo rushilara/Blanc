@@ -99,6 +99,7 @@ function RecordSection({
 }) {
   const fromProp = resolveFromProp(records, caseId, recordId);
   const hasPropRecord = fromProp != null;
+  const [reload, setReload] = useState(0);
   const [remote, setRemote] = useState<RemoteState | null>(
     hasPropRecord ? null : { status: "loading" },
   );
@@ -128,7 +129,7 @@ function RecordSection({
       });
 
     return () => controller.abort();
-  }, [caseId, recordId, hasPropRecord]);
+  }, [caseId, recordId, hasPropRecord, reload]);
 
   useEffect(() => {
     if (highlighted) sectionRef.current?.scrollIntoView({ block: "nearest" });
@@ -171,8 +172,18 @@ function RecordSection({
       )}
 
       {error && (
-        <p role="alert" className="text-sm text-red-700 dark:text-red-300">
-          {error}
+        <p role="alert" className="text-sm text-red-700 [overflow-wrap:anywhere] dark:text-red-300">
+          {error}{" "}
+          <button
+            type="button"
+            className="underline"
+            onClick={() => {
+              setRemote({ status: "loading" });
+              setReload((n) => n + 1);
+            }}
+          >
+            Retry
+          </button>
         </p>
       )}
 
