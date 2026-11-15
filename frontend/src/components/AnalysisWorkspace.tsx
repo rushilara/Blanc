@@ -30,13 +30,13 @@ function Status({ value }: { value: string }) {
 
 // Fixture loading is outside this component. BLA-42 can pass a validated live
 // response to the same renderer; no case-specific findings belong here.
-export function AnalysisWorkspace({ revision, records = [] }: { revision: AnalysisRevision; records?: EvidenceRecord[] }) {
+export function AnalysisWorkspace({ revision, records = [], showQuestionInput = true }: { revision: AnalysisRevision; records?: EvidenceRecord[]; showQuestionInput?: boolean }) {
   // Do not serialize other cases' excerpts into the client-side source controls.
   const caseRecords = records.filter((record) => record.case_id === revision.case_id);
   const nodes = new Map(revision.graph.nodes.map((node) => [node.id, node.label]));
   return (
     <main className="mx-auto w-full max-w-7xl space-y-6 p-4 sm:p-6">
-      <QuestionInput key={revision.analysis_id} question={revision.question} />
+      {showQuestionInput && <QuestionInput key={revision.analysis_id} question={revision.question} />}
       <div className="space-y-2">
         <p className="text-xs font-medium uppercase tracking-widest text-zinc-500">Saved analysis</p>
         <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">{revision.question}</h1>

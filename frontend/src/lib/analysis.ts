@@ -19,8 +19,12 @@ type Finding<Status extends ClaimStatus = SupportedStatus> = {
   status: Status;
 };
 export type AnalysisRevision = {
+  schema_version: "1.0";
   analysis_id: string;
+  parent_analysis_id?: string | null;
   case_id: string;
+  retrieved_record_ids: string[];
+  created_at: string;
   question: string;
   answer: string;
   claims: (Finding<ClaimStatus> & { text: string })[];

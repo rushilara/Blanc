@@ -1,15 +1,17 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { EvidenceRecord } from "@/lib/analysis";
 
-export function SourceReferences({ ids, caseId, records }: {
+export function SourceReferences({ ids, caseId, records, autoOpen = false }: {
   ids: string[];
   caseId: string;
   records: EvidenceRecord[];
+  autoOpen?: boolean;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(autoOpen ? ids[0] ?? null : null);
+  useEffect(() => { if (autoOpen && !dialog.current?.open) dialog.current?.showModal(); }, [autoOpen]);
   const matches = records.filter((record) => record.case_id === caseId && record.record_id === selected);
   const record = matches.length === 1 ? matches[0] : undefined;
 
