@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blanc · Sign in</title>
+<style>
+:root{color-scheme:light;--paper:#e0d9c8;--ink:#372416;--red:#8c3038}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:system-ui,sans-serif}
+main{min-height:100svh;display:grid;place-items:center;padding:32px 24px}
+section{width:min(100%,320px);display:grid}
+.logo{display:flex;align-items:center;justify-content:center;gap:12px;font:bold 52px/.95 Georgia,serif;letter-spacing:-1.25px;margin:0 auto 28px;width:max-content;justify-self:center}
+.dash{height:7px;width:32px;overflow:hidden}
+.dash svg{display:block;width:32px;height:7px;fill:var(--ink)}
+.reverse{position:relative;background:var(--ink);color:var(--paper);padding:6px 11px 10px 8px;animation:tighten .75s 2.12s ease-in-out both}
+form{
+  animation:reveal .65s 3.97s ease-out both;
+  border-bottom:1px solid #a99e89;
+  padding:24px 0 6px;
+}
+h1{font:normal 36px/1.1 Georgia,serif;margin:0 0 24px;letter-spacing:-.7px}
+.field{display:block;border-bottom:1px solid #a99e89;margin-bottom:17px}
+.field:focus-within{border-color:var(--ink)}
+.field span{display:block;font-size:12px;font-weight:600;color:#584f45}
+input{display:block;width:100%;min-height:39px;border:0;background:transparent;padding:5px 0;color:inherit;font:17px Georgia,serif}
+.field input:focus-visible{outline:none}
+button{
+  display:flex;align-items:center;justify-content:space-between;
+  width:100%;min-height:47px;border:0;background:transparent;
+  color:var(--red);font:600 16px Georgia,serif;text-align:left;
+  padding:0;cursor:pointer;
+}
+button:hover{text-decoration:underline;text-underline-offset:4px}
+button span{font:20px system-ui,sans-serif}
+:focus-visible{outline:2px solid var(--red);outline-offset:3px}
+#status{font-size:13px;line-height:1.5}
+#status:empty{display:none}
+.logo{translate:0 var(--opening-offset, 0px)}
+@keyframes lift{from{translate:0 var(--opening-offset, 0px)}to{translate:0 -6px}}
+.suffix{display:flex;align-items:center;gap:12px;mask-image:linear-gradient(to right,#000 42%,transparent 58%);mask-size:240% 100%;mask-repeat:no-repeat;animation:sweep 1.05s .42s ease-in-out both}
+@keyframes recenter{from{transform:translateX(var(--center-offset, 76px))}to{transform:translateX(0)}}
+.dash{flex:none;animation:close-dash .75s 2.12s ease-in-out both}
+.logo,.suffix{animation-name:recenter,close-gap,lift;animation-duration:1.05s,.75s,.65s;animation-delay:.42s,2.12s,3.22s;animation-timing-function:ease-in-out;animation-fill-mode:both}
+.suffix{animation-name:sweep,close-gap,unmask;animation-duration:1.05s,.75s,0s;animation-delay:.42s,2.12s,1.48s}
+@keyframes close-dash{from{width:32px;opacity:1}to{width:0;opacity:0}}
+@keyframes close-gap{from{gap:12px}to{gap:0}}
+@keyframes sweep{from{mask-position:100% 0;opacity:0}to{mask-position:0 0;opacity:1}}
+@keyframes unmask{to{mask-image:none}}
+@keyframes reveal{from{visibility:hidden;opacity:0}to{visibility:visible;opacity:1}}
+.initial{padding:6px 0 10px 11px;position:relative;z-index:1;animation:reverse-ink .75s 2.12s ease-in-out both}
+.reverse::before{content:"";position:absolute;top:0;bottom:0;right:100%;width:0;background:var(--ink);animation:engulf .75s 2.12s ease-in-out both}
+@keyframes tighten{from{padding-left:8px;margin-left:0}to{padding-left:0;margin-left:0}}
+@keyframes engulf{from{width:0}to{width:var(--initial-width, 32px)}}
+@keyframes reverse-ink{0%,40%{color:var(--ink)}to{color:var(--paper)}}
+@media(prefers-reduced-motion:reduce){.logo,.suffix,.dash,.initial,.reverse::before,.reverse,form{animation:none}.reverse{padding-left:0;margin-left:0}.reverse::before{width:var(--initial-width, 32px)}.initial{color:var(--paper)}.logo,.suffix{gap:0}.dash{display:none}.suffix{mask:none}.logo{translate:none}}
+
+.logo{--logo-height:76px}
+.initial,.reverse{height:var(--logo-height);display:flex;align-items:center}
+.initial{padding:0 0 0 11px}
+.reverse{padding:0 11px 0 8px}
+.initial svg,.reverse svg{display:block;height:58px;width:auto;flex:none;fill:currentColor}
+.reverse svg{overflow:clip;overflow-clip-margin:4px}
+.merged-ink{animation:reveal .18s 2.87s both}
+@media(prefers-reduced-motion:reduce){.merged-ink{animation:none}}
+</style>
+<main>
+<section aria-labelledby="heading">
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <filter id="ink-alpha" color-interpolation-filters="sRGB">
+      <feColorMatrix values="0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  -.2126 -.7152 -.0722 0 1"/>
+      <feComponentTransfer><feFuncA type="linear" slope="2.2" intercept="-.57"/></feComponentTransfer>
+    </filter>
+    <mask id="painted-ink" maskUnits="userSpaceOnUse" x="0" y="0" width="1774" height="887" style="mask-type:alpha">
+      <image href="Blanc-Painted.png" width="1774" height="887" filter="url(#ink-alpha)"/>
+    </mask>
+  </defs>
+</svg>
+<div class="logo" role="img" aria-label="Blanc.">
+  <span class="initial"><svg viewBox="248 214 332 474" aria-hidden="true"><path d="M248 214H500V330H580V502C580 549 553 599 512 629L500 666H248Z" mask="url(#painted-ink)"/><path class="merged-ink" d="M500 214H580V330H500ZM580 502V666H500L512 629C553 599 580 549 580 502Z" mask="url(#painted-ink)"/></svg></span>
+  <span class="dash" aria-hidden="true"><svg viewBox="0 0 32 7">
+    <path d="M2.1 1.7C8.8 1.4 16.7 1.1 23.6 1.4c2.5.1 4.9-.3 6.8.2 1.7.4 1.5 2.9-.1 3.4-3.4.8-7.7.3-11.4.5-5.6.1-11.3.7-16.9.3C.1 5.6.2 2.2 2.1 1.7Z"/>
+  </svg></span><span class="suffix"><span class="reverse"><svg viewBox="580 214 1060 474" aria-hidden="true">
+    <path d="M580 214H1640V688H580V600H605V375H580Z" mask="url(#painted-ink)"/>
+    <rect class="merged-ink" x="580" y="375" width="25" height="225" mask="url(#painted-ink)"/>
+    <g>
+      <path d="M1553 640C1554 629 1563 623 1574 624C1584 622 1593 629 1594 639C1597 647 1593 654 1588 659C1583 664 1588 669 1589 675C1590 680 1586 684 1581 684C1575 684 1571 680 1573 675C1575 670 1574 666 1570 663C1559 662 1551 653 1553 640Z"/>
+      <path d="M1597 661C1602 660 1603 664 1601 667C1598 669 1594 665 1597 661Z" opacity=".58"/>
+    </g>
+  </svg></span></span>
+</div>
+<form id="signin" action="/workspace">
+<h1 id="heading">Sign in</h1>
+<label class="field" for="username"><span>Username</span>
+<input id="username" type="text" autocomplete="username" required></label>
+<label class="field" for="password"><span>Password</span>
+<input id="password" type="password" autocomplete="off" required></label>
+<button type="submit">Sign in <span aria-hidden="true">→</span></button>
+<p id="status" role="status"></p>
+</form>
+</section>
+</main>
+<script>
+const logo = document.querySelector('.logo');
+const initial = logo.firstElementChild;
+const form = document.querySelector('#signin');
+logo.style.setProperty('--opening-offset', `${(form.offsetHeight + 28) / 2}px`);
+logo.style.setProperty('--initial-width', `${initial.getBoundingClientRect().width}px`);
+const offset = (logo.offsetWidth - initial.offsetWidth - 11) / 2;
+logo.style.setProperty('--center-offset', `${offset}px`);
+
+</script>
+</html>
