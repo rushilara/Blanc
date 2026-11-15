@@ -8,6 +8,8 @@ import { SourceReferences } from "@/components/SourceReferences";
 import { Status } from "@/components/StatusBadge";
 import { TimelineView } from "@/components/TimelineView";
 
+export type PinPersistence = "local" | "board";
+
 function Pane({ id, title, count, children }: {
   id: string; title: string; count: number; children: ReactNode;
 }) {
@@ -26,6 +28,10 @@ type AnalysisWorkspaceProps = {
   revision: AnalysisRevision;
   records?: EvidenceRecord[];
   showQuestionInput?: boolean;
+  /** Board-backed or parent-controlled pinned graph entity IDs. */
+  pinnedEntityIds?: string[];
+  onPinnedEntityIdsChange?: (ids: string[]) => void | Promise<void>;
+  pinPersistence?: PinPersistence;
   onExclude?: (recordId: string) => void;
   onAnnotate?: (recordId: string) => void;
 };
@@ -36,6 +42,9 @@ export function AnalysisWorkspace({
   revision,
   records = [],
   showQuestionInput = true,
+  pinnedEntityIds,
+  onPinnedEntityIdsChange,
+  pinPersistence = "local",
   onExclude,
   onAnnotate,
 }: AnalysisWorkspaceProps) {
@@ -91,6 +100,9 @@ export function AnalysisWorkspace({
           <RelationshipGraph
             key={`${revision.case_id}:${revision.analysis_id}`}
             graph={revision.graph}
+            pinnedEntityIds={pinnedEntityIds}
+            onPinnedEntityIdsChange={onPinnedEntityIdsChange}
+            pinPersistence={pinPersistence}
             {...sourceProps}
           />
         </Pane>

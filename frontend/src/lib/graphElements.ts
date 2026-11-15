@@ -11,6 +11,7 @@ export type EntityData = {
   label: string;
   entityType: string;
   evidenceIds: string[];
+  pinned?: boolean;
 };
 
 export type RelationData = {
@@ -72,7 +73,8 @@ export function edgeActionLabel(edge: GraphEdge, edges: GraphEdge[], name: (id: 
  * Build read-only React Flow elements: draggable, selectable, never deletable or
  * connectable. Pass only drawable edges (see partitionEdges).
  */
-export function buildElements(nodes: GraphNode[], edges: GraphEdge[]) {
+export function buildElements(nodes: GraphNode[], edges: GraphEdge[], pinnedIds: Iterable<string> = []) {
+  const pinned = new Set(pinnedIds);
   const laidOut = layoutGraph(nodes, edges);
   const byId = new Map(laidOut.map((item) => [item.id, item]));
   const names = new Map(nodes.map((node) => [node.id, node.label]));
@@ -80,6 +82,7 @@ export function buildElements(nodes: GraphNode[], edges: GraphEdge[]) {
   const lanes = assignLanes(edges);
   const flowNodes: Node<EntityData>[] = nodes.map((node) => {
     const spot = byId.get(node.id) ?? { x: 0, y: 0 };
+    const isPinned = pinned.has(node.id);
     return {
       id: node.id,
       type: "entity",
@@ -88,11 +91,12 @@ export function buildElements(nodes: GraphNode[], edges: GraphEdge[]) {
         label: node.label,
         entityType: node.type,
         evidenceIds: uniqueIds(node.evidence_ids),
+        pinned: isPinned,
       },
       draggable: true,
       connectable: false,
       deletable: false,
-      ariaLabel: `${node.label} (${node.type}). Press Enter to open ${sourceCountLabel(node.evidence_ids)}.`,
+      ariaLabel: `${node.label} (${node.type})${isPinned ? ", pinned" : ""}. Press Enter to open ${sourceCountLabel(node.evidence_ids)}.`,
     };
   });
   const flowEdges: Edge<RelationData>[] = edges.map((edge) => ({

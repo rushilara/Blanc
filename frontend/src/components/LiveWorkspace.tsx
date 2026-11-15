@@ -1,9 +1,15 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { AnalysisWorkspace } from "./AnalysisWorkspace";
 import { VersionsDrawer } from "./VersionsDrawer";
 import { SourceReferences } from "./SourceReferences";
+import {
+  ensureCaseBoard,
+  pinnedNodeIds,
+  setNodePin,
+  type InvestigationBoard,
+} from "@/lib/boards-api";
 import { analyzeCase, ApiError, getSource, getRevision, listCases, loadRevisionSources, searchCase, type CaseSummary, type SearchResult } from "@/lib/live-api";
 import type { AnalysisRevision, EvidenceRecord } from "@/lib/analysis";
 
@@ -18,6 +24,8 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
   const [search, setSearch] = useState<SearchResult | null>(null);
   const [analysis, setAnalysis] = useState<AnalysisRevision | null>(null);
   const [sources, setSources] = useState<EvidenceRecord[]>([]);
+  const [board, setBoard] = useState<InvestigationBoard | null>(null);
+  const [pinnedEntityIds, setPinnedEntityIds] = useState<string[]>([]);
   const active = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -34,8 +42,43 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
   function changeCase(id: string) {
     active.current?.abort();
     active.current = null;
-    setSelected(id); setSearch(null); setAnalysis(null); setSources([]); setError(""); setPending(null);
+    setSelected(id); setSearch(null); setAnalysis(null); setSources([]); setBoard(null);
+    setPinnedEntityIds([]); setError(""); setPending(null);
   }
+
+  async function attachBoard(revision: AnalysisRevision, signal?: AbortSignal) {
+    const caseTitle = cases.find((item) => item.case_id === revision.case_id)?.title ?? revision.case_id;
+    const next = await ensureCaseBoard(
+      revision.case_id,
+      `${caseTitle} board`,
+      revision.analysis_id,
+      signal,
+    );
+    if (signal?.aborted) return;
+    setBoard(next);
+    setPinnedEntityIds(pinnedNodeIds(next, revision.analysis_id));
+  }
+
+  const onPinnedEntityIdsChange = useCallback(
+    async (ids: string[]) => {
+      if (!analysis || !board) {
+        setPinnedEntityIds(ids);
+        return;
+      }
+      const current = new Set(pinnedNodeIds(board, analysis.analysis_id));
+      const next = new Set(ids);
+      let latest = board;
+      for (const id of next) {
+        if (!current.has(id)) latest = await setNodePin(analysis.case_id, latest, analysis.analysis_id, id, true);
+      }
+      for (const id of current) {
+        if (!next.has(id)) latest = await setNodePin(analysis.case_id, latest, analysis.analysis_id, id, false);
+      }
+      setBoard(latest);
+      setPinnedEntityIds(pinnedNodeIds(latest, analysis.analysis_id));
+    },
+    [analysis, board],
+  );
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -45,6 +88,7 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
     const controller = new AbortController();
     active.current?.abort(); active.current = controller;
     setPending(mode); setError(""); setAnalysis(null); setSearch(null); setSources([]);
+    setBoard(null); setPinnedEntityIds([]);
     const ask = question.trim();
     try {
       if (mode === "search") {
@@ -56,6 +100,15 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
         if (!controller.signal.aborted) {
           setAnalysis(result);
           setSources(records);
+          try {
+            await attachBoard(result, controller.signal);
+          } catch {
+            if (!controller.signal.aborted) {
+              setBoard(null);
+              setPinnedEntityIds([]);
+              setError("Analysis ready, but pinned entities could not be loaded from the board.");
+            }
+          }
         }
       }
     } catch (e) {
@@ -75,6 +128,15 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
       const records = await loadRevisionSources(revision, controller.signal);
       if (controller.signal.aborted) return false;
       setAnalysis(revision); setSources(records); setSearch(null); setQuestion(revision.question);
+      try {
+        await attachBoard(revision, controller.signal);
+      } catch {
+        if (!controller.signal.aborted) {
+          setBoard(null);
+          setPinnedEntityIds([]);
+          setError("Version opened, but pinned entities could not be loaded from the board.");
+        }
+      }
       return true;
     } catch (e) {
       if (!controller.signal.aborted) setError(e instanceof ApiError ? e.message : "Could not open the saved version. Check the backend connection.");
@@ -133,7 +195,16 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
           </article>)}
         </div>}
       </section>
-      {analysis && <AnalysisWorkspace revision={analysis} records={sources} showQuestionInput={false} />}
+      {analysis && (
+        <AnalysisWorkspace
+          revision={analysis}
+          records={sources}
+          showQuestionInput={false}
+          pinnedEntityIds={pinnedEntityIds}
+          onPinnedEntityIdsChange={onPinnedEntityIdsChange}
+          pinPersistence="board"
+        />
+      )}
     </>
   );
 }
