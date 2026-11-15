@@ -228,3 +228,54 @@ def test_the_synthetic_revision_fixture_normalizes_cleanly() -> None:
         "2026-04-10T10:30:00Z",
     ]
     assert timeline.undated == []
+
+
+def test_a_written_offset_fixes_the_instant_over_a_bracketed_zone() -> None:
+    # RFC 9557: the offset fixes the instant; the bracketed name is extra information.
+    time = normalize_timestamp("2026-04-10T09:15:00+05:00 [Asia/Tokyo]")
+    assert time.display == "2026-04-10T04:15:00Z"
+    assert time.timezone_known is True
+    # With only the name, the name decides.
+    assert normalize_timestamp("2026-04-10T09:15:00 [Asia/Tokyo]").display == (
+        "2026-04-10T00:15:00Z"
+    )
+
+
+@pytest.mark.parametrize("offset", ["+14:30", "-14:01", "+15", "+1500"])
+def test_offsets_beyond_fourteen_hours_are_not_trusted(offset: str) -> None:
+    time = normalize_timestamp(f"2026-04-10T09:15:00{offset}")
+    assert time.timezone_known is False
+    assert time.display == "2026-04-10T09:15:00"
+    # The real extremes are accepted.
+    assert normalize_timestamp("2026-04-10T23:15:00+14:00").display == "2026-04-10T09:15:00Z"
+    assert normalize_timestamp("2026-04-09T21:15:00-12:00").display == "2026-04-10T09:15:00Z"
+
+
+def test_an_invalid_offset_falls_back_to_a_known_zone_name() -> None:
+    time = normalize_timestamp("2026-04-10T09:15:00+15:00 [Asia/Tokyo]")
+    assert time.display == "2026-04-10T00:15:00Z"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "2026-03-08 02:30 America/New_York",  # skipped: clocks go from 02:00 to 03:00
+        "2026-11-01 01:30 America/New_York",  # repeated: 01:00-02:00 happens twice
+    ],
+)
+def test_a_daylight_saving_gap_or_overlap_keeps_only_the_day(raw: str) -> None:
+    time = normalize_timestamp(raw)
+    assert time.precision == "day"
+    assert time.display == raw[:10]
+    assert time.timezone_known is True
+    # An hour either side is unambiguous.
+    assert normalize_timestamp(raw.replace(raw[11:16], "04:30")).precision == "exact"
+
+
+def test_a_number_that_reads_as_a_compact_date_is_not_epoch_seconds() -> None:
+    assert normalize_timestamp("2026041009") is UNDATED  # 2026-04-10, 09h? or 2034?
+    assert normalize_timestamp("2026041009", "exact") is UNDATED
+    # Current epoch seconds do not look like a compact date, so they still parse.
+    assert normalize_timestamp("1775812500").display == "2026-04-10T09:15:00Z"
+    # Not a valid date and hour (month 13), so it is read as epoch seconds.
+    assert normalize_timestamp("2026131009").precision == "exact"

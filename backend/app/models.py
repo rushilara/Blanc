@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (
+    DDL,
     JSON,
     CheckConstraint,
     Enum,
@@ -21,6 +22,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -155,3 +157,35 @@ class EvidenceChunk(Base):
     embedding_model: Mapped[str] = mapped_column(String(200), nullable=False)
     embedding_dim: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, default=utcnow)
+
+
+class BoardSnapshotRow(Base):
+    """One append-only ``InvestigationBoard`` snapshot (BLA-31).
+
+    Every save inserts a new row with ``revision`` one higher; rows are never updated
+    (a trigger rejects any UPDATE). ``snapshot`` holds the contract JSON exactly as
+    returned. The ``(case_id, board_id, revision)`` primary key leads with ``case_id``, so
+    it doubles as the required ``case_id`` index, and a second save racing for the same
+    revision number fails instead of overwriting.
+    """
+
+    __tablename__ = "board_snapshots"
+    __table_args__ = (CheckConstraint("revision >= 1", name="ck_board_snapshots_revision"),)
+
+    case_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("cases.case_id", ondelete="CASCADE"), primary_key=True
+    )
+    board_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, primary_key=True)
+    snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, default=utcnow)
+
+
+event.listen(
+    BoardSnapshotRow.__table__,
+    "after_create",
+    DDL(
+        "CREATE TRIGGER board_snapshots_append_only BEFORE UPDATE ON board_snapshots "
+        "BEGIN SELECT RAISE(ABORT, 'board snapshots are append-only'); END"
+    ).execute_if(dialect="sqlite"),
+)
