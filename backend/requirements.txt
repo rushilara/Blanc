@@ -5,6 +5,8 @@ pydantic==2.14.2
 pydantic-settings==2.16.2
 # LLM provider and embeddings: Google Gemini API
 google-genai==2.34.0
+# Direct import in app/analysis_llm.py (also a google-genai dependency)
+httpx==0.28.1
 # Persistence: SQLAlchemy 2.0 ORM over SQLite
 SQLAlchemy==2.0.55
 # Vector index for chunk embeddings (vec0 virtual table in the same SQLite DB)
