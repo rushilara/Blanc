@@ -30,6 +30,16 @@ python3.12 -m venv .venv
 
 Every DB connection loads the sqlite-vec extension (`app/db.py`). If startup fails with "cannot load SQLite extensions" (or `AttributeError: ... enable_load_extension`), your Python was built without loadable extension support (common with the macOS system Python and some pyenv builds). Use a Python 3.12 from python.org or Homebrew (`brew install python@3.12`), or rebuild with pyenv: `PYTHON_CONFIGURE_OPTS="--enable-loadable-sqlite-extensions" pyenv install 3.12`. Then recreate the venv (`make clean && make backend`, or `make backend PYTHON=/path/to/python3.12`). GitHub's `setup-python` builds (CI) support it.
 
+#### Apple Silicon: "Fatal Python error: Illegal instruction"
+
+On an Apple Silicon Mac, an x86_64 (Intel) Python running under Rosetta, such as some Miniconda installs, can crash outright when loading sqlite-vec with `Fatal Python error: Illegal instruction`. It is a hard crash, so the friendly "cannot load SQLite extensions" error above never prints. Check the Python your venv uses:
+
+```bash
+backend/.venv/bin/python -c "import platform; print(platform.machine())"   # must print arm64
+```
+
+If it prints `x86_64`, install a native arm64 Python 3.12 (the python.org installer, or Homebrew under `/opt/homebrew`: `brew install python@3.12`) and recreate the venv: `make clean && make backend PYTHON=/opt/homebrew/bin/python3.12`. The app also logs a warning at startup (logger `app.db`) when it detects an x86_64 Python on an arm64 Mac, just before the crash would happen. A native Python that lacks `enable_load_extension` does not crash: it shows the error described above.
+
 ## Config
 
 `app/config.py` defines `Settings` (pydantic-settings), loaded from the repo-root `.env`; real environment variables override it. Fields: `GEMINI_API_KEY` (LLM and embeddings), `GEMINI_MODEL`, `EMBEDDING_MODEL` (default `gemini-embedding-001`), `EMBEDDING_DIM` (default 768; the Gemini `output_dimensionality` and the vector index size), `DATABASE_URL`, `CORS_ORIGINS` (comma-separated), and the `RETRIEVAL_*` tuning settings (see "Retrieval" below). Keys are optional, so the app starts without them. Use `get_settings()` to access config.
@@ -67,13 +77,14 @@ The importer (BLA-9) turns files into `EvidenceRecord` objects and calls:
 from app.evidence_store import store_records
 result = store_records(session, case_id, records, embedder)  # embedder: EmbedderDep / make_embedder(settings)
 session.commit()  # store_records flushes; the caller owns the transaction
-# result.inserted, result.unchanged, result.chunks_created, result.rejected: [RejectedRecord(record_id, reason)]
+# result.inserted, result.unchanged, result.chunks_created, result.rejected: [RejectedRecord(record_id, reason)],
+# result.source_changed: [record_id] (a subset of unchanged; see "Re-import" below)
 ```
 
 - **Tables.** `evidence_records`: PK `(case_id, record_id)` (record IDs are only unique within a case), all contract fields, plus `content_hash`. `evidence_chunks`: `chunk_id` (`chk_` ULID), `case_id`, `record_id` (composite FK to the record, `ON DELETE CASCADE`), `chunk_index`, `char_start`/`char_end` (so `record.content[char_start:char_end] == chunk.text`), `text`, `embedding_model`, `embedding_dim`. Both cascade from `cases`.
 - **Indexes.** `evidence_chunk_vectors` (sqlite-vec `vec0`, cosine distance): `chunk_id`, `case_id` as a **partition key**, `record_id` as a metadata column, `embedding float[EMBEDDING_DIM]`. `evidence_chunks_fts` (FTS5): `text` plus `UNINDEXED` `chunk_id`/`case_id`/`record_id`. Virtual tables cannot have FKs, so `evidence_chunks` is the source of truth and an `AFTER DELETE` trigger on it deletes the matching vector and FTS rows: deleting a chunk, record or case never leaves orphans.
 - **Case scoping in search.** `vector_search(session, case_id, vector, k)` puts `case_id = ?` in the KNN query, so the partition key restricts the scan *before* the `k` nearest are picked. `keyword_search(session, case_id, match, k)` filters `case_id = ?` in the same statement as `MATCH`, before `ORDER BY bm25 LIMIT k`. Never query the virtual tables without a `case_id` filter.
-- **Re-import.** Identical records (same SHA-256 of the canonical contract JSON) are a no-op: no new rows, no embedding calls. A stored `record_id` arriving with **different** content is rejected and the stored version kept (records are immutable); so is a record whose `case_id` is not the target case. Other records in the call are still stored. An unknown case raises `CaseNotFoundError`. Records are embedded before anything is written, so an embedding failure writes nothing.
+- **Re-import.** Identical records (same SHA-256 of the canonical contract JSON) are a no-op: no new rows, no embedding calls. A stored `record_id` that differs **only** in `original_sha256` (the hash of the whole source file, so it changes when, say, messages are appended to a chat export) counts as unchanged: the stored version is kept with its old hash, nothing is embedded, and the ID is listed in `result.source_changed` (also counted in `unchanged`) so the importer can tell the user the file changed. A stored `record_id` arriving with any **other** difference is rejected and the stored version kept (records are immutable); the reason names the differing fields, e.g. `(fields: content, timestamp)`; so is a record whose `case_id` is not the target case. Other records in the call are still stored. An unknown case raises `CaseNotFoundError`. Records are embedded before anything is written, so an embedding failure writes nothing.
 - **Chunking.** ~4 characters per token (no tokenizer dependency). Content up to 400 tokens (1600 chars) is one chunk; longer content is split into 1600-char windows overlapping by ~200 chars, with boundaries moved to whitespace. Empty or whitespace-only content is stored with no chunks.
 - **Embeddings.** `GeminiEmbedder` calls `gemini-embedding-001` with `output_dimensionality=EMBEDDING_DIM`, task type `RETRIEVAL_DOCUMENT` for chunks and `RETRIEVAL_QUERY` for queries (`embed_query`, for BLA-13), in batches of 100, with SDK retries on 429/5xx. Each chunk stores the model and dimension. After changing `EMBEDDING_MODEL`, run `reembed_stale_chunks(session, case_id, embedder)` per case. After changing `EMBEDDING_DIM`, the vector table is recreated empty at startup (a warning is logged) and the same call rebuilds it; `store_records` refuses an embedder whose dimension does not match the index.
 
