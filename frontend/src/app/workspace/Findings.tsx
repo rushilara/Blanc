@@ -677,6 +677,7 @@ export function Findings() {
         busy={!!working}
         onExclude={() => void changeEvidence("exclude")}
         onRestore={() => void changeEvidence("restore")}
+        cited={sourceOrder} onOpen={setOpen}
         onClose={() => setOpen(undefined)} onStep={stepSource} />}
     </div> : <main className="blanc-reading blanc-entry">
       <h1 aria-label={greeting || undefined}><TypedGreeting key={greeting} text={greeting} /></h1>
