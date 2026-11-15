@@ -242,3 +242,32 @@ def test_long_context_text_is_clipped() -> None:
     assert _clip("a  b\n c") == "a b c"
     clipped = _clip("x" * (MAX_TEXT_CHARS + 50))
     assert len(clipped) == MAX_TEXT_CHARS and clipped.endswith("…")
+
+
+def test_review_status_and_corrections_never_reach_the_model(app, client) -> None:
+    """BLA-48: investigator judgement stays on the board, like notes."""
+    case_id = seed(client)
+    base = base_analysis(app, client, case_id)
+    board_id = board_with_pins_and_note(client, case_id, base["analysis_id"])
+    board = client.get(f"/cases/{case_id}/boards/{board_id}").json()
+    claim_item = next(i["item_id"] for i in board["items"] if i["ref_id"] == "claim-1")
+    correction = "Investigator correction: the delivery was cancelled."
+    response = client.patch(
+        f"/cases/{case_id}/boards/{board_id}",
+        json={
+            "review": [{"item_id": claim_item, "review_status": "disputed"}],
+            "notes": [{"text": correction, "kind": "correction", "target_item_id": claim_item}],
+        },
+    )
+    assert response.status_code == 200, response.text
+    fake = llm(app, [output()])
+    follow_up(client, case_id, base["analysis_id"], board_id=board_id)
+
+    sent = json.dumps(fake.calls[-1], ensure_ascii=False)
+    assert correction not in sent and "disputed" not in sent and "review_status" not in sent
+    pinned = json.loads(prompt(fake)["context"]["text"])["board"]["pinned"]
+    assert pinned[0] == {
+        "kind": "claim",
+        "text": "Alex communicated with Jordan about a document delivery.",
+        "status": "reported",  # the model's label only
+    }

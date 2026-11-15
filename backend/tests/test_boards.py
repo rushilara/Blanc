@@ -10,6 +10,7 @@ from _paths import CONTRACTS_DIR, RAW, load_json
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from jsonschema import Draft202012Validator
+from pydantic import ValidationError
 from sqlalchemy import text
 from sqlalchemy.exc import DatabaseError
 from sqlalchemy.orm import Session
@@ -17,7 +18,13 @@ from sqlalchemy.orm import Session
 from app import boards as boards_module
 from app.analyses import save_revision, saved_revision_lookup
 from app.boards import item_id_for
-from app.contracts import AnalysisRevision, EvidenceRecord, InvestigationBoard
+from app.contracts import (
+    AnalysisRevision,
+    BoardItem,
+    BoardNote,
+    EvidenceRecord,
+    InvestigationBoard,
+)
 from app.embeddings import FakeEmbedder
 from app.evidence_store import store_records
 from app.models import BoardSnapshotRow, Case
@@ -667,3 +674,231 @@ def test_a_saved_reconstruction_is_added_through_the_apps_own_lookup(app, client
         for i in board["items"]
         if i["source_analysis_id"] == CHILD_ID
     )
+
+# --- Investigator review and corrections (BLA-48) ----------------------------------------
+
+CLAIM = item_id_for(BASE_ID, "claim", "claim-2")
+EDGE = item_id_for(BASE_ID, "edge", "edge-1")
+EVENT = item_id_for(BASE_ID, "event", "event-1")
+
+
+def pinned_board(client, case_id) -> str:
+    board = create(client, case_id)
+    patch(
+        client,
+        case_id,
+        board["board_id"],
+        pin=[pin("claim", "claim-2"), pin("edge", "edge-1"), pin("event", "event-1")],
+    )
+    return board["board_id"]
+
+
+def items(body: dict) -> dict[str, dict]:
+    return {item["item_id"]: item for item in body["items"]}
+
+
+def test_review_status_is_set_per_item_and_never_changes_the_model_status(client, seeded):
+    board_id = pinned_board(client, seeded.case_id)
+    body = valid(
+        patch(
+            client,
+            seeded.case_id,
+            board_id,
+            review=[
+                {"item_id": CLAIM, "review_status": "disputed"},
+                {"item_id": EDGE, "review_status": "reviewed"},
+            ],
+        )
+    )
+    by_id = items(body)
+    assert by_id[CLAIM]["review_status"] == "disputed"
+    assert by_id[CLAIM]["status"] == "reported"  # the model's label is untouched
+    assert by_id[EDGE]["review_status"] == "reviewed"
+    assert "review_status" not in by_id[EVENT]  # absent means unreviewed
+
+
+def test_unreviewed_is_stored_as_absent_and_a_repeat_is_a_no_op(client, seeded):
+    board_id = pinned_board(client, seeded.case_id)
+    reviewed = patch(
+        client, seeded.case_id, board_id, review=[{"item_id": CLAIM, "review_status": "reviewed"}]
+    )
+    same = patch(
+        client, seeded.case_id, board_id, review=[{"item_id": CLAIM, "review_status": "reviewed"}]
+    )
+    assert same["revision"] == reviewed["revision"]  # nothing changed, no new snapshot
+    back = valid(
+        patch(
+            client,
+            seeded.case_id,
+            board_id,
+            review=[{"item_id": CLAIM, "review_status": "unreviewed"}],
+        )
+    )
+    assert "review_status" not in items(back)[CLAIM]
+    # Explicitly unreviewing an unreviewed item changes nothing either.
+    again = patch(
+        client, seeded.case_id, board_id, review=[{"item_id": EVENT, "review_status": "unreviewed"}]
+    )
+    assert again["revision"] == back["revision"]
+
+
+def test_every_review_decision_stays_in_the_history(client, seeded):
+    board_id = pinned_board(client, seeded.case_id)
+    for status in ("reviewed", "disputed"):
+        patch(
+            client, seeded.case_id, board_id, review=[{"item_id": CLAIM, "review_status": status}]
+        )
+    history = client.get(url(seeded.case_id, board_id, "revisions")).json()  # oldest first
+    trail = [items(snapshot).get(CLAIM, {}).get("review_status") for snapshot in history]
+    # Created (no items), pinned (unreviewed), reviewed, then disputed: nothing is rewritten.
+    assert trail == [None, None, "reviewed", "disputed"]
+
+
+def test_an_item_can_be_pinned_and_reviewed_in_one_change(client, seeded):
+    board = create(client, seeded.case_id)
+    body = valid(
+        patch(
+            client,
+            seeded.case_id,
+            board["board_id"],
+            pin=[pin("claim", "claim-1")],
+            review=[
+                {"item_id": item_id_for(BASE_ID, "claim", "claim-1"), "review_status": "reviewed"}
+            ],
+        )
+    )
+    assert body["items"][0]["review_status"] == "reviewed"
+
+
+@pytest.mark.parametrize(
+    ("review", "message"),
+    [
+        ([{"item_id": "item-missing", "review_status": "reviewed"}], "cannot review item-missing"),
+        (
+            [
+                {"item_id": CLAIM, "review_status": "reviewed"},
+                {"item_id": CLAIM, "review_status": "disputed"},
+            ],
+            "conflicting review statuses",
+        ),
+    ],
+)
+def test_an_invalid_review_saves_nothing(client, seeded, review, message):
+    board_id = pinned_board(client, seeded.case_id)
+    before = client.get(url(seeded.case_id, board_id)).json()
+    body = patch(client, seeded.case_id, board_id, expect=422, review=review)
+    assert message in json.dumps(body)
+    assert client.get(url(seeded.case_id, board_id)).json() == before
+
+
+@pytest.mark.parametrize(
+    "review",
+    [
+        [{"item_id": CLAIM, "review_status": "verified"}],  # not a review status
+        [{"item_id": CLAIM}],
+        [{"item_id": CLAIM, "review_status": "reviewed", "status": "observed"}],
+    ],
+)
+def test_review_requests_are_strict(client, seeded, review):
+    board_id = pinned_board(client, seeded.case_id)
+    patch(client, seeded.case_id, board_id, expect=422, review=review)
+
+
+def test_a_correction_flags_its_target_and_is_kept_apart_from_model_output(client, seeded):
+    board_id = pinned_board(client, seeded.case_id)
+    body = valid(
+        patch(
+            client,
+            seeded.case_id,
+            board_id,
+            notes=[
+                {
+                    "text": "Casey was not there; the message says 'may be'.",
+                    "kind": "correction",
+                    "target_item_id": CLAIM,
+                },
+                {"text": "Check the cameras.", "target_item_id": EDGE},
+            ],
+        )
+    )
+    correction, plain = body["notes"]
+    assert correction["kind"] == "correction" and correction["target_item_id"] == CLAIM
+    assert correction["author"] == "investigator"
+    assert "kind" not in plain  # a plain note keeps its old shape
+    # The flagged finding itself is unchanged: text, evidence and status stay the model's.
+    assert items(body)[CLAIM]["status"] == "reported"
+    assert "Casey was not there" not in json.dumps(body["items"])
+
+
+def test_a_correction_must_target_an_item_on_the_board(client, seeded):
+    board_id = pinned_board(client, seeded.case_id)
+    body = patch(
+        client,
+        seeded.case_id,
+        board_id,
+        expect=422,
+        notes=[{"text": "Wrong.", "kind": "correction"}],
+    )
+    assert "a correction must target a board item" in json.dumps(body)
+    patch(
+        client,
+        seeded.case_id,
+        board_id,
+        expect=422,
+        notes=[{"text": "Wrong.", "kind": "correction", "target_item_id": "item-missing"}],
+    )
+    patch(
+        client,
+        seeded.case_id,
+        board_id,
+        expect=422,
+        notes=[{"text": "Wrong.", "kind": "flag", "target_item_id": CLAIM}],
+    )
+
+
+def test_contract_shapes_for_review_and_corrections():
+    base = {
+        "item_id": "i1",
+        "kind": "claim",
+        "source_analysis_id": "a",
+        "ref_id": "c",
+        "evidence_ids": ["r"],
+        "status": "reported",
+        "added_at": "2026-11-15T00:00:00Z",
+    }
+    BoardItem.model_validate({**base, "review_status": "disputed"})
+    for bad in ({**base, "review_status": "verified"}, {**base, "review_status": None}):
+        with pytest.raises(ValidationError):
+            BoardItem.model_validate(bad)
+    note = {
+        "note_id": "n",
+        "text": "t",
+        "author": "investigator",
+        "created_at": "2026-11-15T00:00:00Z",
+    }
+    BoardNote.model_validate({**note, "kind": "correction", "target_item_id": "i1"})
+    for bad in (
+        {**note, "kind": "correction"},
+        {**note, "kind": "correction", "target_item_id": None},
+        {**note, "kind": None},
+    ):
+        with pytest.raises(ValidationError):
+            BoardNote.model_validate(bad)
+    schema = Draft202012Validator(load_json(CONTRACTS_DIR / "investigation_board.schema.json"))
+    board = {
+        "schema_version": "1.0",
+        "board_id": "b",
+        "case_id": "c",
+        "title": "t",
+        "revision": 1,
+        "active_analysis_id": None,
+        "items": [],
+        "notes": [],
+        "created_at": "2026-11-15T00:00:00Z",
+        "updated_at": "2026-11-15T00:00:00Z",
+    }
+    assert schema.is_valid(
+        {**board, "notes": [{**note, "kind": "correction", "target_item_id": "i1"}]}
+    )
+    assert not schema.is_valid({**board, "notes": [{**note, "kind": "correction"}]})
+    assert not schema.is_valid({**board, "items": [{**base, "review_status": "verified"}]})

@@ -10,6 +10,12 @@ Rules this module enforces:
   names a finding (``kind``, ``source_analysis_id``, ``ref_id``); the server copies its
   evidence IDs and status from that revision. Pinning never changes a status and never
   means "verified".
+- **Investigator review (BLA-48).** Each pinned item can carry a ``review_status``
+  (``unreviewed``, ``reviewed`` or ``disputed``; absent means unreviewed), and a note with
+  ``kind: "correction"`` flags the item it targets as wrong. Both are investigator
+  judgement: they never change the item's ``status`` (the model's label), and, like notes,
+  they are never sent to the model. Every change is a new snapshot, so the history of
+  review decisions is kept.
 - **Investigator notes stay separate.** Notes are the only investigator-authored text on
   a board, and they live in ``notes``, not in items. Their ``author`` is set by the
   server (``NOTE_AUTHOR``), never by the request.
@@ -194,7 +200,8 @@ def update_board(
     lookup: RevisionLookup = saved_revision_lookup,
     now: datetime | None = None,
 ) -> BoardUpdate:
-    """Apply ``change`` (unpin, then pin, then notes) and append the new snapshot.
+    """Apply ``change`` (unpin, then pin, then review, then notes) and append the new
+    snapshot.
 
     Raises ``BoardNotFoundError``, ``BoardConflictError`` (stale ``expected_revision`` or
     a concurrent save) or ``InvalidBoardChangeError`` (nothing is saved).
@@ -213,6 +220,7 @@ def update_board(
         PinTarget(pin.kind, pin.source_analysis_id, pin.ref_id) for pin in change.pin
     ]
     items = items + _pins(session, case_id, items, pins, lookup, moment, errors)
+    items = _review(items, change, errors)
     notes = current.notes + _new_notes(change.notes, moment)
     if errors:
         raise InvalidBoardChangeError(errors)
@@ -358,6 +366,33 @@ def _pins(
     return added
 
 
+def _review(items: list[BoardItem], change: BoardChange, errors: list[str]) -> list[BoardItem]:
+    """Set each named item's ``review_status``. "unreviewed" is stored as absent, so a
+    board has one representation for it. The finding's own ``status`` is never touched."""
+    if not change.review:
+        return items
+    wanted: dict[str, str] = {}
+    for review in change.review:
+        if review.item_id in wanted and wanted[review.item_id] != review.review_status:
+            errors.append(f"conflicting review statuses for {review.item_id} in one change")
+        wanted[review.item_id] = review.review_status
+    on_board = {item.item_id for item in items}
+    for item_id in sorted(set(wanted) - on_board):
+        errors.append(f"cannot review {item_id}: it is not on this board")
+    return [
+        item.model_copy(
+            update={
+                "review_status": None
+                if wanted[item.item_id] == "unreviewed"
+                else wanted[item.item_id]
+            }
+        )
+        if item.item_id in wanted
+        else item
+        for item in items
+    ]
+
+
 def _finding(revision: AnalysisRevision, kind: str, ref_id: str) -> Any | None:
     candidates: Iterable[Any] = {
         "claim": revision.claims,
@@ -375,6 +410,8 @@ def _new_notes(notes: list[NoteCreate], moment: datetime) -> list[BoardNote]:
             note_id=new_id("note"),
             text=note.text,
             target_item_id=note.target_item_id,
+            # Omitted (never null) for a plain note, so existing snapshots are unchanged.
+            **({"kind": note.kind} if note.kind != "note" else {}),
             author=NOTE_AUTHOR,
             created_at=moment,
         )

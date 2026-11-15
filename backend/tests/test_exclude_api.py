@@ -232,6 +232,42 @@ def test_an_unaffected_finding_is_still_supported_after_the_exclusion(app, clien
     assert again.json() == comparison
 
 
+def test_the_comparison_links_a_reworded_finding_that_lost_a_source(app, client) -> None:
+    # BLA-63: claim-2 rests on rec-02 and rec-01; after excluding rec-02 the rerun rewords it.
+    case_id = seed(client)
+    base_output = output()
+    base_output["claims"][1]["evidence_ids"] = ["rec-02", "rec-01"]
+    llm(app, [base_output])
+    base = client.post(f"/cases/{case_id}/analyses", json={"question": QUESTION}).json()
+    child_output = output("child")
+    child_output["claims"].append(
+        {
+            "id": "claim-x",
+            "text": "Jordan may meet Casey.",
+            "evidence_ids": ["rec-01"],
+            "status": "reported",
+        }
+    )
+    llm(app, [child_output])
+    child = exclude(client, case_id, base["analysis_id"], ["rec-02"])
+
+    comparison = client.get(
+        f"/cases/{case_id}/analyses/{child['analysis_id']}/comparison"
+    ).json()
+    assert not list(COMPARISON_SCHEMA.iter_errors(comparison))
+    items = {(i["kind"], i["base_ref_id"], i["compared_ref_id"]): i for i in comparison["items"]}
+    before = items[("claim", "claim-2", None)]
+    after = items[("claim", None, "claim-x")]
+    assert (before["support_status"], after["support_status"]) == (
+        "unresolved",
+        "newly_supported",
+    )
+    link = {"shared_evidence_ids": ["rec-01"], "remaining_sources": 1, "original_sources": 2}
+    assert before["possible_matches"] == [{"ref_id": "claim-x", **link}]
+    assert after["possible_matches"] == [{"ref_id": "claim-2", **link}]
+    assert "possible_matches" not in items[("claim", "claim-1", "claim-1")]
+
+
 def test_a_revision_without_a_parent_has_no_comparison(app, client) -> None:
     case_id = seed(client)
     base = base_analysis(app, client, case_id)

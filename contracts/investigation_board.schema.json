@@ -123,6 +123,15 @@
             ],
             "description": "Copied from the originating item; pinning never changes it. Required for claim, edge and event items; optional for node items, since graph nodes carry no status."
           },
+          "review_status": {
+            "type": "string",
+            "enum": [
+              "unreviewed",
+              "reviewed",
+              "disputed"
+            ],
+            "description": "Investigator review of the pinned finding (BLA-48). Absent means unreviewed. Never changes status, which is the model's label copied from the source revision."
+          },
           "added_at": {
             "type": "string",
             "format": "date-time"
@@ -158,6 +167,14 @@
             ],
             "description": "item_id on this board the note is attached to; null or absent for a board-level note."
           },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "note",
+              "correction"
+            ],
+            "description": "\"correction\" flags the targeted finding as wrong and explains why (BLA-48); absent means \"note\". A correction must target a board item."
+          },
           "author": {
             "type": "string",
             "minLength": 1
@@ -165,6 +182,27 @@
           "created_at": {
             "type": "string",
             "format": "date-time"
+          }
+        },
+        "if": {
+          "properties": {
+            "kind": {
+              "const": "correction"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        "then": {
+          "required": [
+            "target_item_id"
+          ],
+          "properties": {
+            "target_item_id": {
+              "type": "string",
+              "minLength": 1
+            }
           }
         }
       }

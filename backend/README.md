@@ -59,6 +59,7 @@ If it prints `x86_64`, install a native arm64 Python 3.12 (the python.org instal
 - `app/deps.py`: shared dependencies: `SessionDep`, `require_case` / `CaseDep`, `get_case_or_404`, `EmbedderDep` (the app's embedder, `app.state.embedder`).
 - `app/ids.py`: `new_id(prefix)` returns prefixed ULIDs (`case_01J...`). Use it for every server-generated ID (`analysis_`, `board_`, `rec_`, ...).
 - `app/contracts.py`: Pydantic models for the shared contracts in `../contracts/` (`EvidenceRecord`, `AnalysisRevision`, `InvestigationBoard`, `RevisionComparison`). Kept in sync with the JSON Schemas by `tests/test_contracts.py`.
+- `app/comparison.py`: `compare_revisions`, the deterministic support diff between a revision and its exclusion child (BLA-34). Findings are matched by structure only, never by reused LLM IDs; when a finding lost at least one cited source to the exclusion, a reworded finding that kept only records it cited gets an advisory `possible_matches` link on both items (BLA-63), which never changes `support_status`. See the module docstring and `../contracts/README.md`.
 - `app/validation.py`: cross-reference checks (`validate_revision`, `validate_board`, `validate_comparison`) plus `schema_errors` for parsing untrusted JSON. Each returns readable error strings; an empty list means valid.
 - `app/routers/`: HTTP routers (`cases.py`: `POST /cases`, `GET /cases`, `GET /cases/{case_id}`; `records.py`: `GET /cases/{case_id}/records[/{record_id}]`; `search.py`: `POST /cases/{case_id}/search`; `boards.py`: `/cases/{case_id}/boards`).
 - `app/boards.py`: investigation boards: create, pin/unpin, notes, append-only snapshots. See "Boards" below.
@@ -70,6 +71,12 @@ If it prints `x86_64`, install a native arm64 Python 3.12 (the python.org instal
 SQLite via SQLAlchemy 2.0 (typed `Mapped[...]` ORM) at `DATABASE_URL` (default `sqlite:///./data/blanc.db`, relative to `backend/`; `data/` is gitignored). **MVP is local-first:** keep the DB file on the investigator’s machine and run a single local uvicorn process. Hosted volumes (Railway/Render/etc.) are not part of the MVP evidence path; optional cloud deploy of the app can come later. Tables are created with `Base.metadata.create_all` at startup. There are no migrations yet (Alembic can come later), so during development delete `backend/data/blanc.db` after changing a table.
 
 The DB is opened in the lifespan, not at import. In tests, enter the client (`with TestClient(app) as client:`) so the lifespan runs.
+
+## Original images (`EVIDENCE_ROOT`)
+
+`GET /cases/{case_id}/records/{record_id}/media` returns the original image behind a record (e.g. a Chrome download's saved file) when it was extracted into that case's folder under `EVIDENCE_ROOT/{case_id}/`. Each case has its own extracted files and `artifact_manifest.jsonl` (one JSON object per line: `source_path`, `extracted_file`, `sha256`); without an entry the file is looked up at its original relative path inside the case folder. An entry may also list `record_ids`, linking a file to records by evidence gathered outside the app (for example a download row whose file was later moved, matched by exact name and size, or a Zone.Identifier `HostUrl` equal to the download URL). A record's own paths are tried first, and a linked file goes through the same checks. Only PNG, JPEG, GIF and WebP under 25 MB are served, the leading bytes must match the type, a manifest SHA-256 must match, and paths may not leave the case folder (`..`, absolute paths and escaping symlinks are refused). `X-Source-Path` is percent-encoded (latin-1 safe) and omitted if the path contains CR/LF. 404 means not available locally, 409 a type or hash mismatch. Nothing is fetched from the network.
+
+This path is separate from BLA-68 ingest media under `CASES_DIR/{case_id}/media/` (imported images/PDFs stored with the case DB). `EVIDENCE_ROOT` is for investigator-extracted disk images / path-mapped originals shown in the source panel. See `app/media.py`.
 
 ## Evidence storage (BLA-12)
 
@@ -205,7 +212,7 @@ revision_lineage(session, case_id, analysis_id)  # root ... this revision
 | `POST /cases/{case_id}/analyses/{analysis_id}/follow-up` | `{"question": "...", "board_id"?: "board_...", "evidence_window"?}`: a follow-up that builds on this revision (BLA-29). Fresh retrieval for the new question with this revision's exclusions and evidence window inherited; returns the new child revision (201). |
 | `POST /cases/{case_id}/analyses/{analysis_id}/exclude` | `{"record_ids": [...], "evidence_window"?}`: exclude records and rerun this revision's question on the remaining evidence (BLA-33), in this revision's evidence window unless overridden. Returns the new child revision (201). |
 | `POST /cases/{case_id}/analyses/{analysis_id}/rerun` | `{"evidence_window": "expanded" \| "standard"}`: "Want more evidence?" (BLA-64). Reruns this revision's question with its exclusions in another window; returns the new child revision (201). 409 if the revision already used that window. |
-| `GET /cases/{case_id}/analyses/{analysis_id}/comparison` | The support diff (BLA-34) between this revision and its parent, as `RevisionComparison` contract JSON. Deterministic: `created_at` is the revision's own. Only for exclusion and restore children (same question as the parent); a follow-up, which asks a different question, gets a 422. |
+| `GET /cases/{case_id}/analyses/{analysis_id}/comparison` | The support diff (BLA-34) between this revision and its parent, as `RevisionComparison` contract JSON. Deterministic: `created_at` is the revision's own. Only for exclusion and restore children (same question as the parent); a follow-up, which asks a different question, gets a 422. An item whose finding was reworded by the rerun may carry `possible_matches` ("possibly the same finding: N of M cited sources remain; please confirm"); it is advisory, omitted when empty, and never changes `support_status` (BLA-63). |
 | `POST /cases/{case_id}/analyses/{analysis_id}/restore` | `{"record_ids": [...]}`: bring excluded records back (BLA-35). Returns the new revision (201), with the reused revision's ID in the `X-Restored-From` header. |
 
 **Following up (BLA-29, `app/follow_up.py`).** The parent's question, answer, claims and unresolved questions go into the prompt's "prior analysis — not evidence" context. With `board_id`, so do the board's topic and pinned findings, read from their saved source revisions. Board notes are never sent; the contract keeps investigator notes away from the model. Pinned findings that cite a record excluded in the parent are left out. Like the exclusion context, this filters by citation, so remaining findings may still paraphrase excluded content. Every claim must cite the newly retrieved records. Errors: 404 for an unknown revision or board, 422 for an unsearchable question (no LLM call), 503 if the LLM is unavailable.
@@ -235,7 +242,7 @@ Every response is `InvestigationBoard` contract JSON. A board is a series of app
 | `GET /cases/{case_id}/boards` | Latest snapshot of every board, most recently updated first. |
 | `GET /cases/{case_id}/boards/{board_id}` | Latest snapshot. |
 | `GET /cases/{case_id}/boards/{board_id}/revisions[/{n}]` | Every snapshot, oldest first, or snapshot `n`. |
-| `PATCH /cases/{case_id}/boards/{board_id}` | Unpin, pin, add notes, rename, set the active revision; appends one snapshot. |
+| `PATCH /cases/{case_id}/boards/{board_id}` | Unpin, pin, review, add notes or corrections, rename, set the active revision; appends one snapshot. |
 
 `PATCH` body (every field optional, applied in this order):
 
@@ -245,13 +252,18 @@ Every response is `InvestigationBoard` contract JSON. A board is a series of app
   "unpin": ["item_..."],
   "add_reconstruction": {"analysis_id": "analysis_..."},
   "pin": [{"kind": "claim", "source_analysis_id": "analysis_...", "ref_id": "claim-2"}],
-  "notes": [{"text": "Check whether the meeting happened.", "target_item_id": "item_..."}],
+  "review": [{"item_id": "item_...", "review_status": "disputed"}],
+  "notes": [
+    {"text": "Check whether the meeting happened.", "target_item_id": "item_..."},
+    {"text": "Casey was not there; the message only says 'may be'.", "kind": "correction", "target_item_id": "item_..."}
+  ],
   "title": "New title",
   "active_analysis_id": "analysis_..."
 }
 ```
 
 - **A pin names a finding; the server copies its `evidence_ids` and `status`** from the saved revision. The request cannot set either, so pinning never changes a status or marks anything verified.
+- **Investigator review (BLA-48).** `review` sets an item's `review_status` (`unreviewed`, `reviewed` or `disputed`), after pins, so an item pinned in the same request can be reviewed. `unreviewed` is stored as absent. A note with `"kind": "correction"` flags its target as wrong and must have a `target_item_id`. Neither changes the finding's `status`, text or evidence, and neither is sent to the model (follow-ups send pinned findings with the model's status only). 422 for an item that isn't on the board, two different statuses for one item in one request, or a correction with no target. Every review decision is a new snapshot, so `GET …/revisions` shows its history. Board exports (`/export`) show each pinned finding's review status and label corrections separately.
 - **"Add this reconstruction to board"** (BLA-30): `"add_reconstruction": {"analysis_id": "analysis_...", "kinds": ["claim", "node", "edge", "event"]}` pins every finding of that revision in one change (`kinds` optional, default all), through the same checks as single pins. Nodes that cite no evidence are skipped. Adding the same revision again changes nothing; adding a second revision appends its findings next to the first.
 - **Nodes are never merged.** A node is identified by its revision and ID, so the same or a similar name from another revision (or the same revision) stays a separate item; deciding two are the same person is left to the investigator.
 - **No length cap on revision IDs.** `ref_id`, `source_analysis_id`, `analysis_id` and `active_analysis_id` name things stored in a revision, whose contract sets no maximum length, so requests don't cap them either. Item IDs (`unpin`, `target_item_id`) are server-generated and capped at 200 characters.
@@ -299,11 +311,11 @@ JSON shape (`report_version: "1.0"`). This is its own API shape, not a `contract
 | `report_version`, `report_kind` (`board` / `analysis`), `generated_at` (UTC) | Header. |
 | `case` `{case_id, title}`, `board` (`null` for an analysis export) `{board_id, title, revision, parent_revision, active_analysis_id, updated_at}` | What was exported. |
 | `analyses[]` | Each revision drawn on: `role` (`exported`, `board_active`, `board_source`), `lineage` (root ... this ID), `question`, `answer`, `unresolved_questions`, `needs_review`, `validation_errors`, `retrieved_record_ids`, `excluded_record_ids`, `created_at`. |
-| `claims[]`, `entities[]`, `relationships[]` | AI-generated findings with `analysis_id`, their own ID, text/label/type, `status` (as saved), `evidence_ids`; on a board also `board_item_id` and `note_ids` (links to notes, never their text). Relationships give `source`/`target` as `{node_id, label, type}`. |
+| `claims[]`, `entities[]`, `relationships[]` | AI-generated findings with `analysis_id`, their own ID, text/label/type, `status` (as saved), `evidence_ids`; on a board also `board_item_id`, `review_status` (the investigator's review, BLA-48; `unreviewed` when not set) and `note_ids` (links to notes, never their text). Relationships give `source`/`target` as `{node_id, label, type}`. |
 | `timeline` `{dated, uncertain, undated}` | Events with the raw `timestamp`, normalized `display`, `precision`, `timezone_known`. `dated` is in `app.timeline` order; `uncertain` holds approximate times and exact times with no known zone; `undated` holds the rest. Nothing is guessed. |
 | `sources[]` | Every cited record once, sorted by ID: `source_file`, `source_locator`, `timestamp`, `timestamp_kind`, `excerpt` (either `{text, char_start, char_end, truncated, content_chars}` where `text == content[char_start:char_end]`, at most the first 2000 characters, **or `null`** when withheld), `cited_by[]` `{kind, analysis_id, ref_id}`, and `excluded_in[]` (every revision in this report that excludes the record; possible on a board that pins items from several revisions). Withholding: for a board with an active revision, or a single-analysis export, `excerpt` is null only when that scope revision excludes the record (a stale pin from an older exclusion does not hide restored evidence). For a board with no active revision, `excerpt` is null when any reported revision excludes the record. |
 | `excluded_evidence[]` | `{analysis_id, record_id, inherited, first_excluded_in, source_file, source_locator, timestamp}`. Locators only, no content; never counted as support. |
-| `investigator_notes[]` | `{note_id, author, created_at, text, target_item_id, target}`. Board exports only; an analysis export has none. |
+| `investigator_notes[]` | `{note_id, author, created_at, text, target_item_id, target, kind}`; `kind` is `correction` when the investigator flagged the target as wrong. Board exports only; an analysis export has none. |
 | `limitations[]` | Fixed caveats (AI-generated and needs human review; statuses and pins are not verification; exclusions change what can be concluded, not what happened; retrieval may miss records; local storage but Gemini processed the text; formats not ingested) plus case-specific ones (attachments not imported, needs-review revisions, truncated excerpts, uncertain times, records excluded elsewhere on the board). |
 
 **Untrusted text in Markdown.** Evidence, model output, notes and IDs may contain Markdown or HTML, and none of it is emitted as structure. Excerpts and notes go in fenced code blocks whose fence is longer than any backtick run in the text. IDs, files and locators go in code spans built the same way. Prose (answers, claims, labels, descriptions) is escaped line by line: ``\ ` * _ [ ] < > # + ! | ~ & @``, a leading `- = >` or `1.`, and `://` / `www.` so bare URLs are not linked. Control characters are dropped. `tests/test_reports.py` covers `<script>`, headings, links, images, pipes, tables and backtick runs.

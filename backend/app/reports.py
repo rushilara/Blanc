@@ -110,6 +110,8 @@ class ReportClaim(_Model):
     status: str
     evidence_ids: list[str]
     board_item_id: str | None = None
+    # Investigator judgement on the pinned finding (BLA-48); None outside a board export.
+    review_status: str | None = None
     note_ids: list[str] = []
 
 
@@ -120,6 +122,8 @@ class ReportEntity(_Model):
     type: str
     evidence_ids: list[str]
     board_item_id: str | None = None
+    # Investigator judgement on the pinned finding (BLA-48); None outside a board export.
+    review_status: str | None = None
     note_ids: list[str] = []
 
 
@@ -139,6 +143,8 @@ class ReportRelationship(_Model):
     description: str | None
     evidence_ids: list[str]
     board_item_id: str | None = None
+    # Investigator judgement on the pinned finding (BLA-48); None outside a board export.
+    review_status: str | None = None
     note_ids: list[str] = []
 
 
@@ -154,6 +160,8 @@ class ReportEvent(_Model):
     status: str
     evidence_ids: list[str]
     board_item_id: str | None = None
+    # Investigator judgement on the pinned finding (BLA-48); None outside a board export.
+    review_status: str | None = None
     note_ids: list[str] = []
     # Ordering key only, never exported: with no known zone it orders the time as written.
     _instant: datetime | None = PrivateAttr(default=None)
@@ -213,6 +221,7 @@ class ReportNote(_Model):
     text: str
     target_item_id: str | None
     target: FindingRef | None  # the pinned finding the note is attached to, if any
+    kind: Literal["note", "correction"] = "note"  # a correction flags its target as wrong
 
 
 class CaseReport(_Model):
@@ -296,7 +305,11 @@ def board_report(
         targets[item.item_id] = FindingRef(
             kind=item.kind, analysis_id=item.source_analysis_id, ref_id=item.ref_id
         )
-        pinned = {"board_item_id": item.item_id, "note_ids": notes_by_item.get(item.item_id, [])}
+        pinned = {
+            "board_item_id": item.item_id,
+            "review_status": item.review_status or "unreviewed",
+            "note_ids": notes_by_item.get(item.item_id, []),
+        }
         if item.kind == "claim":
             claim = next(c for c in source.claims if c.id == item.ref_id)
             builder.claims.append(
@@ -337,6 +350,7 @@ def board_report(
             text=note.text,
             target_item_id=note.target_item_id,
             target=targets.get(note.target_item_id) if note.target_item_id else None,
+            kind=note.kind or "note",
         )
         for note in sorted(board.notes, key=lambda n: (n.created_at, n.note_id))
     ]
