@@ -286,6 +286,9 @@ def _all_text(revision: AnalysisRevision) -> str:
     parts += [edge.description or "" for edge in revision.graph.edges]
     parts += [node.label for node in revision.graph.nodes]
     parts += [event.description for event in revision.timeline_events]
+    # BLA-54: suggestions are model text and the likeliest place for injected
+    # instructions from evidence to surface; include them in must_not_contain.
+    parts += revision.suggested_followups or []
     return "\n".join(parts)
 
 

@@ -47,6 +47,7 @@ from app.analysis_llm import (
     AnalysisOutputError,
     build_analysis_messages,
     record_metadata,
+    sanitize_followups,
     sent_record_ids,
 )
 from app.analysis_media import MediaPart
@@ -272,9 +273,16 @@ def _attempt(
 
 
 def _revision(base_fields: dict[str, Any], output: AnalysisOutput) -> AnalysisRevision:
-    return AnalysisRevision.model_validate_json(
-        json.dumps({**output.to_contract_json(), **base_fields})
+    data = {**output.to_contract_json(), **base_fields}
+    # Suggested follow-ups (BLA-54) are optional extras: one that names an excluded record is
+    # dropped here, so suggestions never fail validation or cause a retry on their own.
+    followups = sanitize_followups(
+        data.pop("suggested_followups", None),
+        excluded_record_ids=base_fields.get("excluded_record_ids", ()),
     )
+    if followups:
+        data["suggested_followups"] = followups
+    return AnalysisRevision.model_validate_json(json.dumps(data))
 
 
 def _reparsed(revision: AnalysisRevision) -> AnalysisRevision:

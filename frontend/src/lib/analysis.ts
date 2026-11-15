@@ -45,6 +45,8 @@ export type AnalysisRevision = {
     timestamp_kind?: TimestampKind;
   })[];
   unresolved_questions: string[];
+  /** BLA-54: model suggestions for the investigator; never findings, never auto-run. */
+  suggested_followups?: string[];
   excluded_record_ids: string[];
   needs_review?: boolean;
   validation_errors?: string[];
