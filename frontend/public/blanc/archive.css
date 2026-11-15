@@ -61,3 +61,76 @@ html body .blanc-workspace button:focus-visible,html body .blanc-workspace selec
 @media(max-width:1100px){html body .blanc-investigation.has-source,html body .blanc-investigation.is-map.has-source{grid-template-columns:190px minmax(0,1fr)}}
 @media(max-width:900px){html body .blanc-investigation.has-source,html body .blanc-investigation.is-map.has-source{grid-template-columns:1fr}html body .blanc-header nav{gap:12px}html body .blanc-header nav button{font-size:11px}html body .blanc-header:after{font-size:9px}}
 @media(max-width:600px){html body .blanc-header{flex-wrap:wrap;gap:16px;padding:20px 0}html body .blanc-header nav{width:100%}html body .blanc-entry>h1{font-size:30px;letter-spacing:-1px}html body .blanc-entry textarea{font-size:17px}}
+
+/* Restore the original literary greeting within the Archive layout. */
+html body .blanc-entry>h1 { font-family: Baskerville, "Baskerville Old Face", Georgia, serif; font-weight: 400; letter-spacing: -.015em; }
+
+/* Fit every route to the viewport; long record names wrap inside their column. */
+html,body{max-width:100%;overflow-x:clip}
+html body .blanc-workspace{box-sizing:border-box;width:100%;max-width:100%;min-width:0;overflow-x:clip;color-scheme:light}
+html body .blanc-workspace *,html body .blanc-workspace *:before,html body .blanc-workspace *:after{box-sizing:border-box}
+html body .blanc-header,html body .blanc-header nav{min-width:0;max-width:100%;flex-wrap:wrap}
+html body .blanc-investigation>*,html body .blanc-entry>*,html body .blanc-case-rail>*,html body .blanc-report>*{min-width:0;max-width:100%}
+html body .blanc-case-picker select{width:100%;min-width:0;max-width:100%}
+html body .blanc-report p,html body .blanc-report code,html body .blanc-report dd{overflow-wrap:anywhere}
+html body .blanc-report pre{white-space:pre-wrap;max-width:100%;overflow-wrap:anywhere}
+html body .blanc-report>p{max-width:85ch}
+html body .blanc-workspace iframe,html body .blanc-workspace img{max-width:100%;min-width:0}
+/* Timeline: visible chronology, compact provenance, no inherited dark form styling. */
+html body .blanc-timeline{font:13px/1.6 Arial,sans-serif;color:#372416;color-scheme:light;max-width:100%;min-width:0}
+html body .blanc-timeline-toolbar{display:flex;align-items:flex-end;flex-wrap:wrap;gap:18px 30px;border-top:1px solid #a99e8977;border-bottom:1px solid #a99e8977;padding:15px 0;margin:16px 0}
+html body .blanc-timeline-search{flex:1 1 220px;min-width:0;display:block}
+html body .blanc-timeline-search>span,html body .blanc-timeline fieldset legend{display:block;font:10px/1.5 Arial,sans-serif;color:#7a6a5a;margin-bottom:7px}
+html body .blanc-timeline-search input{display:block;width:100%;min-width:0;border:0;border-bottom:1px solid #a99e89;background:transparent;color:#372416;border-radius:0;padding:8px 0;font:14px Arial,sans-serif}
+html body .blanc-timeline-search input::placeholder{color:#8a7a68}
+html body .blanc-timeline fieldset{margin:0;padding:0;border:0;min-width:0}
+html body .blanc-timeline-filters{display:flex;flex-wrap:wrap;gap:6px}
+html body .blanc-timeline-filters button{border:1px solid #a99e8988;background:none;color:#665548;border-radius:0;padding:6px 10px;font:11px Arial,sans-serif;text-transform:capitalize;cursor:pointer}
+html body .blanc-timeline-filters button[aria-pressed=true]{border-color:#822b33;color:#822b33;background:#822b3308}
+html body .blanc-timeline-note,html body .blanc-timeline-empty{font:11px/1.7 Arial,sans-serif;color:#7a6a5a;margin:12px 0 22px;overflow-wrap:anywhere}
+html body .blanc-timeline-note button{color:#822b33;text-decoration:underline;cursor:pointer}
+html body .blanc-timeline-group{margin:28px 0 35px}
+html body .blanc-timeline-group>h3{font:600 12px Arial,sans-serif;margin:0 0 22px}
+html body .blanc-timeline-group>h3 span{font-weight:400;margin-left:7px;color:#8a7a68}
+html body .blanc-event-list{list-style:none;padding:0;margin:0}
+html body .blanc-event{display:grid;grid-template-columns:110px 24px minmax(0,1fr);column-gap:18px;position:relative;padding:0 0 30px}
+html body .blanc-event-time{font:12px/1.5 Arial,sans-serif;padding-top:2px}
+html body .blanc-event-time>span{display:block}
+html body .blanc-event-time>small{display:block;font:10px/1.7 'Courier New',monospace;color:#8a7a68;margin-top:5px;overflow-wrap:anywhere}
+html body .blanc-event-marker{position:relative;isolation:isolate;font:10px/22px 'Courier New',monospace;color:#822b33;text-align:center}
+html body .blanc-event-marker:after{content:'';position:absolute;left:50%;top:25px;bottom:-2px;border-left:1px solid #a99e8977;z-index:-1}
+html body .blanc-event:last-child .blanc-event-marker:after{bottom:10px}
+html body .blanc-event-body{min-width:0;padding:0 0 22px;border-bottom:1px solid #a99e8944}
+html body .blanc-event-meta{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:8px}
+html body .blanc-event-description{font:15px/1.75 Arial,sans-serif;margin:0 0 12px;overflow-wrap:anywhere}
+html body .blanc-event-body>div>button{font:11px Arial,sans-serif;color:#822b33;background:none;border:0;border-radius:0;padding:0;text-decoration:underline;cursor:pointer}
+html body .blanc-event-details{margin-top:12px;font:11px/1.7 Arial,sans-serif;color:#7a6a5a}
+html body .blanc-event-details>summary{cursor:pointer;font:10px Arial,sans-serif}
+html body .blanc-event-details dl{margin:12px 0 0;display:grid;gap:8px}
+html body .blanc-event-details dt{font:10px Arial,sans-serif;color:#8a7a68}
+html body .blanc-event-details dd{margin:3px 0 0;font:11px/1.6 'Courier New',monospace;overflow-wrap:anywhere}
+/* Version history describes investigation changes; case event dates stay in Timeline. */
+html body .blanc-revision-intro h2{font:400 24px/1.3 Arial,sans-serif;letter-spacing:-.6px;margin:15px 0 8px}
+html body .blanc-revision-intro p{font:12px/1.7 Arial,sans-serif;color:#8a7a68;margin:0 0 24px}
+html body .blanc-version-list{list-style:none;margin:0;padding:0}
+html body .blanc-version-list>li{display:grid;grid-template-columns:30px minmax(0,1fr) auto;gap:18px;padding:20px 0;border-top:1px solid #a99e8977;align-items:start}
+html body .blanc-version-list>li.is-selected{border-left:2px solid #822b33;padding-left:12px}
+html body .blanc-version-number{font:12px 'Courier New',monospace;color:#8a7a68;padding-top:3px}
+html body .blanc-version-caption{display:flex;gap:14px;flex-wrap:wrap;align-items:baseline}
+html body .blanc-version-caption strong{font:500 16px/1.4 Arial,sans-serif}
+html body .blanc-version-caption span{font:10px Arial,sans-serif;color:#822b33}
+html body .blanc-version-story{min-width:0}
+html body .blanc-version-story>p{font:13px/1.7 Arial,sans-serif;margin:7px 0}
+html body .blanc-version-story>small{font:10px/1.7 Arial,sans-serif;color:#8a7a68;display:block}
+html body .blanc-version-story details{margin-top:12px;font:12px/1.7 Arial,sans-serif}
+html body .blanc-version-story summary{font:10px Arial,sans-serif;color:#8a7a68;cursor:pointer}
+html body .blanc-version-story code{font-size:10px;overflow-wrap:anywhere}
+html body .blanc-version-list>li>button{font:11px Arial,sans-serif;border:0;background:none;padding:4px 0;color:#822b33;cursor:pointer}
+html body .blanc-version-list button:disabled{opacity:.5;cursor:default}
+html body .blanc-comparison li{padding:14px 0;border-bottom:1px solid #a99e8955;font:13px/1.7 Arial,sans-serif;overflow-wrap:anywhere}
+@media(max-width:650px){html body .blanc-event{grid-template-columns:78px 18px minmax(0,1fr);column-gap:10px}html body .blanc-event-time{font-size:11px}html body .blanc-event-description{font-size:14px}html body .blanc-version-list>li{grid-template-columns:22px minmax(0,1fr);gap:12px}html body .blanc-version-list>li>button{grid-column:2;text-align:left}}
+
+html body .blanc-evidence-offer.is-details-only{padding:12px 0;background:transparent;border:0;border-top:1px solid #a99e8955;margin-top:24px}
+html body .blanc-skipped-details>summary{font:11px/1.6 Arial,sans-serif;color:#7a6a5a;cursor:pointer}
+html body .blanc-skipped-details[open]>summary{margin-bottom:12px}
+html body .blanc-evidence-offer .blanc-skipped{max-height:210px;overflow:auto;overscroll-behavior:contain;padding:0 8px 0 0;margin:0}
