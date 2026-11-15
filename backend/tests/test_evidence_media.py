@@ -13,9 +13,15 @@ from pathlib import Path
 import pytest
 from _paths import CONTRACTS_DIR, load_json
 from jsonschema import Draft202012Validator
+from pydantic import ValidationError
 from sqlalchemy import text
 
-from app.case_media import MediaStoreError, store_media_bytes
+from app.case_media import (
+    MediaStoreError,
+    extension_for_content_type,
+    store_media_bytes,
+)
+from app.contracts import EvidenceRecord
 from app.db import init_db, make_engine, make_session_factory
 from app.embeddings import EmbeddingError, FakeEmbedder
 from app.evidence import EvidenceImportError, UnsupportedFormatError, import_file, import_path
@@ -382,4 +388,237 @@ def test_cli_cleans_up_media_when_embedding_fails(tmp_path: Path) -> None:
     )
     assert code == 1
     leftover = list(media_dir.rglob("*")) if media_dir.exists() else []
+    assert leftover == []
+
+
+def test_email_jpeg_filename_stores_as_jpg(tmp_path: Path) -> None:
+    """Attachments named photo.jpeg must land as .jpg so media_path matches the schema."""
+    assert extension_for_content_type("image/jpeg", "photo.jpeg") == ".jpg"
+
+    msg = EmailMessage()
+    msg["From"] = "Alex <alex@example.test>"
+    msg["To"] = "Jordan <jordan@example.test>"
+    msg["Date"] = DATE
+    msg["Subject"] = "JPEG name"
+    msg["Message-ID"] = "<jpeg@example.test>"
+    msg.set_content("See the photo.")
+    msg.add_attachment(JPEG_BYTES, maintype="image", subtype="jpeg", filename="photo.jpeg")
+
+    path = write_bytes(tmp_path, "mail.eml", msg.as_bytes())
+    media_dir = tmp_path / "media"
+    records = {
+        r.source_locator: r
+        for r in import_file(path, "case-a", source_root=tmp_path, media_dir=media_dir)
+    }
+    image = records["part 2"]
+    assert image.media_path == f"media/{image.record_id}.jpg"
+    assert image.content_type == "image/jpeg"
+    assert (media_dir / f"{image.record_id}.jpg").read_bytes() == JPEG_BYTES
+    assert_schema(image)
+
+
+def test_failed_eml_part_cleans_up_written_attachment(tmp_path: Path) -> None:
+    """A later bad text part must not leave the earlier PNG attachment on disk."""
+    # Build a multipart manually so the second text part has an impossible charset.
+    raw = (
+        b"From: Alex <alex@example.test>\r\n"
+        b"To: Jordan <jordan@example.test>\r\n"
+        b"Date: Fri, 10 Apr 2026 09:15:00 -0400\r\n"
+        b"Subject: Partial fail\r\n"
+        b"Message-ID: <partial@example.test>\r\n"
+        b'MIME-Version: 1.0\r\n'
+        b'Content-Type: multipart/mixed; boundary="bound"\r\n'
+        b"\r\n"
+        b"--bound\r\n"
+        b"Content-Type: image/png\r\n"
+        b"Content-Transfer-Encoding: base64\r\n"
+        b'Content-Disposition: attachment; filename="dock.png"\r\n'
+        b"\r\n"
+    )
+    import base64
+
+    raw += base64.b64encode(PNG_BYTES) + b"\r\n"
+    raw += (
+        b"--bound\r\n"
+        b"Content-Type: text/plain; charset=x-no-such-charset\r\n"
+        b"Content-Transfer-Encoding: 8bit\r\n"
+        b"\r\n"
+        b"body that cannot decode\r\n"
+        b"--bound--\r\n"
+    )
+    write_bytes(tmp_path, "mail.eml", raw)
+    media_dir = tmp_path / "media"
+    result = import_path(tmp_path, "case-a", media_dir=media_dir)
+    assert result.errors
+    assert "mail.eml" in {e.source_file for e in result.errors}
+    leftover = list(media_dir.rglob("*.png")) if media_dir.exists() else []
+    assert leftover == []
+    assert result.written_media == {}
+
+
+def test_oversized_loose_media_rejected_before_read(tmp_path: Path, monkeypatch) -> None:
+    # Cap the limit tiny so we do not allocate a multi-GB fixture; the production
+    # check still runs via file_path.stat().st_size before read_bytes.
+    monkeypatch.setattr("app.evidence.importer.MAX_MEDIA_BYTES", 10)
+    path = write_bytes(tmp_path, "huge.png", PNG_BYTES)  # PNG_BYTES is > 10 bytes
+    media_dir = tmp_path / "media"
+    with pytest.raises(EvidenceImportError, match="media limit"):
+        import_file(path, "case-a", source_root=tmp_path, media_dir=media_dir)
+
+
+def test_store_media_rejects_oversized_bytes(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("app.case_media.MAX_MEDIA_BYTES", 10)
+    media_dir = tmp_path / "media"
+    record_id = stable_record_id("case-a", "shot.png", "entire file")
+    with pytest.raises(MediaStoreError, match="limit"):
+        store_media_bytes(media_dir, record_id, b"x" * 11, ".png")
+
+
+def test_pydantic_requires_media_fields_when_modality_is_image() -> None:
+    with pytest.raises(ValidationError, match="media_path and content_type"):
+        EvidenceRecord(
+            record_id="rec_0123456789abcdef",
+            case_id="case-a",
+            source_file="shot.png",
+            source_locator="entire file",
+            content="",
+            modality="image",
+        )
+
+
+def test_cli_reimport_embedding_failure_keeps_existing_media(tmp_path: Path) -> None:
+    """Failed re-import must not delete media that an earlier successful import created."""
+    from sqlalchemy import select
+
+    from app.db import make_engine, make_session_factory
+    from app.evidence.__main__ import main
+    from app.models import Case
+
+    exports = tmp_path / "exports"
+    exports.mkdir()
+    write_bytes(exports, "shot.png", PNG_BYTES)
+    db = tmp_path / "blanc.db"
+    media_dir = tmp_path / "media"
+
+    assert (
+        main(
+            [
+                str(exports),
+                "--store",
+                "--title",
+                "Keep media",
+                "--database-url",
+                f"sqlite:///{db}",
+                "--media-dir",
+                str(media_dir),
+            ],
+            embedder=FakeEmbedder(),
+        )
+        == 0
+    )
+    pngs = list(media_dir.glob("*.png"))
+    assert len(pngs) == 1
+    existing = pngs[0]
+    before = existing.read_bytes()
+
+    class BoomEmbedder(FakeEmbedder):
+        def embed_documents(self, texts):  # noqa: ANN001
+            raise EmbeddingError("boom")
+
+    engine = make_engine(f"sqlite:///{db}")
+    with make_session_factory(engine)() as session:
+        case_id = session.scalars(select(Case.case_id)).one()
+    engine.dispose()
+
+    # Add new text so embedding runs; the PNG is an idempotent no-op (created=False)
+    # and must not be unlinked when embedding fails.
+    (exports / "notes.txt").write_text("hello\n", encoding="utf-8")
+    code = main(
+        [
+            str(exports),
+            "--store",
+            "--case-id",
+            case_id,
+            "--database-url",
+            f"sqlite:///{db}",
+            "--media-dir",
+            str(media_dir),
+        ],
+        embedder=BoomEmbedder(),
+    )
+    assert code == 1
+    assert existing.exists()
+    assert existing.read_bytes() == before
+
+
+def test_cli_empty_records_cleanup_leaves_no_media(tmp_path: Path) -> None:
+    from app.evidence.__main__ import main
+
+    exports = tmp_path / "exports"
+    exports.mkdir()
+    (exports / "empty.eml").write_bytes(b"")  # empty eml → no records
+    db = tmp_path / "blanc.db"
+    media_dir = tmp_path / "media"
+    code = main(
+        [
+            str(exports),
+            "--store",
+            "--title",
+            "Empty",
+            "--database-url",
+            f"sqlite:///{db}",
+            "--media-dir",
+            str(media_dir),
+        ],
+        embedder=FakeEmbedder(),
+    )
+    assert code == 1
+    leftover = list(media_dir.rglob("*")) if media_dir.exists() else []
+    assert leftover == []
+
+
+def test_cli_rejected_media_record_cleans_up_new_file(tmp_path: Path) -> None:
+    """Media written for a record that store_records rejects must be unlinked."""
+    from app.evidence.__main__ import main
+
+    db = tmp_path / "blanc.db"
+    media_dir = tmp_path / "media"
+    exports = tmp_path / "exports"
+    exports.mkdir()
+
+    case_id = "case_rejectedmedia01"
+    record_id = stable_record_id(case_id, "shot.png", "entire file")
+    engine = make_engine(f"sqlite:///{db}")
+    init_db(engine, FakeEmbedder().dim)
+    with make_session_factory(engine)() as session:
+        session.add(Case(case_id=case_id, title="Reject media"))
+        session.flush()
+        # Same record_id the PNG import will use, but different immutable content.
+        placeholder = EvidenceRecord(
+            record_id=record_id,
+            case_id=case_id,
+            source_file="shot.png",
+            source_locator="entire file",
+            content="placeholder text, not the image",
+        )
+        assert store_records(session, case_id, [placeholder], FakeEmbedder()).inserted == 1
+        session.commit()
+    engine.dispose()
+
+    write_bytes(exports, "shot.png", PNG_BYTES)
+    code = main(
+        [
+            str(exports),
+            "--store",
+            "--case-id",
+            case_id,
+            "--database-url",
+            f"sqlite:///{db}",
+            "--media-dir",
+            str(media_dir),
+        ],
+        embedder=FakeEmbedder(),
+    )
+    assert code == 1
+    leftover = list(media_dir.rglob("*.png")) if media_dir.exists() else []
     assert leftover == []

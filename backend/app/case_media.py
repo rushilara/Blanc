@@ -52,11 +52,13 @@ def media_type_for_suffix(suffix: str) -> tuple[str, str] | None:
 
 
 def extension_for_content_type(content_type: str, filename: str | None = None) -> str | None:
-    """File extension for a known image MIME type, preferring the attachment filename."""
-    if filename:
-        suffix = Path(filename).suffix.lower()
-        if suffix in IMAGE_TYPES and IMAGE_TYPES[suffix][0] == content_type:
-            return suffix
+    """Canonical on-disk extension for a known media MIME type.
+
+    Always maps ``image/jpeg`` to ``.jpg`` (never ``.jpeg``) so ``media_path`` matches
+    the contract pattern ``media/rec_<16 hex>.(png|jpg|pdf)``. ``filename`` is ignored
+    for the suffix — MIME type is authoritative.
+    """
+    del filename  # MIME type owns the stored extension; see media_path schema pattern
     if content_type == "image/png":
         return ".png"
     if content_type == "image/jpeg":

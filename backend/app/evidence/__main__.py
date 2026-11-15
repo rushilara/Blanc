@@ -97,6 +97,12 @@ def _import_and_store(args: argparse.Namespace, embedder: Embedder | None) -> in
     url = args.database_url or settings.DATABASE_URL
     engine = make_engine(url)
     written_media: dict[str, Path] = {}
+    committed = False
+    result: ImportResult | None = None
+    stored = None
+    case_id = ""
+    total = 0
+    status = ""
     try:
         init_db(engine, settings.EMBEDDING_DIM)
         with make_session_factory(engine)() as session:
@@ -120,7 +126,6 @@ def _import_and_store(args: argparse.Namespace, embedder: Embedder | None) -> in
                 return 1
             written_media = result.written_media
             if not result.records:
-                remove_media_files(written_media)
                 print("error: no records to store; nothing was written.", file=sys.stderr)
                 return 1
             try:
@@ -128,7 +133,6 @@ def _import_and_store(args: argparse.Namespace, embedder: Embedder | None) -> in
                     session, case_id, result.records, embedder or make_embedder(settings)
                 )
             except EmbeddingError as error:
-                remove_media_files(written_media)
                 print(f"error: embedding failed; nothing was written: {error}", file=sys.stderr)
                 return 1
             # Rejected records never landed in SQLite; drop any media this run created for them.
@@ -140,10 +144,16 @@ def _import_and_store(args: argparse.Namespace, embedder: Embedder | None) -> in
                 }
             )
             session.commit()
+            committed = True
             total = session.query(EvidenceRecordRow).filter_by(case_id=case_id).count()
             status = session.get(Case, case_id).import_status
     finally:
+        if not committed:
+            remove_media_files(written_media)
         engine.dispose()
+
+    if not committed or result is None or stored is None:
+        return 1
 
     print(
         f"Stored in {url}: {stored.inserted} new, {stored.unchanged} already stored, "

@@ -66,11 +66,13 @@ from pydantic import ValidationError
 
 from app.case_media import (
     EMAIL_IMAGE_TYPES,
+    MAX_MEDIA_BYTES,
     MEDIA_SUFFIXES,
     MediaStoreError,
     extension_for_content_type,
     media_type_for_suffix,
     pdf_locator,
+    remove_media_files,
     store_media_bytes,
     verify_media_bytes,
 )
@@ -235,14 +237,22 @@ def import_path(
                     f"{source_file} repeats record_id {clash.record_id}, which another file "
                     "already provided; none of this file's records were imported"
                 )
-        except EvidenceImportError as error:
+        except (EvidenceImportError, ValidationError) as error:
+            # Media may already be on disk for a part that succeeded before a later
+            # part failed; drop those orphans so a failed file never leaves bytes behind.
+            remove_media_files(sink.written_media)
             if is_folder and isinstance(error, UnsupportedFormatError):
                 shown = file_path.suffix.lower() or "(no extension)"
                 result.skipped.append(ImportProblem(source_file, f"unsupported format {shown}"))
                 continue
             if strict:
                 raise
-            result.errors.append(ImportProblem(source_file, str(error)))
+            reason = (
+                str(error)
+                if isinstance(error, EvidenceImportError)
+                else f"invalid evidence record: {error}"
+            )
+            result.errors.append(ImportProblem(source_file, reason))
             continue
         seen_ids.update(record.record_id for record in records)
         result.records.extend(records)
@@ -297,6 +307,15 @@ def import_file(
             f"Unsupported format {shown} for {source}. "
             f"Supported formats: {', '.join(SUPPORTED_SUFFIXES)}."
         )
+    if suffix in MEDIA_SUFFIXES:
+        try:
+            size = file_path.stat().st_size
+        except OSError as error:
+            raise EvidenceImportError(f"Could not read {source}: {error}") from error
+        if size > MAX_MEDIA_BYTES:
+            raise EvidenceImportError(
+                f"{source} is {size} bytes; media limit is {MAX_MEDIA_BYTES} bytes"
+            )
     try:
         raw = file_path.read_bytes()
     except OSError as error:
@@ -857,13 +876,21 @@ def _message_records(
                 yield _email_image_record(
                     part, where, builder, base=base, date=date, parent_locator=headers_locator
                 )
-            except EvidenceImportError as error:
+            except (EvidenceImportError, ValidationError, MediaStoreError) as error:
                 # Mislabelled or truncated attachments are common; keep the email text and
                 # the attachments[] metadata entry rather than failing the whole .eml.
+                detail = str(error)
+                for prefix in (
+                    f"{builder.source_file} {where}: ",
+                    f"{builder.source_file} ",
+                ):
+                    if detail.startswith(prefix):
+                        detail = detail[len(prefix) :]
+                        break
                 builder.sink.warnings.append(
                     ImportProblem(
-                        f"{builder.source_file} {where}",
-                        f"attachment kept as metadata only: {error}",
+                        builder.source_file,
+                        f"{where}: attachment kept as metadata only ({detail})",
                     )
                 )
             continue
