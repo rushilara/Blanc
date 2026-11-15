@@ -327,6 +327,73 @@ def test_hidden_files_and_folders_are_skipped(tmp_path: Path) -> None:
     assert {p.reason for p in result.skipped} == {"hidden file or folder"}
 
 
+SPOILER = "ANSWER_KEY_SHOULD_NOT_ENTER_CORPUS"
+
+
+def test_a_symlink_to_a_file_outside_the_root_is_not_followed(tmp_path: Path) -> None:
+    outside = write(tmp_path, "answer_keys/q1.txt", f"{SPOILER}\n")
+    root = tmp_path / "evidence"
+    write(root, "real.txt", "a real note\n")
+    (root / "notes.txt").symlink_to(outside)
+
+    result = import_path(root, "case-a")
+
+    assert [r.source_file for r in result.records] == ["real.txt"]
+    assert all(SPOILER not in r.content for r in result.records)
+    assert [(p.source_file, p.reason) for p in result.skipped] == [
+        ("notes.txt", "symbolic link (not followed)")
+    ]
+    assert result.errors == []
+
+
+def test_a_symlink_into_a_restricted_or_hidden_folder_is_not_followed(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"
+    key = write(root, "answer_keys/q1.txt", f"{SPOILER}\n")
+    hidden = write(root, ".private/x.txt", f"{SPOILER}\n")
+    write(root, "real.txt", "a real note\n")
+    (root / "innocent.txt").symlink_to(key)
+    (root / "also_innocent.txt").symlink_to(hidden)
+
+    result = import_path(root, "case-a")
+
+    assert [r.source_file for r in result.records] == ["real.txt"]
+    assert all(SPOILER not in r.content for r in result.records)
+    reasons = {p.source_file: p.reason for p in result.skipped}
+    assert reasons["innocent.txt"] == "symbolic link (not followed)"
+    assert reasons["also_innocent.txt"] == "symbolic link (not followed)"
+    assert set(reasons) == {
+        "innocent.txt",
+        "also_innocent.txt",
+        "answer_keys/q1.txt",
+        ".private/x.txt",
+    }
+
+
+def test_a_symlinked_folder_is_not_walked(tmp_path: Path) -> None:
+    write(tmp_path, "elsewhere/a.txt", f"{SPOILER}\n")
+    root = tmp_path / "evidence"
+    write(root, "real.txt", "a real note\n")
+    (root / "linked").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+
+    result = import_path(root, "case-a")
+
+    assert [r.source_file for r in result.records] == ["real.txt"]
+    assert all(SPOILER not in r.content for r in result.records)
+    assert all(p.reason == "symbolic link (not followed)" for p in result.skipped)
+
+
+def test_importing_a_symlink_directly_is_an_error(tmp_path: Path) -> None:
+    outside = write(tmp_path, "answer_keys/q1.txt", f"{SPOILER}\n")
+    root = tmp_path / "evidence"
+    root.mkdir()
+    link = root / "notes.txt"
+    link.symlink_to(outside)
+    with pytest.raises(EvidenceImportError, match="symbolic link"):
+        import_file(link, "case-a", source_root=root)
+    with pytest.raises(EvidenceImportError, match="symbolic link"):
+        import_file(link, "case-a", source_file="notes.txt")
+
+
 def test_a_duplicate_id_across_files_fails_only_the_second_file(tmp_path: Path) -> None:
     write(tmp_path, "notes.txt", "a note\n")
     shutil.copy(FIXTURES / "synthetic_records.json", tmp_path / "a_export.json")

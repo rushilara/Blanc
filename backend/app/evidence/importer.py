@@ -17,6 +17,10 @@ root, and record IDs are derived from that path. Importing a whole export,
 one of its subfolders or a single file therefore gives the same IDs, as long
 as the same source root is used.
 
+Symbolic links are never followed. A link can point outside the source root, or
+at an answer key under a harmless-looking name, so linked files and anything
+reached through a linked folder are skipped and reported.
+
 Timestamps are copied as found in the source. This module never invents or
 reinterprets one; normalization happens later in the pipeline.
 """
@@ -124,9 +128,10 @@ def import_path(
 
     Files are visited in sorted order so results are deterministic. A file that
     fails is reported in `errors` and never half-imported; with `strict=True`
-    the first failure raises instead. Listed in `skipped`, not `errors`: hidden
-    files and folders, anything under a name matching `skip_patterns`, and, when
-    importing a folder, files in a format the importer does not handle.
+    the first failure raises instead. Listed in `skipped`, not `errors`: symbolic
+    links, hidden files and folders, anything under a name matching
+    `skip_patterns`, and, when importing a folder, files in a format the importer
+    does not handle.
     """
     _require_case_id(case_id)
     target = Path(path)
@@ -139,7 +144,7 @@ def import_path(
         files = [
             (candidate, (base / candidate.relative_to(target)).as_posix())
             for candidate in sorted(target.rglob("*"))
-            if candidate.is_file()
+            if candidate.is_file() or candidate.is_symlink()
         ]
     else:
         files = [(target, base.as_posix())]
@@ -149,6 +154,9 @@ def import_path(
     seen_ids: set[str] = set()
     for file_path, source_file in files:
         parts = PurePosixPath(source_file).parts
+        if is_folder and _reached_through_symlink(target, file_path):
+            result.skipped.append(ImportProblem(source_file, "symbolic link (not followed)"))
+            continue
         if any(part.startswith(".") for part in parts):
             result.skipped.append(ImportProblem(source_file, "hidden file or folder"))
             continue
@@ -197,6 +205,12 @@ def import_file(
     """
     _require_case_id(case_id)
     file_path = Path(path)
+    if file_path.is_symlink():
+        raise EvidenceImportError(
+            f"{file_path.name} is a symbolic link. Links are not followed, so evidence cannot "
+            "be pulled in from outside the source root or from an excluded file; import the "
+            "real file instead."
+        )
     if source_file is not None:
         source = source_file
     elif source_root is not None:
@@ -231,6 +245,16 @@ def import_file(
 
     _reject_duplicate_ids(records)
     return records
+
+
+def _reached_through_symlink(root: Path, path: Path) -> bool:
+    """True if `path`, or any folder between `root` and it, is a symbolic link."""
+    current = path
+    while current != root and current != current.parent:
+        if current.is_symlink():
+            return True
+        current = current.parent
+    return False
 
 
 def _relative_to_root(target: Path, source_root: str | Path | None) -> PurePosixPath:
