@@ -4,9 +4,11 @@ import { useEffect, useRef, useState } from "react";
 import { ApiError, listRevisions, type RevisionSummary } from "@/lib/live-api";
 import { investigationRoot } from "@/lib/revision-history";
 
-export function VersionsDrawer({ caseId, caseTitle, activeId, busy, onSelect }: {
+export function VersionsDrawer({ caseId, caseTitle, activeId, busy, onSelect, onCompare }: {
   caseId: string; caseTitle: string; activeId?: string; busy: boolean;
   onSelect: (analysisId: string) => Promise<boolean>;
+  /** BLA-50: open two picked versions side by side. */
+  onCompare?: (pair: [string, string]) => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const request = useRef<AbortController | null>(null);
@@ -14,12 +16,14 @@ export function VersionsDrawer({ caseId, caseTitle, activeId, busy, onSelect }: 
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState("");
   const [investigation, setInvestigation] = useState("");
+  // Up to two versions picked for comparison; picking a third drops the oldest pick.
+  const [picked, setPicked] = useState<string[]>([]);
   useEffect(() => () => request.current?.abort(), []);
 
   async function load() {
     request.current?.abort();
     const controller = new AbortController(); request.current = controller;
-    setState("loading"); setError(""); setRevisions([]);
+    setState("loading"); setError(""); setRevisions([]); setPicked([]);
     try {
       const items = await listRevisions(caseId, controller.signal);
       if (!controller.signal.aborted) {
@@ -35,6 +39,9 @@ export function VersionsDrawer({ caseId, caseTitle, activeId, busy, onSelect }: 
     }
   }
   const roots = revisions.filter(r => r.parent_analysis_id === null);
+  const pickedRevisions = picked.map(id => revisions.find(r => r.analysis_id === id)).filter(r => r !== undefined);
+  const sameQuestion = pickedRevisions.length === 2 && pickedRevisions[0].question === pickedRevisions[1].question;
+  const togglePick = (id: string) => setPicked(current => current.includes(id) ? current.filter(x => x !== id) : [...current, id].slice(-2));
   const visible = investigation ? revisions.filter(r => investigationRoot(revisions, r.analysis_id) === investigation) : revisions;
   return <>
     <button type="button" disabled={busy} aria-haspopup="dialog" onClick={() => { dialog.current?.showModal(); void load(); }}
@@ -57,6 +64,15 @@ export function VersionsDrawer({ caseId, caseTitle, activeId, busy, onSelect }: 
               {roots.map(root => <option key={root.analysis_id} value={root.analysis_id}>{root.question} · {root.analysis_id}</option>)}
             </select>
           </label>
+          {onCompare && <div className="mb-5 space-y-2 rounded-lg border border-zinc-300 p-3 text-sm dark:border-zinc-700">
+            <p>Pick two versions of the same question to see them side by side ({picked.length} of 2 picked).</p>
+            {pickedRevisions.length === 2 && !sameQuestion && <p role="alert" className="text-xs text-red-700 dark:text-red-300">These versions ask different questions, so their support cannot be compared. Pick two versions of one question.</p>}
+            <button type="button" disabled={busy || !sameQuestion}
+              className="rounded border border-blue-500 px-3 py-2 font-semibold text-blue-800 disabled:opacity-50 dark:text-blue-300"
+              onClick={() => { if (sameQuestion) { onCompare([picked[0], picked[1]]); dialog.current?.close(); } }}>
+              Compare side by side
+            </button>
+          </div>}
           <ol className="space-y-4" aria-label="Revision history">
             {visible.map(revision => <li key={revision.analysis_id} data-revision-id={revision.analysis_id} className="space-y-3 rounded-lg border border-zinc-300 p-4 text-sm dark:border-zinc-700">
               <p className="font-semibold [overflow-wrap:anywhere]">{revision.question}</p>
@@ -70,6 +86,10 @@ export function VersionsDrawer({ caseId, caseTitle, activeId, busy, onSelect }: 
                 {revision.excluded_record_ids.length ? <ul className="mt-1 space-y-1 font-mono text-xs [overflow-wrap:anywhere]">{revision.excluded_record_ids.map(id => <li key={id}>{id}</li>)}</ul> : <p className="text-xs text-zinc-500">None</p>}
               </div>
               {revision.needs_review && <p className="text-xs font-semibold text-amber-800 dark:text-amber-300">Needs investigator review</p>}
+              {onCompare && <label className="flex items-center gap-2 text-xs font-semibold">
+                <input type="checkbox" checked={picked.includes(revision.analysis_id)} disabled={busy} onChange={() => togglePick(revision.analysis_id)} />
+                Compare
+              </label>}
               <button type="button" disabled={busy || activeId === revision.analysis_id} aria-current={activeId === revision.analysis_id ? "true" : undefined}
                 className="rounded border border-blue-500 px-3 py-2 font-semibold text-blue-800 disabled:opacity-50 dark:text-blue-300"
                 onClick={async () => { setError(""); if (await onSelect(revision.analysis_id)) dialog.current?.close(); else if (dialog.current?.open) setError("Could not open this version. Your current view has been kept. Try again."); }}>

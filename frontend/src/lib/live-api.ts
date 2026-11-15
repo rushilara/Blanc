@@ -238,9 +238,12 @@ export function restoreRecords(caseId: string, analysisId: string, recordIds: st
   return postRevision(`${path(caseId)}/analyses/${encodeURIComponent(analysisId)}/restore`, { record_ids: recordIds }, signal);
 }
 
-export async function getComparison(caseId: string, analysisId: string, signal?: AbortSignal): Promise<RevisionComparison> {
-  const data = await request(`${path(caseId)}/analyses/${encodeURIComponent(analysisId)}/comparison`, signal);
-  if (!validComparison(data) || data.case_id !== caseId || data.compared_analysis_id !== analysisId) {
+/** The support diff from this revision's parent, or from ``baseId`` (any revision of the same question, BLA-50). */
+export async function getComparison(caseId: string, analysisId: string, signal?: AbortSignal, baseId?: string): Promise<RevisionComparison> {
+  const query = baseId ? `?base=${encodeURIComponent(baseId)}` : "";
+  const data = await request(`${path(caseId)}/analyses/${encodeURIComponent(analysisId)}/comparison${query}`, signal);
+  if (!validComparison(data) || data.case_id !== caseId || data.compared_analysis_id !== analysisId
+    || (baseId !== undefined && data.base_analysis_id !== baseId)) {
     throw new ApiError("The comparison response does not match the shared contract or this revision.");
   }
   return data;

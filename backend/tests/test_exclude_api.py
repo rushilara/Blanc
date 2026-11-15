@@ -278,6 +278,61 @@ def test_a_revision_without_a_parent_has_no_comparison(app, client) -> None:
     assert missing.status_code == 404
 
 
+def test_any_two_revisions_of_one_question_can_be_compared(app, client) -> None:
+    """BLA-50: the original against a grandchild two exclusions later, and back."""
+    case_id = seed(client)
+    base = base_analysis(app, client, case_id)
+    llm(app, [output("child")])
+    child = exclude(client, case_id, base["analysis_id"], ["rec-02"])
+    llm(app, [EMPTY])
+    grandchild = exclude(client, case_id, child["analysis_id"], ["rec-01", "rec-02"])
+    url = f"/cases/{case_id}/analyses/{grandchild['analysis_id']}/comparison"
+
+    response = client.get(url, params={"base": base["analysis_id"]})
+    assert response.status_code == 200, response.text
+    comparison = response.json()
+    assert not list(COMPARISON_SCHEMA.iter_errors(comparison))
+    assert (comparison["base_analysis_id"], comparison["compared_analysis_id"]) == (
+        base["analysis_id"],
+        grandchild["analysis_id"],
+    )
+    assert comparison["excluded_record_ids"] == ["rec-01", "rec-02"]
+    statuses = {i["support_status"] for i in comparison["items"] if i["base_ref_id"]}
+    assert statuses == {"not_supported"}  # every original finding lost its sources
+    assert comparison["created_at"] == grandchild["created_at"]  # the later revision's
+    assert client.get(url, params={"base": base["analysis_id"]}).json() == comparison
+
+    # Reversed: nothing newly excluded, and the original's findings are newly supported.
+    back = client.get(
+        f"/cases/{case_id}/analyses/{base['analysis_id']}/comparison",
+        params={"base": grandchild["analysis_id"]},
+    ).json()
+    assert back["excluded_record_ids"] == []
+    assert {i["support_status"] for i in back["items"]} == {"newly_supported"}
+
+    # Without ?base the parent comparison is unchanged.
+    parent = client.get(url).json()
+    assert parent["base_analysis_id"] == child["analysis_id"]
+
+
+def test_comparing_a_revision_with_itself_or_another_question_is_422(app, client) -> None:
+    case_id = seed(client)
+    base = base_analysis(app, client, case_id)
+    url = f"/cases/{case_id}/analyses/{base['analysis_id']}/comparison"
+    assert client.get(url, params={"base": base["analysis_id"]}).status_code == 422
+    llm(app, [output()])
+    other = client.post(f"/cases/{case_id}/analyses", json={"question": "Something else?"})
+    assert other.status_code == 201
+    response = client.get(url, params={"base": other.json()["analysis_id"]})
+    assert response.status_code == 422
+    assert "different questions" in response.json()["detail"]
+    assert client.get(url, params={"base": "analysis-missing"}).status_code == 404
+    # Another case's revision is unknown here.
+    other_case = seed(client)
+    foreign = base_analysis(app, client, other_case)
+    assert client.get(url, params={"base": foreign["analysis_id"]}).status_code == 404
+
+
 # --- Errors ---------------------------------------------------------------------------------
 
 
