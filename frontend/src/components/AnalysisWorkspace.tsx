@@ -1,5 +1,7 @@
 import type { ReactNode } from "react";
-import type { AnalysisRevision } from "@/lib/analysis";
+import type { AnalysisRevision, EvidenceRecord } from "@/lib/analysis";
+import { QuestionInput } from "@/components/QuestionInput";
+import { SourceReferences } from "@/components/SourceReferences";
 
 function Pane({ id, title, count, children }: {
   id: string; title: string; count: number; children: ReactNode;
@@ -15,26 +17,28 @@ function Pane({ id, title, count, children }: {
   );
 }
 
-function Sources({ ids }: { ids: string[] }) {
-  return (
-    <ul aria-label="Source record references" className="flex flex-wrap gap-1.5">
-      {[...new Set(ids)].map((id) => <li key={id} className="rounded border border-zinc-200 px-2 py-0.5 font-mono text-xs text-zinc-600 dark:border-zinc-700 dark:text-zinc-400">{id}</li>)}
-    </ul>
-  );
-}
+const STATUS_STYLES: Record<string, string> = {
+  observed: "border-emerald-300 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200",
+  reported: "border-blue-300 bg-blue-50 text-blue-900 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-200",
+  inferred: "border-violet-300 bg-violet-50 text-violet-900 dark:border-violet-800 dark:bg-violet-950 dark:text-violet-200",
+  unresolved: "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200",
+};
 
 function Status({ value }: { value: string }) {
-  return <span className="text-xs font-medium capitalize text-zinc-500">{value.replaceAll("_", " ")}</span>;
+  return <span className={`inline-block rounded-full border px-2 py-0.5 text-xs font-semibold capitalize ${STATUS_STYLES[value] ?? "border-zinc-300 text-zinc-600"}`}>{value.replaceAll("_", " ")}</span>;
 }
 
 // Fixture loading is outside this component. BLA-42 can pass a validated live
 // response to the same renderer; no case-specific findings belong here.
-export function AnalysisWorkspace({ revision }: { revision: AnalysisRevision }) {
+export function AnalysisWorkspace({ revision, records = [], showQuestionInput = true }: { revision: AnalysisRevision; records?: EvidenceRecord[]; showQuestionInput?: boolean }) {
+  // Do not serialize other cases' excerpts into the client-side source controls.
+  const caseRecords = records.filter((record) => record.case_id === revision.case_id);
   const nodes = new Map(revision.graph.nodes.map((node) => [node.id, node.label]));
   return (
     <main className="mx-auto w-full max-w-7xl space-y-6 p-4 sm:p-6">
+      {showQuestionInput && <QuestionInput key={revision.analysis_id} question={revision.question} />}
       <div className="space-y-2">
-        <p className="text-xs font-medium uppercase tracking-widest text-zinc-500">Investigation question</p>
+        <p className="text-xs font-medium uppercase tracking-widest text-zinc-500">Saved analysis</p>
         <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">{revision.question}</h1>
         <p className="break-all font-mono text-xs text-zinc-500">Case {revision.case_id} · Revision {revision.analysis_id}</p>
       </div>
@@ -52,7 +56,7 @@ export function AnalysisWorkspace({ revision }: { revision: AnalysisRevision }) 
               <li key={claim.id} className="space-y-2 border-l-2 border-zinc-200 pl-3 dark:border-zinc-700">
                 <Status value={claim.status} />
                 <p className="text-sm leading-6">{claim.text}</p>
-                <Sources ids={claim.evidence_ids} />
+                <SourceReferences records={caseRecords} caseId={revision.case_id} ids={claim.evidence_ids} />
               </li>
             ))}
           </ul>
@@ -82,7 +86,7 @@ export function AnalysisWorkspace({ revision }: { revision: AnalysisRevision }) 
                 <p className="text-xs text-zinc-500">{edge.type.replaceAll("_", " ")}</p>
                 {edge.description && <p className="text-sm leading-6">{edge.description}</p>}
                 <Status value={edge.status} />
-                <Sources ids={edge.evidence_ids} />
+                <SourceReferences records={caseRecords} caseId={revision.case_id} ids={edge.evidence_ids} />
               </li>
             ))}
           </ul>
@@ -97,7 +101,7 @@ export function AnalysisWorkspace({ revision }: { revision: AnalysisRevision }) 
                 <p className="text-xs text-zinc-500">{event.timestamp_precision ?? "unknown"} precision · {(event.timestamp_kind ?? "unknown").replaceAll("_", " ")}</p>
                 <p className="text-sm leading-6">{event.description}</p>
                 <Status value={event.status} />
-                <Sources ids={event.evidence_ids} />
+                <SourceReferences records={caseRecords} caseId={revision.case_id} ids={event.evidence_ids} />
               </li>
             ))}
           </ol>
@@ -107,7 +111,7 @@ export function AnalysisWorkspace({ revision }: { revision: AnalysisRevision }) 
       {!!revision.excluded_record_ids.length && (
         <aside className="space-y-2 text-sm text-zinc-500">
           <p>Excluded from this revision</p>
-          <Sources ids={revision.excluded_record_ids} />
+          <SourceReferences records={caseRecords} caseId={revision.case_id} ids={revision.excluded_record_ids} />
         </aside>
       )}
     </main>

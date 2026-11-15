@@ -16,6 +16,7 @@ function publicVar(name: string, fallback: string): string {
 const nextConfig: NextConfig = {
   env: {
     NEXT_PUBLIC_API_BASE_URL: publicVar("NEXT_PUBLIC_API_BASE_URL", "http://localhost:8000"),
+    NEXT_PUBLIC_DEFAULT_CASE_ID: publicVar("NEXT_PUBLIC_DEFAULT_CASE_ID", ""),
   },
   cacheComponents: true,
   partialPrefetching: true,
