@@ -1,6 +1,6 @@
 # Run Blanc on a laptop (Docker)
 
-One command starts the whole app: the backend API and the investigator workspace. Case evidence stays on the laptop, in a Docker volume. Only calls to Gemini (embeddings and analysis) leave it.
+**Primary demo / share install** (BLA-74): one command starts the whole app — the backend API and the investigator workspace. Case evidence stays on the laptop, in a Docker volume. Only calls to Gemini (embeddings and analysis) leave it. No Vercel or Railway required. For day-to-day coding, use `make backend` / `make frontend` in the root `README.md` instead.
 
 ## Install
 

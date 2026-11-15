@@ -33,10 +33,10 @@
 
 ## Fresh local machine setup (BLA-58)
 
-Runbook detail lives in the root `README.md`. On a clean checkout:
+Runbook detail lives in the root `README.md`. **Share/demo install** is laptop Docker ([`docs/07_LAPTOP_INSTALL.md`](07_LAPTOP_INSTALL.md), BLA-74). **Dev** path on a clean checkout:
 
 1. `cp .env.example .env` and set `GEMINI_API_KEY` (leave `DATABASE_URL=sqlite:///./data/blanc.db`).
-2. `make backend` and `make frontend` in separate terminals (Python 3.12 + Node 20.12+).
+2. `make backend` and `make frontend` in separate terminals (Python 3.12 + Node 20.12+) — not the share/deploy path.
 3. Open `http://localhost:3000` → sign-in landing → `/workspace`. Health: `http://localhost:8000/health`.
 4. `make import EVIDENCE=path/to/exports TITLE="Case name"` (embeds via Gemini into the local DB). Point `EVIDENCE` at the extracted evidence folder only—keep answer keys, briefs, and question sets out of that path.
 
@@ -46,10 +46,10 @@ Runbook detail lives in the root `README.md`. On a clean checkout:
 
 Setup / talk track (local-first + Gemini compute):
 
-- [ ] Demo runs locally (backend + frontend on localhost); case DB and evidence files are on the demo machine, not a hosted volume.
-- [ ] Fresh machine followed `cp .env.example .env` → set `GEMINI_API_KEY` → `make backend` → `make frontend` → open `http://localhost:3000`.
-- [ ] The case is loaded on the demo machine with `make import EVIDENCE=... TITLE=...` and shows as ready in the workspace.
-- [ ] Team can state clearly: Gemini is used for embeddings/LLM (evidence text leaves the machine for those calls); storage is local-first, not fully offline.
+- [ ] Demo runs locally (backend + frontend on localhost); case DB and evidence files are on the demo machine, not a hosted volume. Prefer laptop Docker for share/demo; `make backend` / `make frontend` for development.
+- [ ] Fresh machine followed either [`docs/07_LAPTOP_INSTALL.md`](07_LAPTOP_INSTALL.md) (`docker compose up --build -d`) or the dev path: `cp .env.example .env` → set `GEMINI_API_KEY` → `make backend` → `make frontend` → open `http://localhost:3000`.
+- [ ] The case is loaded on the demo machine (Docker import from `07_LAPTOP_INSTALL.md`, or `make import EVIDENCE=... TITLE=...`) and shows as ready in the workspace.
+- [ ] Team can state clearly: Gemini is used for embeddings/LLM (evidence text leaves the machine for those calls); storage is local-first, not fully offline; no Vercel/Railway required for the demo.
 
 Investigative demo (rehearse under BLA-46; leave unchecked until verified on the real case):
 

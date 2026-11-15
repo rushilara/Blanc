@@ -1,6 +1,8 @@
 # Hosted app path (BLA-61)
 
-Blanc is **local-first**: the default and recommended way to run it is on the investigator's machine (`README.md`, "Demo runbook"). This document describes the *optional* hosted path for the app tier. It is **not** a cloud evidence store: case evidence, the SQLite database and imported media stay on storage the operator controls.
+> **Not the demo deploy.** The intended share/demo install is Docker Desktop + compose on a laptop — see [`docs/07_LAPTOP_INSTALL.md`](07_LAPTOP_INSTALL.md) ([BLA-74](https://linear.app/blushandbryann/issue/BLA-74): laptop Docker = deploy; no Vercel/Railway required). This document is optional hosted landing / container notes only.
+
+Blanc is **local-first**: the default and recommended way to run the product is on the investigator's machine (`README.md`, "Demo runbook", and the laptop Docker path above). This document describes the *optional* hosted path for the app tier. It is **not** a cloud evidence store: case evidence, the SQLite database and imported media stay on storage the operator controls.
 
 ## What is hosted, and where
 
@@ -12,7 +14,7 @@ Blanc is **local-first**: the default and recommended way to run it is on the in
 | Case evidence, SQLite DB, media | The `/data` volume, on operator-controlled storage | Records, chunks, vectors, revisions, boards, imported images and PDFs. |
 | Gemini (embeddings, analysis) | Google's API | Receives the evidence text (and, for media, the bytes) needed for each request. Nothing is stored there by Blanc. |
 
-**Recommended split for a shared demo:** the landing page on Vercel with `BLANC_HOSTED=1`, and the backend plus frontend run locally (or on a private machine) for anyone who opens a case.
+**Optional marketing landing only:** if you want a public marketing page with the workspace closed, you can put the landing on Vercel with `BLANC_HOSTED=1`. That is not how teammates or demo recipients run Blanc — they use the laptop Docker path. Anyone who opens a case still needs backend + workspace on a machine they control.
 
 ## Frontend on Vercel
 
