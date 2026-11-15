@@ -630,7 +630,7 @@ export function Findings() {
         {shown.unresolved_questions.length > 0 && <><h2>What remains unresolved</h2>{shown.unresolved_questions.map((question, index) => <p key={`${index}-${question}`}>{withCitations(question)}</p>)}</>}
       </>}
       {view === "Connections" && <>
-      <SpatialConnections graph={shown.graph} excludedRecordIds={shown.excluded_record_ids} onOpenSource={setOpen} />
+      <SpatialConnections graph={shown.graph} records={sources} excludedRecordIds={shown.excluded_record_ids} onOpenSource={setOpen} />
       <details><summary>Relationship review and comparison</summary><ConnectionMapPane
         nodes={shown.graph.nodes}
         edges={shown.graph.edges}
