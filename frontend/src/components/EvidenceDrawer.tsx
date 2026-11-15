@@ -247,44 +247,26 @@ export function EvidenceDrawer({
 }: EvidenceDrawerProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
-  const onCloseRef = useRef(onClose);
   const titleId = useId();
   const excluded = new Set(excludedRecordIds);
   const evidenceIds = [...new Set(selection.evidenceIds)];
 
-  useEffect(() => {
-    onCloseRef.current = onClose;
-  }, [onClose]);
-
+  // Open when the selection changes. Do not call dialog.close() in cleanup: under React
+  // StrictMode (npm run dev) the close event is delivered after remount and would clear
+  // the selection. Escape / the Close button still fire the dialog's native close event.
   useEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog) return;
-
-    if (!dialog.open) {
-      dialog.showModal();
-    }
+    if (!dialog.open) dialog.showModal();
     closeRef.current?.focus();
-
-    function handleClose() {
-      onCloseRef.current();
-    }
-
-    dialog.addEventListener("close", handleClose);
-    return () => {
-      dialog.removeEventListener("close", handleClose);
-      if (dialog.open) dialog.close();
-    };
   }, [selection.id]);
-
-  function requestClose() {
-    dialogRef.current?.close();
-  }
 
   return (
     <dialog
       ref={dialogRef}
       aria-labelledby={titleId}
       aria-modal="true"
+      onClose={onClose}
       className="fixed inset-0 m-0 h-dvh max-h-none w-full max-w-none overflow-y-auto border-0 bg-white p-0 text-zinc-900 shadow-xl open:flex open:flex-col backdrop:bg-black/40 dark:bg-zinc-950 dark:text-zinc-100 sm:inset-y-0 sm:left-auto sm:right-0 sm:w-full sm:max-w-lg sm:border-l sm:border-zinc-200 dark:sm:border-zinc-700"
     >
       <header className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-zinc-200 bg-white px-5 py-4 dark:border-zinc-800 dark:bg-zinc-950">
@@ -299,7 +281,7 @@ export function EvidenceDrawer({
         <button
           ref={closeRef}
           type="button"
-          onClick={requestClose}
+          onClick={() => dialogRef.current?.close()}
           className="shrink-0 rounded border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-700"
         >
           Close
