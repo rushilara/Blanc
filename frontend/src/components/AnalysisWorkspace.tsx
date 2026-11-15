@@ -3,7 +3,9 @@
 import { useMemo, type ReactNode } from "react";
 import type { AnalysisRevision, EvidenceRecord } from "@/lib/analysis";
 import { QuestionInput } from "@/components/QuestionInput";
+import { RelationshipGraph } from "@/components/RelationshipGraph";
 import { SourceReferences } from "@/components/SourceReferences";
+import { Status } from "@/components/StatusBadge";
 import { TimelineView } from "@/components/TimelineView";
 
 function Pane({ id, title, count, children }: {
@@ -18,17 +20,6 @@ function Pane({ id, title, count, children }: {
       <div className="space-y-5 p-5">{children}</div>
     </section>
   );
-}
-
-const STATUS_STYLES: Record<string, string> = {
-  observed: "border-emerald-300 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200",
-  reported: "border-blue-300 bg-blue-50 text-blue-900 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-200",
-  inferred: "border-violet-300 bg-violet-50 text-violet-900 dark:border-violet-800 dark:bg-violet-950 dark:text-violet-200",
-  unresolved: "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200",
-};
-
-function Status({ value }: { value: string }) {
-  return <span className={`inline-block rounded-full border px-2 py-0.5 text-xs font-semibold capitalize ${STATUS_STYLES[value] ?? "border-zinc-300 text-zinc-600"}`}>{value.replaceAll("_", " ")}</span>;
 }
 
 type AnalysisWorkspaceProps = {
@@ -53,7 +44,6 @@ export function AnalysisWorkspace({
     () => records.filter((record) => record.case_id === revision.case_id),
     [records, revision.case_id],
   );
-  const nodes = new Map(revision.graph.nodes.map((node) => [node.id, node.label]));
   const sourceProps = {
     records: caseRecords,
     caseId: revision.case_id,
@@ -98,26 +88,11 @@ export function AnalysisWorkspace({
           )}
         </Pane>
         <Pane id="graph" title="Relationships" count={revision.graph.edges.length}>
-          <ul aria-label="Entities" className="flex flex-wrap gap-2">
-            {revision.graph.nodes.map((node) => (
-              <li key={node.id} className="rounded-lg border border-zinc-200 px-3 py-2 dark:border-zinc-700">
-                <p className="text-sm font-medium">{node.label}</p>
-                <p className="text-xs capitalize text-zinc-500">{node.type}</p>
-              </li>
-            ))}
-          </ul>
-          <ul aria-label="Relationships" className="space-y-4">
-            {revision.graph.edges.map((edge) => (
-              <li key={edge.id} className="space-y-2 rounded-lg bg-zinc-50 p-3 dark:bg-zinc-900">
-                <p className="break-words text-sm font-medium">{nodes.get(edge.source) ?? edge.source} <span aria-label="to">→</span> {nodes.get(edge.target) ?? edge.target}</p>
-                <p className="text-xs text-zinc-500">{edge.type.replaceAll("_", " ")}</p>
-                {edge.description && <p className="text-sm leading-6">{edge.description}</p>}
-                <Status value={edge.status} />
-                <SourceReferences {...sourceProps} ids={edge.evidence_ids} />
-              </li>
-            ))}
-          </ul>
-          {!revision.graph.edges.length && <p className="text-sm text-zinc-500">No supported relationships.</p>}
+          <RelationshipGraph
+            key={`${revision.case_id}:${revision.analysis_id}`}
+            graph={revision.graph}
+            {...sourceProps}
+          />
         </Pane>
         <Pane id="timeline" title="Timeline" count={revision.timeline_events.length}>
           <TimelineView

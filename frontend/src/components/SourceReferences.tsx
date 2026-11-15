@@ -15,6 +15,8 @@ type SourceReferencesProps = {
   autoOpen?: boolean;
   /** When set, render this label as the open control instead of citation chips (timeline events). */
   triggerLabel?: string;
+  /** When true, render only the evidence dialog, with no chips or label (graph click-to-open). */
+  hideTriggers?: boolean;
   excludedRecordIds?: string[];
   onExclude?: (recordId: string) => void;
   onAnnotate?: (recordId: string) => void;
@@ -221,6 +223,7 @@ export function SourceReferences({
   records,
   autoOpen = false,
   triggerLabel,
+  hideTriggers = false,
   excludedRecordIds = [],
   onExclude,
   onAnnotate,
@@ -253,7 +256,7 @@ export function SourceReferences({
 
   return (
     <>
-      {triggerLabel ? (
+      {hideTriggers ? null : triggerLabel ? (
         <button
           type="button"
           disabled={!uniqueIds.length}
