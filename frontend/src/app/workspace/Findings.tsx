@@ -571,7 +571,7 @@ export function Findings() {
   return <div className="blanc-workspace">
     {/* The static sheet avoids the missing workspace styles in the CSS pipeline. */}
     {/* eslint-disable-next-line @next/next/no-css-tags */}
-    <link rel="stylesheet" href="/blanc/findings.css?v=merged-main-1" precedence="blanc" />
+    <link rel="stylesheet" href="/blanc/findings.css?v=source-context-1" precedence="blanc" />
     <header className="blanc-header">
       <Link href="/" aria-label="Blanc home"><svg width="92" height="37" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="210 168 1460 570"><defs>
     <filter id="ink-alpha" colorInterpolationFilters="sRGB">
@@ -742,6 +742,7 @@ export function Findings() {
         busy={!!working}
         onExclude={() => void changeEvidence("exclude")}
         onRestore={() => void changeEvidence("restore")}
+        cited={sourceOrder} onOpen={setOpen}
         onClose={() => setOpen(undefined)} onStep={stepSource} />}
     </div> : <main className="blanc-reading blanc-entry">
       <h1 aria-label={greeting || undefined}><TypedGreeting key={greeting} text={greeting} /></h1>

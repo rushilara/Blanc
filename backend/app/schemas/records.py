@@ -48,3 +48,24 @@ class RecordPage(BaseModel):
         data = handler(self)
         data["items"] = [r.to_contract_json() for r in self.items]
         return data
+
+
+class FileContextRead(BaseModel):
+    """The cited record among the other records of its ``source_file`` in this case.
+
+    ``items[index - start]`` is the cited record. ``ordered_by`` says how the file was
+    ordered: ``time`` (every record has a time), ``locator`` (none has; the position the
+    source locator states), or ``time_then_locator`` (timed records first)."""
+
+    source_file: str
+    total: int
+    index: int
+    start: int
+    ordered_by: str
+    items: list[EvidenceRecord]
+
+    @model_serializer(mode="wrap")
+    def _contract_items(self, handler: SerializerFunctionWrapHandler):
+        data = handler(self)
+        data["items"] = [r.to_contract_json() for r in self.items]
+        return data

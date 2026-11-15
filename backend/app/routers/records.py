@@ -17,14 +17,16 @@ from app.records import (
     ChunkNotFoundError,
     InvalidExcerptError,
     RecordNotFoundError,
+    file_context,
     get_record_with_excerpt,
     page_records,
 )
-from app.schemas.records import ExcerptRead, RecordPage, RecordRead
+from app.schemas.records import ExcerptRead, FileContextRead, RecordPage, RecordRead
 
 router = APIRouter(prefix="/cases/{case_id}/records", tags=["records"])
 
 MAX_PAGE = 200
+MAX_CONTEXT = 200
 
 
 @router.get("")
@@ -125,3 +127,28 @@ def get_case_record_media(
         safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", record.record_id)
         headers["Content-Disposition"] = f'attachment; filename="{safe_name}.pdf"'
     return Response(content=media.data, media_type=media.media_type, headers=headers)
+
+
+@router.get("/{record_id}/context")
+def get_case_record_context(
+    record_id: str,
+    case: CaseDep,
+    session: SessionDep,
+    before: Annotated[int, Query(ge=0, le=MAX_CONTEXT)] = 40,
+    after: Annotated[int, Query(ge=0, le=MAX_CONTEXT)] = 40,
+) -> FileContextRead:
+    """The record in its original file: up to ``before`` / ``after`` records of the same
+    ``source_file`` in this case around it, in file order (see ``app.records.file_context``).
+    404 if the record is not in this case."""
+    try:
+        found = file_context(session, case.case_id, record_id, before=before, after=after)
+    except RecordNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Record not found") from exc
+    return FileContextRead(
+        source_file=found.source_file,
+        total=found.total,
+        index=found.index,
+        start=found.start,
+        ordered_by=found.ordered_by,
+        items=found.items,
+    )

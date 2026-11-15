@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { EvidenceRecord } from "@/lib/analysis";
 import { fetchRecord, RecordFetchError } from "@/lib/records";
+import { contextLine, fetchFileContext, orderNote, type FileContext } from "@/lib/record-context";
 import { isRetryableStatus } from "@/lib/retryable";
 import { presentSource } from "@/lib/source-presentation";
 import {
@@ -36,16 +37,20 @@ type Remote =
  * provenance, and the raw record. A record that was not preloaded is fetched through
  * the case-scoped record endpoint, like the shared drawer does.
  */
-export function SourcePanel({ caseId, recordId, number, total, records, excluded, busy, onClose, onStep, onExclude, onRestore }: {
+export function SourcePanel({ caseId, recordId, number, total, records, cited = [], excluded, busy, onClose, onStep, onOpen, onExclude, onRestore }: {
   caseId: string;
   recordId: string;
   number: number;
   total: number;
   records: EvidenceRecord[];
+  /** The finding's sources in citation order; marks [n] in the original-file view. */
+  cited?: string[];
   excluded: boolean;
   busy?: boolean;
   onClose: () => void;
   onStep: (direction: -1 | 1) => void;
+  /** Open another record (a neighbour in the original file) in this panel. */
+  onOpen?: (recordId: string) => void;
   onExclude?: () => void;
   onRestore?: () => void;
 }) {
@@ -81,13 +86,29 @@ export function SourcePanel({ caseId, recordId, number, total, records, excluded
   }, [onClose]);
 
   const record = preloaded ?? (remote.status === "ready" ? remote.record : undefined);
+  const isCited = cited.includes(recordId);
+  const [file, setFile] = useState<FileState>({ status: "loading" });
+  const [tab, setTab] = useState<"file" | "details">("file");
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchFileContext(caseId, recordId, controller.signal)
+      .then(context => setFile({ status: "ready", context }))
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        setFile({ status: "error", message: error instanceof RecordFetchError ? error.message : "Could not load the original file." });
+      });
+    return () => controller.abort();
+  }, [caseId, recordId]);
+  // A file holding only this record has nothing more to show: keep today's view.
+  const hasFile = file.status !== "ready" || file.context.total > 1;
+  const showFile = hasFile && tab === "file";
   const view = record ? presentSource(record) : null;
   const name = view?.name ?? (record ? record.source_file.split(/[\\/]/).filter(Boolean).at(-1) : undefined) ?? recordId;
 
   return <aside className="blanc-source-panel" aria-labelledby="blanc-source-panel-title">
     <header>
       <div className="blanc-source-panel-nav">
-        <span>Source {number} of {total}</span>
+        <span>{isCited || !cited.length ? <>Source {number} of {total}</> : "Not cited · same file as a source"}</span>
         <span>
           <button type="button" onClick={() => onStep(-1)} disabled={number <= 1} aria-label="Previous source">‹</button>
           <button type="button" onClick={() => onStep(1)} disabled={number >= total} aria-label="Next source">›</button>
@@ -98,11 +119,17 @@ export function SourcePanel({ caseId, recordId, number, total, records, excluded
       <p className="blanc-source-panel-kind">{view?.kind ?? "Evidence record"}{excluded && <em> · Excluded from this revision</em>}</p>
     </header>
 
+    {record && hasFile && <div className="blanc-source-tabs" role="tablist" aria-label="Source view">
+      <button type="button" role="tab" aria-selected={showFile} onClick={() => setTab("file")}>Original file</button>
+      <button type="button" role="tab" aria-selected={!showFile} onClick={() => setTab("details")}>Details</button>
+    </div>}
+    {record && showFile && <SourceFile file={file} recordId={recordId} cited={cited} onOpen={onOpen} />}
+
     {!record && remote.status === "loading" && <p role="status">Loading the original record…</p>}
     {!record && remote.status === "error" && <p role="alert">{remote.message} Its content cannot be verified here.{remote.retryable && <>{" "}
       <button type="button" className="blanc-retry" onClick={() => { setRemote({ status: "loading" }); setReload(n => n + 1); }}>Retry</button></>}</p>}
 
-    {record && <>
+    {record && !showFile && <>
       {localImageName(record) && <SourceImage key={record.record_id} caseId={caseId} recordId={record.record_id} name={localImageName(record)!} />}
       {importedPdfName(record) && <p className="blanc-source-pdf">
         PDF document <strong>{importedPdfName(record)}</strong>, stored with this case.{" "}
@@ -155,7 +182,7 @@ export function SourcePanel({ caseId, recordId, number, total, records, excluded
       </details>}
       {view && <p className="blanc-source-note">Readable fields are extracted from the original record; the raw record is unchanged.</p>}
     </>}
-    {(onExclude || onRestore) && <div className="blanc-source-actions">
+    {(onExclude || onRestore) && (isCited || !cited.length) && <div className="blanc-source-actions">
       {excluded
         ? <button type="button" onClick={onRestore} disabled={busy || !onRestore}>Restore this record</button>
         : <button type="button" onClick={onExclude} disabled={busy || !onExclude}>Exclude from this analysis</button>}
@@ -232,4 +259,58 @@ function SourceImage({ caseId, recordId, name, caption, missing }: {
       <p>{name}</p>
     </dialog>}
   </figure>;
+}
+
+type FileState =
+  | { status: "loading" }
+  | { status: "ready"; context: FileContext }
+  | { status: "error"; message: string };
+
+/** The record in place among the other records of its original file, scrolled to it.
+ *  Every line is a separate record of the case; clicking one opens it in the panel. */
+function SourceFile({ file, recordId, cited, onOpen }: {
+  file: FileState; recordId: string; cited: string[]; onOpen?: (recordId: string) => void;
+}) {
+  const list = useRef<HTMLOListElement>(null);
+  useEffect(() => {
+    const box = list.current;
+    const current = box?.querySelector<HTMLElement>("[aria-current=true]");
+    if (box && current) box.scrollTop = current.offsetTop - box.offsetTop - box.clientHeight / 2 + current.clientHeight / 2;
+  }, [file]);
+  if (file.status === "loading") return <p role="status">Loading the original file…</p>;
+  if (file.status === "error") return <p role="alert">{file.message} The record&apos;s details are still available.</p>;
+  const { context } = file;
+  const shownFrom = context.start + 1;
+  const shownTo = context.start + context.items.length;
+  // Precomputed so a chat shows a date line where the day changes.
+  const lines = context.items.map(item => ({ item, line: contextLine(item) }));
+  const days = lines.map(({ line }) => line.time?.slice(0, 10) ?? "");
+  const newDay = days.map((day, i) => !!day && lines[i].line.style === "chat" && day !== days.slice(0, i).filter(Boolean).at(-1));
+  return <section className="blanc-source-file" aria-label="Original file">
+    <p className="blanc-source-file-path">{context.source_file}<span> · {context.total.toLocaleString("en-US")} records from this file in the case</span></p>
+    <ol ref={list}>
+      {context.start > 0 && <li className="blanc-source-file-more">{context.start.toLocaleString("en-US")} earlier records not shown</li>}
+      {lines.map(({ item, line }, i) => {
+        const current = item.record_id === recordId;
+        const n = cited.indexOf(item.record_id);
+        const body = line.style === "chat"
+          ? <><span className="blanc-source-file-head"><b>{line.who}</b>{line.time && <time>{line.time.slice(11)}</time>}</span>
+              <span className="blanc-source-file-text">{line.text || <em>(empty message)</em>}</span>
+              {line.note && <small>{line.note}</small>}</>
+          : <><span className="blanc-source-file-head">{line.kind && <span className="blanc-source-file-kind">{line.kind}</span>}{line.time && <time>{line.time}</time>}</span>
+              <span className="blanc-source-file-title">{line.title}</span>
+              {line.detail && <small>{line.detail}</small>}</>;
+        return <li key={item.record_id} data-style={line.style}>
+          {newDay[i] && <div className="blanc-source-file-day">{days[i]}</div>}
+          <button type="button" aria-current={current} data-cited={n >= 0} disabled={current || !onOpen}
+            onClick={() => onOpen?.(item.record_id)} title={current ? "The open source" : `Open ${item.source_locator}`}>
+            {n >= 0 && <span className="blanc-source-file-cite" aria-label={`Source ${n + 1}`}>{n + 1}</span>}
+            <span className="blanc-source-file-line">{body}</span>
+          </button>
+        </li>;
+      })}
+      {shownTo < context.total && <li className="blanc-source-file-more">{(context.total - shownTo).toLocaleString("en-US")} later records not shown</li>}
+    </ol>
+    <p className="blanc-source-note">{orderNote(context)} Showing {shownFrom.toLocaleString("en-US")}–{shownTo.toLocaleString("en-US")}. Each line is its own record in this case; select one to open it. Numbered lines are cited in this finding.</p>
+  </section>;
 }
