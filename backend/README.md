@@ -278,3 +278,33 @@ wall-clock times with unknown zones are presented in the separate uncertain
 section; day/month values remain dated with explicit precision labels. An
 unavailable normalizer leaves all events visible as unverified, with a retry,
 rather than silently inventing chronology.
+
+## Case report export (BLA-49)
+
+Exports a board or one saved revision as a structured case report. Assembled from stored data only (`app/reports.py`): no model is called, and the same stored data gives byte-identical output apart from `generated_at`. Markdown is rendered by `app/report_markdown.py`; JSON is the `CaseReport` Pydantic model. Routes live in `app/routers/reports.py`.
+
+| Endpoint | Exports |
+|---|---|
+| `GET /cases/{case_id}/boards/{board_id}/export?format=md\|json[&revision=n]` | A board snapshot (latest unless `revision`): its pinned findings, the revisions they come from (the active one first), excluded evidence, investigator notes. |
+| `GET /cases/{case_id}/analyses/{analysis_id}/export?format=md\|json` | One saved revision: every claim, entity, relationship and event in it. |
+
+- `format` defaults to `md`. Markdown is `text/markdown; charset=utf-8`; JSON is `application/json`. Both carry `Content-Disposition: attachment; filename="blanc-report-<case_id>-<board_or_analysis_id>.<md|json>"` (unsafe characters replaced by `_`). An unknown format is a 422.
+- 404 for an unknown case, board, board revision or analysis, and for a board or analysis of another case.
+- **UI:** an export button can link straight to either URL (a download), or fetch `format=json` to render the report itself.
+- Tests fix `generated_at` by overriding the `get_report_clock` dependency.
+
+JSON shape (`report_version: "1.0"`). This is its own API shape, not a `contracts/` schema; see `CaseReport` in `app/reports.py` and `/openapi.json`.
+
+| Field | Holds |
+|---|---|
+| `report_version`, `report_kind` (`board` / `analysis`), `generated_at` (UTC) | Header. |
+| `case` `{case_id, title}`, `board` (`null` for an analysis export) `{board_id, title, revision, parent_revision, active_analysis_id, updated_at}` | What was exported. |
+| `analyses[]` | Each revision drawn on: `role` (`exported`, `board_active`, `board_source`), `lineage` (root ... this ID), `question`, `answer`, `unresolved_questions`, `needs_review`, `validation_errors`, `retrieved_record_ids`, `excluded_record_ids`, `created_at`. |
+| `claims[]`, `entities[]`, `relationships[]` | AI-generated findings with `analysis_id`, their own ID, text/label/type, `status` (as saved), `evidence_ids`; on a board also `board_item_id` and `note_ids` (links to notes, never their text). Relationships give `source`/`target` as `{node_id, label, type}`. |
+| `timeline` `{dated, uncertain, undated}` | Events with the raw `timestamp`, normalized `display`, `precision`, `timezone_known`. `dated` is in `app.timeline` order; `uncertain` holds approximate times and exact times with no known zone; `undated` holds the rest. Nothing is guessed. |
+| `sources[]` | Every cited record once, sorted by ID: `source_file`, `source_locator`, `timestamp`, `timestamp_kind`, `excerpt` (either `{text, char_start, char_end, truncated, content_chars}` where `text == content[char_start:char_end]`, at most the first 2000 characters, **or `null`** when withheld), `cited_by[]` `{kind, analysis_id, ref_id}`, and `excluded_in[]` (every revision in this report that excludes the record; possible on a board that pins items from several revisions). Withholding: for a board with an active revision, or a single-analysis export, `excerpt` is null only when that scope revision excludes the record (a stale pin from an older exclusion does not hide restored evidence). For a board with no active revision, `excerpt` is null when any reported revision excludes the record. |
+| `excluded_evidence[]` | `{analysis_id, record_id, inherited, first_excluded_in, source_file, source_locator, timestamp}`. Locators only, no content; never counted as support. |
+| `investigator_notes[]` | `{note_id, author, created_at, text, target_item_id, target}`. Board exports only; an analysis export has none. |
+| `limitations[]` | Fixed caveats (AI-generated and needs human review; statuses and pins are not verification; exclusions change what can be concluded, not what happened; retrieval may miss records; local storage but Gemini processed the text; formats not ingested) plus case-specific ones (attachments not imported, needs-review revisions, truncated excerpts, uncertain times, records excluded elsewhere on the board). |
+
+**Untrusted text in Markdown.** Evidence, model output, notes and IDs may contain Markdown or HTML, and none of it is emitted as structure. Excerpts and notes go in fenced code blocks whose fence is longer than any backtick run in the text. IDs, files and locators go in code spans built the same way. Prose (answers, claims, labels, descriptions) is escaped line by line: ``\ ` * _ [ ] < > # + ! | ~ & @``, a leading `- = >` or `1.`, and `://` / `www.` so bare URLs are not linked. Control characters are dropped. `tests/test_reports.py` covers `<script>`, headings, links, images, pipes, tables and backtick runs.
