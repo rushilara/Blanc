@@ -19,6 +19,7 @@ from; this module is authoritative at runtime.
 
 from __future__ import annotations
 
+import unicodedata
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
@@ -400,10 +401,23 @@ def validate_comparison(
 _LINKABLE_BASE_STATUSES = ("unresolved", "not_supported")
 
 
-def _edge_ends(revision: AnalysisRevision, edge_id: str) -> tuple[str, str] | None:
-    """Directed endpoints (source id, target id) for an edge, or None if missing."""
+def _wording(text: str) -> str:
+    """Same normalisation as ``compare_revisions``: case, spacing and a closing full stop."""
+    return " ".join(unicodedata.normalize("NFKC", text).casefold().split()).rstrip(" .")
+
+
+def _edge_ends(revision: AnalysisRevision, edge_id: str) -> tuple[Any, ...] | None:
+    """Directed endpoints matching ``compare_revisions._edge_endpoints``: each end is the
+    node ID plus its normalised label and type. None if the edge or an endpoint is missing.
+    """
     edge = next((e for e in revision.graph.edges if e.id == edge_id), None)
-    return None if edge is None else (edge.source, edge.target)
+    if edge is None:
+        return None
+    entities = {node.id: (_wording(node.label), node.type) for node in revision.graph.nodes}
+    source, target = entities.get(edge.source), entities.get(edge.target)
+    if source is None or target is None:
+        return None
+    return (edge.source, source, edge.target, target)
 
 
 def _possible_match_errors(
@@ -417,7 +431,8 @@ def _possible_match_errors(
 
     The new item's unique cited records must be a subset of the base item's citations that
     are still permitted, and ``shared_evidence_ids`` must equal that cited set. Edge links
-    must join the same endpoints in the same direction (same as ``compare_revisions``).
+    must join the same endpoints in the same direction, comparing each end's node ID plus
+    normalised label and type (same as ``compare_revisions._edge_endpoints``).
     """
     errors: list[str] = []
     excluded = set(comparison.excluded_record_ids)

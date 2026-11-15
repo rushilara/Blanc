@@ -5,6 +5,7 @@ must be enforced server-side in the actual application.
 """
 from __future__ import annotations
 import json
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 
@@ -201,9 +202,20 @@ def validate_comparison(revisions: list[dict], comparison: dict) -> list[str]:
     return errors
 
 
-def _edge_ends(revision: dict, edge_id: str) -> tuple[str, str] | None:
+def _wording(text: str) -> str:
+    return ' '.join(unicodedata.normalize('NFKC', text).casefold().split()).rstrip(' .')
+
+
+def _edge_ends(revision: dict, edge_id: str) -> tuple | None:
+    """Same shape as compare_revisions._edge_endpoints: ID + normalised label + type per end."""
     edge = next((e for e in revision['graph']['edges'] if e['id'] == edge_id), None)
-    return None if edge is None else (edge['source'], edge['target'])
+    if edge is None:
+        return None
+    entities = {n['id']: (_wording(n['label']), n['type']) for n in revision['graph']['nodes']}
+    source, target = entities.get(edge['source']), entities.get(edge['target'])
+    if source is None or target is None:
+        return None
+    return (edge['source'], source, edge['target'], target)
 
 
 def _possible_match_errors(comparison: dict, base: dict, compared: dict) -> list[str]:
@@ -213,7 +225,7 @@ def _possible_match_errors(comparison: dict, base: dict, compared: dict) -> list
 
     Every record the new item cites must be among the base item's still-permitted citations,
     shared_evidence_ids must equal that cited set, and edge links must keep the same
-    endpoints in the same direction.
+    endpoints in the same direction (node ID + normalised label + type at each end).
     """
     errors: list[str] = []
     excluded = set(comparison['excluded_record_ids'])

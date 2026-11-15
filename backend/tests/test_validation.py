@@ -454,6 +454,72 @@ class TestPossibleMatches:
             "edge endpoints must match in the same direction",
         )
 
+    def _reject_edge_link_after_endpoint_change(self, raw: Raw, **node_update: str) -> None:
+        # compare_revisions also matches label+type; ID-only endpoints must not pass validation.
+        raw["revision"]["graph"]["edges"][0]["evidence_ids"] = ["rec-01", "rec-02"]
+        edge = copy.deepcopy(raw["revision"]["graph"]["edges"][0])
+        edge["id"] = "edge-x"
+        edge["evidence_ids"] = ["rec-01"]
+        for node in raw["child"]["graph"]["nodes"]:
+            if node["id"] == "jordan":
+                node.update(node_update)
+        raw["child"]["graph"]["edges"] = [
+            e for e in raw["child"]["graph"]["edges"] if e["id"] != "edge-1"
+        ] + [edge]
+        base, child = revisions_of(raw)
+        raw["comparison"] = compare_revisions(base, child).to_contract_json()
+        before = next(
+            i
+            for i in raw["comparison"]["items"]
+            if i["kind"] == "edge" and i["base_ref_id"] == "edge-1" and i["compared_ref_id"] is None
+        )
+        after = next(
+            i
+            for i in raw["comparison"]["items"]
+            if i["kind"] == "edge" and i["compared_ref_id"] == "edge-x"
+        )
+        assert "possible_matches" not in before and "possible_matches" not in after
+        link = {
+            "shared_evidence_ids": ["rec-01"],
+            "remaining_sources": 1,
+            "original_sources": 2,
+        }
+        before["possible_matches"] = [{"ref_id": "edge-x", **link}]
+        after["possible_matches"] = [{"ref_id": "edge-1", **link}]
+        assert_error(
+            check_comparison(raw),
+            "edge endpoints must match in the same direction",
+        )
+
+    def test_edge_link_rejects_relabelled_endpoint(self, raw: Raw) -> None:
+        self._reject_edge_link_after_endpoint_change(raw, label="Morgan")
+
+    def test_edge_link_rejects_endpoint_type_change(self, raw: Raw) -> None:
+        self._reject_edge_link_after_endpoint_change(raw, type="organization")
+
+    def test_edge_link_allows_normalised_label_differences(self, raw: Raw) -> None:
+        # Case/spacing-only label differences still match (same _wording as compare_revisions).
+        raw["revision"]["graph"]["edges"][0]["evidence_ids"] = ["rec-01", "rec-02"]
+        for node in raw["child"]["graph"]["nodes"]:
+            if node["id"] == "jordan":
+                node["label"] = "  JORDAN. "
+        edge = copy.deepcopy(raw["revision"]["graph"]["edges"][0])
+        edge["id"] = "edge-x"
+        edge["type"] = "emailed"  # type may change; endpoints are what matter
+        edge["evidence_ids"] = ["rec-01"]
+        raw["child"]["graph"]["edges"] = [
+            e for e in raw["child"]["graph"]["edges"] if e["id"] != "edge-1"
+        ] + [edge]
+        base, child = revisions_of(raw)
+        raw["comparison"] = compare_revisions(base, child).to_contract_json()
+        before = next(
+            i
+            for i in raw["comparison"]["items"]
+            if i["kind"] == "edge" and i["base_ref_id"] == "edge-1" and i["compared_ref_id"] is None
+        )
+        assert before.get("possible_matches")
+        assert check_comparison(raw) == []
+
     def test_counts_must_match_the_base_item(self, linked: Raw) -> None:
         for item in self.items(linked):
             item["possible_matches"][0]["remaining_sources"] = 2
