@@ -3,12 +3,14 @@
 import { useEffect, useRef, useState } from "react";
 import type { EvidenceRecord } from "@/lib/analysis";
 
-export function SourceReferences({ ids, caseId, records, autoOpen = false, triggerLabel }: {
+export function SourceReferences({ ids, caseId, records, autoOpen = false, triggerLabel, hideTriggers = false }: {
   ids: string[];
   caseId: string;
   records: EvidenceRecord[];
   autoOpen?: boolean;
   triggerLabel?: string;
+  /** When true, only the evidence dialog is rendered (used by graph click-to-open). */
+  hideTriggers?: boolean;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [selected, setSelected] = useState<string | null>(autoOpen ? ids[0] ?? null : null);
@@ -23,7 +25,7 @@ export function SourceReferences({ ids, caseId, records, autoOpen = false, trigg
 
   return (
     <>
-      {triggerLabel ? <button type="button" disabled={!ids.length} onClick={() => open(ids[0])} aria-haspopup="dialog"
+      {!hideTriggers && (triggerLabel ? <button type="button" disabled={!ids.length} onClick={() => open(ids[0])} aria-haspopup="dialog"
         aria-label={`Inspect evidence for event: ${triggerLabel}`}
         className="block w-full break-words text-left text-sm leading-6 underline decoration-blue-400 underline-offset-4 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600 disabled:opacity-50">{triggerLabel}</button> : <ul aria-label="Source record references" className="flex flex-wrap gap-1.5">
         {[...new Set(ids)].map((id) => (
@@ -35,7 +37,7 @@ export function SourceReferences({ ids, caseId, records, autoOpen = false, trigg
             </button>
           </li>
         ))}
-      </ul>}
+      </ul>)}
       <dialog ref={dialog} aria-label="Source evidence" className="fixed inset-y-0 right-0 left-auto m-0 h-dvh max-h-none w-full max-w-lg overflow-y-auto border-l border-zinc-200 bg-white p-5 text-zinc-900 shadow-xl backdrop:bg-black/40 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100">
         <div className="mb-6 flex items-center justify-between gap-3">
           <h2 className="text-lg font-semibold">Source evidence</h2>

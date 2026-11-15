@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { AnalysisRevision, EvidenceRecord } from "@/lib/analysis";
 import { QuestionInput } from "@/components/QuestionInput";
+import { RelationshipGraph } from "@/components/RelationshipGraph";
 import { SourceReferences } from "@/components/SourceReferences";
 import { TimelineView } from "@/components/TimelineView";
 
@@ -34,7 +35,6 @@ function Status({ value }: { value: string }) {
 export function AnalysisWorkspace({ revision, records = [], showQuestionInput = true }: { revision: AnalysisRevision; records?: EvidenceRecord[]; showQuestionInput?: boolean }) {
   // Do not serialize other cases' excerpts into the client-side source controls.
   const caseRecords = records.filter((record) => record.case_id === revision.case_id);
-  const nodes = new Map(revision.graph.nodes.map((node) => [node.id, node.label]));
   return (
     <main className="mx-auto w-full max-w-7xl space-y-6 p-4 sm:p-6">
       {showQuestionInput && <QuestionInput key={revision.analysis_id} question={revision.question} />}
@@ -72,26 +72,12 @@ export function AnalysisWorkspace({ revision, records = [], showQuestionInput = 
           )}
         </Pane>
         <Pane id="graph" title="Relationships" count={revision.graph.edges.length}>
-          <ul aria-label="Entities" className="flex flex-wrap gap-2">
-            {revision.graph.nodes.map((node) => (
-              <li key={node.id} className="rounded-lg border border-zinc-200 px-3 py-2 dark:border-zinc-700">
-                <p className="text-sm font-medium">{node.label}</p>
-                <p className="text-xs capitalize text-zinc-500">{node.type}</p>
-              </li>
-            ))}
-          </ul>
-          <ul aria-label="Relationships" className="space-y-4">
-            {revision.graph.edges.map((edge) => (
-              <li key={edge.id} className="space-y-2 rounded-lg bg-zinc-50 p-3 dark:bg-zinc-900">
-                <p className="break-words text-sm font-medium">{nodes.get(edge.source) ?? edge.source} <span aria-label="to">→</span> {nodes.get(edge.target) ?? edge.target}</p>
-                <p className="text-xs text-zinc-500">{edge.type.replaceAll("_", " ")}</p>
-                {edge.description && <p className="text-sm leading-6">{edge.description}</p>}
-                <Status value={edge.status} />
-                <SourceReferences records={caseRecords} caseId={revision.case_id} ids={edge.evidence_ids} />
-              </li>
-            ))}
-          </ul>
-          {!revision.graph.edges.length && <p className="text-sm text-zinc-500">No supported relationships.</p>}
+          <RelationshipGraph
+            key={`${revision.case_id}:${revision.analysis_id}`}
+            graph={revision.graph}
+            caseId={revision.case_id}
+            records={caseRecords}
+          />
         </Pane>
         <Pane id="timeline" title="Timeline" count={revision.timeline_events.length}>
           <TimelineView key={`${revision.case_id}:${revision.analysis_id}`} events={revision.timeline_events} caseId={revision.case_id} records={caseRecords} />
