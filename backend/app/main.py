@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import Settings, get_settings
 from app.db import init_db, make_engine, make_session_factory
+from app.embeddings import make_embedder
 from app.routers import cases
 
 
@@ -19,9 +20,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # The DB is opened at startup, not import, so importing the app never
         # touches the developer's database.
         engine = make_engine(settings.DATABASE_URL)
-        init_db(engine)
+        init_db(engine, settings.EMBEDDING_DIM)
         app.state.engine = engine
         app.state.session_factory = make_session_factory(engine)
+        # Lazy: no network or key needed until something embeds.
+        app.state.embedder = make_embedder(settings)
         try:
             yield
         finally:

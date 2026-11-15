@@ -1,7 +1,8 @@
 # Blanc local dev commands. Run from the repo root.
 #   make backend   FastAPI on http://localhost:$(BACKEND_PORT) with reload
 #   make frontend  Next.js dev server on http://localhost:3000
-#   make test      backend lint + tests, frontend lint
+#   make test      backend lint + tests, frontend lint (offline: live API tests are skipped)
+#   make test-live backend tests marked `live` only; calls real APIs using keys from .env
 #   make coverage  backend tests with coverage (terminal report + backend/htmlcov/)
 
 # Pick up BACKEND_PORT etc. from the root .env if present (the backend app also
@@ -14,7 +15,7 @@ VENV := backend/.venv
 VENV_PY := $(VENV)/bin/python
 VENV_STAMP := $(VENV)/.installed
 
-.PHONY: backend frontend test test-backend test-frontend install-backend install-frontend coverage clean
+.PHONY: backend frontend test test-backend test-live test-frontend install-backend install-frontend coverage clean
 
 $(VENV_PY):
 	$(PYTHON) -m venv $(VENV)
@@ -38,16 +39,19 @@ frontend: install-frontend
 test-backend: install-backend
 	cd backend && .venv/bin/ruff check . && .venv/bin/pytest -q
 
+# Real-API tests (pytest marker `live`; deselected by default and in CI). The backend
+# settings read GEMINI_API_KEY from the root .env; tests skip if it is not set.
+test-live: install-backend
+	cd backend && .venv/bin/pytest -q -m live -rs
+
 test-frontend: install-frontend
 	cd frontend && npm run lint
 
 test: test-backend test-frontend
 
 # Same coverage run as CI; fails below fail_under in backend/pyproject.toml.
-# pytest-cov is installed on demand (pin matches ci.yml; not in
-# requirements-dev.txt yet).
+# pytest-cov is pinned in backend/requirements-dev.txt.
 coverage: install-backend
-	$(VENV_PY) -m pip install -q pytest-cov==7.1.0
 	cd backend && .venv/bin/pytest -q --cov --cov-report=term-missing --cov-report=xml --cov-report=html
 	@echo "HTML report: backend/htmlcov/index.html"
 
