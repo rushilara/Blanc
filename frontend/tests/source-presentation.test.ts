@@ -52,3 +52,21 @@ test("optional invalid byte values are not presented as exact file sizes", () =>
   const view = presentSource(record({ ...download, received_bytes: -1, total_bytes: Number.MAX_SAFE_INTEGER + 1 }))!;
   assert.ok(!view.fields.some(f => /bytes/.test(f.label)));
 });
+
+test("each record is named by its own title, file name or sender, with its kind", () => {
+  const history = (url: string, title: string) => presentSource(record({ url, title }, "SQLite urls.id=1"))!;
+  const file = presentSource(record(download))!;
+  assert.deepEqual([file.name, file.kind, file.anchors], ["Example Setup.exe", "Download · Chrome history", ["Example Setup.exe"]]);
+  const fromSearch = presentSource(record({ ...download, tab_url: "https://www.google.com/search?q=example+tool&tbm=isch" }))!;
+  assert.deepEqual(fromSearch.anchors, ["Example Setup.exe", "example tool"]);
+  const search = history("https://www.google.com/search?q=test+tool&oq=x", "test tool - Google Search");
+  assert.deepEqual([search.name, search.kind, search.anchors], ["test tool - Google Search", "Web search · Chrome history", ["test tool"]]);
+  const page = history("https://www.google.com/maps/dir/A/B", "Google Maps");
+  assert.deepEqual([page.name, page.kind, page.anchors], ["Google Maps", "Web page · Chrome history", []]);
+  assert.equal(history("https://example.test/page", "").name, "example.test");
+  assert.equal(history("https://example.test/page", "x".repeat(80)).name.length, 48);
+  const discord = { ...record({ author: { username: "account-one" }, content: "hi" }),
+    source_file: "Users/Test/Discord/Cache/data_2", source_locator: "Discord message id 123" };
+  const message = presentSource(discord)!;
+  assert.deepEqual([message.name, message.anchors], ["Message from account-one", ["account-one"]]);
+});
