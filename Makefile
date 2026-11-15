@@ -48,9 +48,8 @@ backend: install-backend
 
 # Import extracted evidence into the local SQLite case DB (DATABASE_URL), embedding
 # text chunks with Gemini. EVIDENCE is a file or folder (relative to the repo root
-# or absolute)—use only the evidence export, not answer keys / question sets. Text
-# is read in place; images/PDFs are copied under CASES_DIR/{case_id}/media/.
-# Prints the case_id on stdout.
+# or absolute)—use only the evidence export, not answer keys / question sets.
+# Files are read in place, not copied. Prints the case_id on stdout.
 import: install-backend
 	@test -n "$(EVIDENCE)" || { echo 'usage: make import EVIDENCE=path/to/exports TITLE="Case title"  (or CASE=case_id)'; exit 2; }
 	@test -n "$(TITLE)$(CASE)" || { echo 'make import: set TITLE="..." for a new case, or CASE=case_id to add to one'; exit 2; }
