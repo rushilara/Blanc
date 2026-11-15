@@ -8,12 +8,15 @@ Exits 0 when the corpus is clean, 1 when it finds problems and 2 when it cannot
 run at all (unreadable input, bad arguments).
 
 Checks:
+- the corpus is not empty (an import that wrote nothing should not pass the gate;
+  use `--allow-empty` when that is intended);
 - every record is a valid `EvidenceRecord`;
 - no `record_id` appears twice;
 - every record belongs to the expected `case_id`;
 - every `source_file` exists under the source root, and still has the SHA-256
   recorded at import;
-- no record comes from a file named like an answer key or case brief.
+- no record comes from a hidden path, or from a path named like an answer key or
+  case brief (the same rules the importer applies).
 """
 
 import argparse
@@ -32,12 +35,14 @@ from app.evidence.importer import DEFAULT_SKIP_PATTERNS
 from app.evidence.records import EvidenceRecord
 
 IssueKind = Literal[
+    "empty_corpus",
     "invalid_record",
     "duplicate_record_id",
     "case_mismatch",
     "missing_source_file",
     "source_changed",
     "restricted_source",
+    "hidden_source",
 ]
 
 
@@ -58,8 +63,12 @@ def check_corpus(
     case_id: str,
     source_root: str | Path | None = None,
     restricted_patterns: Iterable[str] = DEFAULT_SKIP_PATTERNS,
+    allow_empty: bool = False,
 ) -> list[IntegrityIssue]:
     """Return every problem found. An empty list means the corpus is clean.
+
+    A corpus with no records is a problem unless `allow_empty` is set: a failed or
+    misconfigured import that wrote nothing should not look like a clean one.
 
     `source_root` is the folder the records were imported from. Pass `None` to
     skip the source-file checks, for example when the original exports are not
@@ -69,8 +78,11 @@ def check_corpus(
     first_seen: dict[str, int] = {}
     repeats: dict[str, int] = {}
     by_source: dict[str, list[tuple[str | None, str | None]]] = {}
+    wrong_case: dict[Any, list[str | None]] = {}
+    total = 0
 
     for index, raw in enumerate(records):
+        total += 1
         where = f"record at index {index}"
         if not isinstance(raw, Mapping):
             issues.append(IntegrityIssue("invalid_record", f"{where} is not an object"))
@@ -81,8 +93,8 @@ def check_corpus(
         label = record_id or where
 
         try:
-            EvidenceRecord(**raw)
-        except (ValidationError, TypeError) as error:
+            EvidenceRecord.model_validate(dict(raw))
+        except ValidationError as error:
             issues.append(
                 IntegrityIssue("invalid_record", f"{label}: {_summarize(error)}", record_id)
             )
@@ -95,20 +107,37 @@ def check_corpus(
 
         record_case = raw.get("case_id")
         if record_case != case_id:
-            issues.append(
-                IntegrityIssue(
-                    "case_mismatch",
-                    f"{label} belongs to case {record_case!r}, expected {case_id!r}",
-                    record_id,
-                    source_file,
-                )
-            )
+            key = record_case if isinstance(record_case, str) else None
+            wrong_case.setdefault(key, []).append(record_id)
 
         if source_file:
             sha256 = raw.get("original_sha256")
             by_source.setdefault(source_file, []).append(
                 (record_id, sha256 if isinstance(sha256, str) else None)
             )
+
+    if total == 0 and not allow_empty:
+        issues.append(
+            IntegrityIssue(
+                "empty_corpus",
+                "the corpus has no records; if that is intended, allow an empty corpus",
+            )
+        )
+
+    # One line per wrong case, not per record: a wrong --case-id would otherwise
+    # print the whole corpus.
+    for other_case, ids in wrong_case.items():
+        first = next((rid for rid in ids if rid), None)
+        shown = repr(other_case) if other_case is not None else "a missing or invalid case_id"
+        example = f"; first: {first}" if first else ""
+        issues.append(
+            IntegrityIssue(
+                "case_mismatch",
+                f"{_count_ids(ids)} {'belongs' if len(ids) == 1 else 'belong'} to case {shown}, "
+                f"expected {case_id!r}{example}",
+                first,
+            )
+        )
 
     for record_id, count in repeats.items():
         issues.append(
@@ -121,6 +150,16 @@ def check_corpus(
     for source_file, entries in by_source.items():
         # Match every part of the path, as the importer does: `answer_keys/q1.txt` counts.
         parts = [part.lower() for part in PurePosixPath(source_file).parts]
+        if any(part.startswith(".") and part not in (".", "..") for part in parts):
+            issues.append(
+                IntegrityIssue(
+                    "hidden_source",
+                    f"{source_file} is a hidden path, which the importer skips, so it should "
+                    f"not be in the corpus ({_count(entries)})",
+                    entries[0][0],
+                    source_file,
+                )
+            )
         if any(fnmatch.fnmatch(part, pattern) for part in parts for pattern in patterns):
             issues.append(
                 IntegrityIssue(
@@ -188,13 +227,15 @@ def _count(entries: list[tuple[str | None, str | None]]) -> str:
     return "1 record" if len(entries) == 1 else f"{len(entries)} records"
 
 
-def _summarize(error: ValidationError | TypeError) -> str:
-    if isinstance(error, ValidationError):
-        return "; ".join(
-            f"{'.'.join(str(part) for part in issue['loc']) or 'record'}: {issue['msg']}"
-            for issue in error.errors()
-        )
-    return str(error)
+def _count_ids(ids: list[str | None]) -> str:
+    return "1 record" if len(ids) == 1 else f"{len(ids)} records"
+
+
+def _summarize(error: ValidationError) -> str:
+    return "; ".join(
+        f"{'.'.join(str(part) for part in issue['loc']) or 'record'}: {issue['msg']}"
+        for issue in error.errors()
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -212,6 +253,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Do not check that source files exist (use only when they are unavailable).",
     )
+    parser.add_argument(
+        "--allow-empty",
+        action="store_true",
+        help="Do not treat a corpus with no records as a problem.",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -223,7 +269,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: source root is not a folder: {args.source_root}", file=sys.stderr)
         return 2
 
-    issues = check_corpus(records, case_id=args.case_id, source_root=args.source_root)
+    issues = check_corpus(
+        records,
+        case_id=args.case_id,
+        source_root=args.source_root,
+        allow_empty=args.allow_empty,
+    )
     for issue in issues:
         print(issue)
     if args.skip_source_check:

@@ -72,7 +72,31 @@ def test_wrong_case_id_is_reported(tmp_path: Path) -> None:
     issues = check_corpus(records, case_id="case-a", source_root=source)
     assert kinds(issues) == ["case_mismatch"]
     assert issues[0].record_id == records[1]["record_id"]
-    assert "'case-b'" in issues[0].detail
+    assert issues[0].detail == (
+        f"1 record belongs to case 'case-b', expected 'case-a'; first: {records[1]['record_id']}"
+    )
+
+
+def test_a_wrong_case_id_is_one_line_not_one_per_record(tmp_path: Path) -> None:
+    source, records = make_corpus(tmp_path)
+    issues = check_corpus(records, case_id="some-other-case", source_root=source)
+    assert kinds(issues) == ["case_mismatch"]
+    assert issues[0].detail.startswith(
+        "3 records belong to case 'case-a', expected 'some-other-case'; first: rec_"
+    )
+
+
+def test_an_empty_corpus_is_a_problem_unless_allowed(tmp_path: Path) -> None:
+    assert kinds(check_corpus([], case_id="case-a")) == ["empty_corpus"]
+    assert check_corpus([], case_id="case-a", allow_empty=True) == []
+
+
+def test_records_from_a_hidden_path_are_flagged(tmp_path: Path) -> None:
+    source, records = make_corpus(tmp_path)
+    hidden = {**records[0], "record_id": "rec-hidden", "source_file": ".git/x.json"}
+    issues = check_corpus([*records, hidden], case_id="case-a", source_root=None)
+    assert kinds(issues) == ["hidden_source"]
+    assert issues[0].source_file == ".git/x.json"
 
 
 def test_a_source_file_edited_after_import_is_reported(tmp_path: Path) -> None:
@@ -149,6 +173,17 @@ def test_cli_exits_two_when_it_cannot_run(tmp_path: Path) -> None:
         integrity_main([str(path), "--case-id", "case-a", "--source-root", str(not_a_folder)])
         == 2
     )
+
+
+def test_cli_fails_on_an_empty_records_file_unless_told_otherwise(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = write_records(tmp_path, [])
+    args = [str(path), "--case-id", "case-a", "--skip-source-check"]
+    assert integrity_main(args) == 1
+    assert "empty_corpus" in capsys.readouterr().out
+    assert integrity_main([*args, "--allow-empty"]) == 0
+    assert "OK: 0 records" in capsys.readouterr().out
 
 
 def test_cli_says_when_source_files_were_not_checked(
