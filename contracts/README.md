@@ -28,6 +28,17 @@ Optional review fields:
 
 The frontend must show a review banner when `needs_review` is `true`.
 
+### Evidence window (`retrieval_coverage`, BLA-64)
+
+Optional, server-assigned, never produced by the LLM. Absent on revisions saved before it existed: treat those as the `standard` window with no offer.
+
+- `evidence_window`: `standard` (`RETRIEVAL_MAX_RECORDS`, default 16 records) or `expanded` (`RETRIEVAL_EXPANDED_MAX_RECORDS`, default 24). Only the record count differs; `max_excerpt_chars` is the same for both.
+- `max_records`, `max_excerpt_chars`: the limits this revision ran with.
+- `skipped[]`: every ranked candidate the window left out, in rank order: `record_id`, fused `rank`, `reason` (`record_limit` or `budget`), and `vector_rank` / `keyword_rank` when that search found the record (omitted, never null, otherwise). IDs only, never content. **Skipped records are not citations** and are never shown to the model.
+- `budget_substituted`: a lower-ranked record was included after a higher-ranked one was skipped for budget.
+- `left_out_record_ids`: the `record_limit` skips that the vector or keyword search **on its own** ranked within `max_records`, in rank order. Retrieval has no relevance threshold, so in a small case every record is ranked and something is always past the window; only these records were top matches for one search and lost their place when the two rankings were fused. Budget skips never count: more records would not help when the character budget is full.
+- `offer_expanded_window`: true exactly when `evidence_window` is `standard` and `left_out_record_ids` is non-empty. The UI shows "Want more evidence?" only then. There is one step: an `expanded` revision never offers again, and its `left_out_record_ids` give the "N relevant records were still left out" count.
+
 ## InvestigationBoard
 
 - Each save writes a new snapshot: same `board_id`, `revision` incremented, `parent_revision` set to the previous snapshot. Older snapshots are never rewritten.
@@ -69,7 +80,8 @@ These schemas are minimal cross-team contracts. The server must additionally enf
 9. A comparison's `compared_analysis_id` is a child of `base_analysis_id`, both in the same case, and its `excluded_record_ids` equal the exclusions added between them. The compared side never cites an excluded record. When a side's ref ID is present, its evidence IDs exactly match that revision's item; when it is null, its evidence IDs are empty (also enforced in the schema).
 10. User-authored notes remain distinct from LLM-generated conclusions.
 11. Date-time fields are parsed as offset-aware instants before comparison; a board snapshot's `updated_at` is not before its `created_at`, and no item `added_at` or note `created_at` is after its `updated_at`.
+12. `retrieval_coverage`, when present, agrees with its revision: skipped records exist in the case and are never retrieved, excluded or cited; `record_limit` skips rank beyond `max_records` and `budget` skips within it; no more than `max_records` records are retrieved; `budget_substituted` needs a budget skip; `left_out_record_ids` and `offer_expanded_window` follow from the skips as defined above.
 
-`starter/validate_fixture.py` implements cheap versions of checks 1 to 4 and 7 to 9 and 11 against the fixtures; CI runs them on every PR.
+`starter/validate_fixture.py` implements cheap versions of checks 1 to 4, 7 to 9, 11 and 12 against the fixtures; CI runs them on every PR.
 
 For AI generation, prefer a separate subset of the schema containing only answer/claims/graph/events; assign analysis IDs, excluded IDs, retrieved IDs, `needs_review`, `validation_errors` and creation timestamps on the trusted server.

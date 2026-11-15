@@ -7,7 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # backend/app/config.py -> repo root is two levels above `app/`.
@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     RETRIEVAL_MAX_RECORDS: int = Field(default=16, ge=1, le=200)
     RETRIEVAL_MAX_EXCERPT_CHARS: int = Field(default=32000, ge=1)
     RETRIEVAL_MAX_EXCERPTS_PER_RECORD: int = Field(default=2, ge=1)
+    # The "expanded" evidence window (BLA-64): an investigator-chosen rerun that raises only
+    # the record count; RETRIEVAL_MAX_EXCERPT_CHARS stays the same. Must exceed
+    # RETRIEVAL_MAX_RECORDS (the "standard" window).
+    RETRIEVAL_EXPANDED_MAX_RECORDS: int = Field(default=24, ge=2, le=200)
 
     # Storage: one SQLite file holds tables, the sqlite-vec vector index and the FTS5 index.
     DATABASE_URL: str = "sqlite:///./data/blanc.db"
@@ -82,6 +86,14 @@ class Settings(BaseSettings):
     @classmethod
     def _empty_key_is_none(cls, value: object) -> object:
         return None if value == "" else value
+
+    @model_validator(mode="after")
+    def _expanded_window_is_larger(self) -> "Settings":
+        if self.RETRIEVAL_EXPANDED_MAX_RECORDS <= self.RETRIEVAL_MAX_RECORDS:
+            raise ValueError(
+                "RETRIEVAL_EXPANDED_MAX_RECORDS must be larger than RETRIEVAL_MAX_RECORDS"
+            )
+        return self
 
     def summary(self) -> dict[str, object]:
         """Non-secret view of the configuration, safe to expose on /health."""
