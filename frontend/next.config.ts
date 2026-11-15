@@ -20,6 +20,8 @@ const nextConfig: NextConfig = {
   cacheComponents: true,
   partialPrefetching: true,
   turbopack: {
+    // The shared fixture lives beside frontend/, not inside its package root.
+    root: path.resolve(process.cwd(), ".."),
     rules: {
       "*.css": {
         loaders: ["@tailwindcss/turbopack"],
