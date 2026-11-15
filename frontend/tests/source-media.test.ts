@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import type { EvidenceRecord } from "../src/lib/analysis";
 import {
+  importedPdfName,
   interpretMediaResponse,
   localImageName,
   mediaCaption,
@@ -59,4 +60,22 @@ test("SourceImage load states: 404 missing, 409 integrity, 200 caption by hash",
   assert.match(mediaCaption("a.png", true), /original file from local evidence/);
   assert.match(mediaCaption("a.png", false), /hash not checked/);
   assert.ok(!mediaCaption("a.png", false).includes("original file from local evidence"));
+});
+
+
+test("imported media is recognised by modality, not by the source file name", () => {
+  const base = { record_id: "rec_1", case_id: "c", source_locator: "part 2", content: "" };
+  // An image attachment imported from an email: source_file is the .eml.
+  const attachment: EvidenceRecord = { ...base, source_file: "mail/1.eml", modality: "image",
+    media_path: "media/rec_1.jpg", content_type: "image/jpeg", metadata: { filename: "dir/crate.jpg" } };
+  assert.equal(localImageName(attachment), "crate.jpg");
+  assert.equal(importedPdfName(attachment), null);
+  const loose: EvidenceRecord = { ...base, source_file: "photos/zebra.png", modality: "image",
+    media_path: "media/rec_1.png", content_type: "image/png" };
+  assert.equal(localImageName(loose), "zebra.png");
+  const pdf: EvidenceRecord = { ...base, source_file: "docs/report.pdf", modality: "pdf",
+    media_path: "media/rec_1.pdf", content_type: "application/pdf" };
+  assert.equal(localImageName(pdf), null);  // never rendered as an image
+  assert.equal(importedPdfName(pdf), "report.pdf");
+  assert.equal(importedPdfName({ ...base, source_file: "notes.txt" }), null);
 });

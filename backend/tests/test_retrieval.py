@@ -431,6 +431,7 @@ def test_budget_skip_is_listed_and_lower_ranked_record_fills_in(session, embedde
         # Each retriever's own rank is kept (BLA-64: "left out" records).
         "vector_rank": by_id(full, "r-big").vector.rank,
         "keyword_rank": by_id(full, "r-big").keyword.rank,
+        "modality": "text",
     }
     assert skip.vector_rank is not None and skip.keyword_rank is not None
     assert capped.dropped_by_budget == 1

@@ -17,11 +17,25 @@ const baseName = (path: string) => path.split(/[\\/]/).filter(Boolean).at(-1) ??
  * whether that file is available locally; this only says whether to ask.
  */
 export function localImageName(record: EvidenceRecord): string | null {
+  // An image Blanc imported itself (BLA-68/70), e.g. an email attachment: the file is
+  // served from the case folder. Its source_file is the .eml, so check modality first.
+  if (record.modality === "image") return importedName(record);
   const data = parse(record);
   if (object(data) && typeof data.target_path === "string" && IMAGE.test(data.target_path)) {
     return baseName(data.target_path);
   }
   return IMAGE.test(record.source_file) ? baseName(record.source_file) : null;
+}
+
+/** The name of an imported image or PDF: the attachment filename, else the source file. */
+export function importedName(record: EvidenceRecord): string {
+  const name = record.metadata?.filename;
+  return typeof name === "string" && name ? baseName(name) : baseName(record.source_file);
+}
+
+/** A PDF Blanc imported (BLA-70): shown as a label with a download link, never inline. */
+export function importedPdfName(record: EvidenceRecord): string | null {
+  return record.modality === "pdf" ? importedName(record) : null;
 }
 
 /** Image attachments that exist only on a remote service (e.g. Discord's CDN). Their

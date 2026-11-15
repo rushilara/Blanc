@@ -62,6 +62,20 @@ class TestRetrievalCoverage(unittest.TestCase):
         far['retrieval_coverage'].update({'left_out_record_ids':['rec-02'],'offer_expanded_window':True})
         self.assertTrue(validate_revision(records,far))
 
+    def test_media_skips_need_a_modality_and_never_count_as_left_out(self):
+        media=covered()
+        media['retrieval_coverage'].update({'skipped':[{'record_id':'rec-02','rank':1,'reason':'media','modality':'image'}],
+            'left_out_record_ids':[],'offer_expanded_window':False})
+        media['retrieval_coverage']['max_records']=2
+        self.assertEqual(validate_revision(records,media),[])
+        no_modality=deepcopy(media); del no_modality['retrieval_coverage']['skipped'][0]['modality']
+        self.assertTrue(validate_revision(records,no_modality))
+        image_past=covered(); image_past['retrieval_coverage']['skipped'][0]['modality']='image'
+        image_past['retrieval_coverage'].update({'left_out_record_ids':[],'offer_expanded_window':False})
+        self.assertEqual(validate_revision(records,image_past),[])
+        image_past['retrieval_coverage'].update({'left_out_record_ids':['rec-02'],'offer_expanded_window':True})
+        self.assertTrue(validate_revision(records,image_past))
+
     def test_inconsistent_coverage_is_rejected(self):
         cases=[
             ('retrieved_record_ids',['rec-01','rec-02'],'lists retrieved_record_ids as skipped'),

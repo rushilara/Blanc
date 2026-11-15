@@ -62,7 +62,7 @@ from app.contracts import AnalysisRevision, EvidenceWindow, RevisionComparison
 from app.db import utcnow
 from app.embeddings import Embedder
 from app.evidence_store import list_records
-from app.evidence_window import DEFAULT_WINDOW, coverage_of, window_of
+from app.evidence_window import DEFAULT_WINDOW, coverage_of, text_only, window_of
 from app.ids import new_id
 from app.models import AnalysisRevisionRow, Case, EvidenceRecordRow, RevisionRestoreRow
 from app.retrieval import RetrievalConfig, permitted_records, retrieve
@@ -642,6 +642,9 @@ def _analyze_and_save(
     )
     # Defense in depth before the LLM prompt; a leak is a bug upstream.
     permitted_records(retrieval, excluded)
+    # Images and PDFs are retrieved but not yet shown to the model (vision is BLA-71):
+    # the model must never cite a record it has not seen. Coverage lists them as skipped.
+    analyzed = text_only(retrieval)
 
     moment = now or utcnow()
     metadata = RevisionMetadata(
@@ -652,7 +655,7 @@ def _analyze_and_save(
     records = list_records(session, case_id)
     result = analyze_with_retry(
         llm,
-        retrieval,
+        analyzed,
         records,
         metadata,
         session=session,
