@@ -354,6 +354,11 @@ def retrieve(
             )
         )
     )
+    # Keyword search honors the full exclusion set before LIMIT. Vector search only
+    # applies <= VEC_MAX_EXCLUSION_CONSTRAINTS (13) record_id != filters inside the
+    # KNN (search_index.py); past that it over-fetches (k + excluded chunk count,
+    # capped at 4096) and filters in Python. Normal photo-heavy cases still get
+    # text hits; recall only falls short if media chunks themselves approach that cap.
     search_excluded = excluded | media_ids
 
     fts_query = to_fts_query(question)
