@@ -15,6 +15,14 @@ help identify the topic, but cannot support any conclusion, citation, edge or
 event. Recheck every conclusion against the currently supplied source records;
 do not reuse excluded evidence through a prior summary.
 
+When the prior analysis context lists earlier findings (claims, nodes, edges or
+timeline_events with ids), it is the investigator's previous reconstruction of
+the same question. For any finding that the current source_records still
+support, reuse that finding's id and its exact wording, and reuse node ids for
+the same entities, so unchanged conclusions can be recognized as unchanged. Keep
+a finding only if the current source_records support it, and cite only those
+records. Do not keep or restate a finding just because it appears there.
+
 Every claim, graph edge and timeline event must cite one or more exact record_id
 values from source_records in evidence_ids. Never invent IDs or cite prior
 analysis. If support is insufficient, explain the gap in unresolved_questions
