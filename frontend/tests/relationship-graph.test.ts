@@ -20,6 +20,8 @@ test("a graph with entities but no relationships says so", () => {
   const html = render({ nodes, edges: [] });
   assert.match(html, /No supported relationships\./);
   assert.doesNotMatch(html, /aria-label="Relationships"/);
+  assert.match(html, /Search entities and relationships/);
+  assert.match(html, /Pin Alex/);
 });
 
 test("edges to unknown entities are listed with raw IDs and marked, not dropped", () => {
