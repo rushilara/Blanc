@@ -1,13 +1,14 @@
-"""Case-local media files for image and PDF evidence (BLA-68).
+"""Case-local media files for image and PDF evidence (BLA-68 / BLA-69).
 
 Bytes live on disk under ``{cases_dir}/{case_id}/media/{record_id}.{ext}``. SQLite holds
 the relative ``media_path`` (``media/...``), content hash, modality and content type—not
-the blob. Embedding and vision analysis are later tickets (BLA-69+).
+the blob. Multimodal embedding (BLA-69) reads these bytes; vision analysis is BLA-70+.
 """
 
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 import tempfile
 from pathlib import Path
@@ -26,6 +27,9 @@ EMAIL_IMAGE_TYPES = {"image/png", "image/jpeg"}
 
 # Each media file is read whole into memory; refuse anything larger.
 MAX_MEDIA_BYTES = 25 * 1024 * 1024
+
+# gemini-embedding-2 accepts one PDF per request, up to ~6 pages.
+GEMINI_PDF_MAX_PAGES = 6
 
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 _JPEG_MAGIC = b"\xff\xd8\xff"
@@ -71,9 +75,7 @@ def extension_for_content_type(content_type: str, filename: str | None = None) -
 def verify_media_bytes(data: bytes, content_type: str) -> None:
     """Raise ``MediaStoreError`` if ``data`` does not match ``content_type``."""
     if len(data) > MAX_MEDIA_BYTES:
-        raise MediaStoreError(
-            f"media file is {len(data)} bytes; limit is {MAX_MEDIA_BYTES} bytes"
-        )
+        raise MediaStoreError(f"media file is {len(data)} bytes; limit is {MAX_MEDIA_BYTES} bytes")
     if content_type == "image/png":
         if not data.startswith(_PNG_MAGIC):
             raise MediaStoreError("bytes are not a valid PNG file")
@@ -90,12 +92,46 @@ def verify_media_bytes(data: bytes, content_type: str) -> None:
 def pdf_locator(data: bytes) -> str:
     """Locator for a whole PDF file.
 
-    Always ``entire file`` until a real PDF parser (e.g. pinned pypdf) is added.
-    Regex page counts are wrong for incremental updates and compressed object streams,
-    and the locator also feeds ``record_id``, so a wrong count would mint unstable IDs.
+    Always ``entire file``: page counts must not feed ``record_id`` (unstable IDs if a
+    parser disagrees with another pass). Long PDFs stay one ingest record; truncation to
+    Gemini's page limit happens at embed time via ``truncate_pdf_for_embedding``.
     """
-    del data  # bytes checked at verify time; locator does not depend on them yet
+    del data  # bytes checked at verify time; locator does not depend on them
     return "entire file"
+
+
+def truncate_pdf_for_embedding(data: bytes, *, max_pages: int = GEMINI_PDF_MAX_PAGES) -> bytes:
+    """Return a PDF of at most ``max_pages`` (Gemini embedding-2 limit), else ``data``.
+
+    Uses pypdf. Corrupt or unreadable PDFs are returned unchanged so the embed call can
+    surface the provider error; page count is only used for truncation, never for IDs.
+    """
+    if max_pages < 1:
+        raise ValueError("max_pages must be >= 1")
+    try:
+        from pypdf import PdfReader, PdfWriter
+    except ImportError as exc:  # pragma: no cover - declared in requirements.txt
+        raise MediaStoreError("pypdf is required to truncate PDFs for embedding") from exc
+    try:
+        reader = PdfReader(io.BytesIO(data))
+        total = len(reader.pages)
+        if total <= max_pages:
+            return data
+        writer = PdfWriter()
+        for index in range(max_pages):
+            writer.add_page(reader.pages[index])
+        out = io.BytesIO()
+        writer.write(out)
+        return out.getvalue()
+    except Exception:
+        return data
+
+
+def prepare_media_for_embedding(data: bytes, mime_type: str) -> tuple[bytes, str]:
+    """Bytes + MIME ready for ``Embedder.embed_media`` (PDF page truncation applied)."""
+    if mime_type == "application/pdf":
+        return truncate_pdf_for_embedding(data), mime_type
+    return data, mime_type
 
 
 def store_media_bytes(
@@ -115,9 +151,7 @@ def store_media_bytes(
     if not record_id.strip():
         raise MediaStoreError("record_id must be nonempty")
     if len(data) > MAX_MEDIA_BYTES:
-        raise MediaStoreError(
-            f"media file is {len(data)} bytes; limit is {MAX_MEDIA_BYTES} bytes"
-        )
+        raise MediaStoreError(f"media file is {len(data)} bytes; limit is {MAX_MEDIA_BYTES} bytes")
     digest = hashlib.sha256(data).hexdigest()
     media_dir = Path(media_dir)
     media_dir.mkdir(parents=True, exist_ok=True)

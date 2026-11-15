@@ -18,12 +18,13 @@ stdout; if the import or embedding fails, nothing is written, not even the case.
 
 Text source files are read where they are and are not copied: each record keeps the
 file's path relative to the source root and the file's SHA-256. Image and PDF bytes
-are copied under ``{CASES_DIR}/{case_id}/media/`` (see BLA-68). Media records have
-empty ``content`` and no chunks until multimodal embedding (BLA-69), so they are not
-searchable yet. Re-running is safe: records already stored are skipped and nothing is
-embedded twice; unchanged media files are not rewritten. If parsing or embedding
-fails, the DB transaction is rolled back and any media files this run newly wrote are
-deleted.
+are copied under ``{CASES_DIR}/{case_id}/media/`` (see BLA-68). Media records keep empty
+``content`` but are embedded with ``gemini-embedding-2`` (BLA-69) and indexed with a
+lexical FTS sidecar (filename; parent subject/headers for email images). Re-running is
+safe: records already stored are skipped and nothing is embedded twice; unchanged media
+files are not rewritten. If parsing or embedding fails, the DB transaction is rolled
+back and any media files this run newly wrote are deleted. After changing
+``EMBEDDING_MODEL``, run ``reembed_stale_chunks`` and re-measure Owl / baselines.
 
 Exits nonzero if any file failed to import or any record was rejected, so a bad import
 is never silent.
@@ -130,7 +131,11 @@ def _import_and_store(args: argparse.Namespace, embedder: Embedder | None) -> in
                 return 1
             try:
                 stored = store_records(
-                    session, case_id, result.records, embedder or make_embedder(settings)
+                    session,
+                    case_id,
+                    result.records,
+                    embedder or make_embedder(settings),
+                    media_dir=_media_dir_for(args, case_id),
                 )
             except EmbeddingError as error:
                 print(f"error: embedding failed; nothing was written: {error}", file=sys.stderr)
