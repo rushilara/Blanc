@@ -56,6 +56,7 @@ Example illustrative questions (not claims about any particular dataset):
 | FR-10 | Exclude evidence | Exclude one source record and all its chunks; rerun retrieval + reconstruction under the new inclusion set; do not merely hide a graph edge. |
 | FR-11 | Compare and restore | Show previous/current finding status and changed edges/events; restore the record to recover the previous evidence state. |
 | FR-12 | Provenance integrity | Reject fabricated citation IDs; prevent cross-case citation leakage; mark observed vs claimed vs inferred statements. |
+| FR-13 | Investigator-chosen evidence window | When retrieval left out records that one search ranked inside the evidence window, offer "Want more evidence?". Accepting reruns the same question with a larger record window (24 instead of 16, same character budget) as a new revision; the earlier revision is kept. One step only; if relevant records are still left out, say how many. |
 
 ### Definitions that avoid ambiguity
 

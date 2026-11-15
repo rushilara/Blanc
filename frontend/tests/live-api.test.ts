@@ -20,6 +20,19 @@ test("renders only complete shared-contract analyses for the selected case/quest
   assert.throws(() => parseRevision({ ...revision, created_at: "bad date" }, revision.case_id, revision.question), ApiError);
 });
 
+test("accepts server retrieval coverage and rejects a malformed one", () => {
+  const covered = clone();
+  covered.retrieval_coverage = {
+    evidence_window: "standard", max_records: 16, max_excerpt_chars: 32000,
+    skipped: [{ record_id: "rec-x", rank: 17, reason: "record_limit", vector_rank: 10 }],
+    budget_substituted: false, left_out_record_ids: ["rec-x"], offer_expanded_window: true,
+  };
+  assert.equal(parseRevision(covered, revision.case_id, revision.question).retrieval_coverage?.offer_expanded_window, true);
+  const bad = structuredClone(covered) as unknown as { retrieval_coverage: { evidence_window: string } };
+  bad.retrieval_coverage.evidence_window = "huge";
+  assert.throws(() => parseRevision(bad, revision.case_id, revision.question), ApiError);
+});
+
 test("rejects excluded, unreturned and dangling graph references", () => {
   const excluded = clone(); excluded.excluded_record_ids = [excluded.claims[0].evidence_ids[0]];
   assert.throws(() => parseRevision(excluded, revision.case_id, revision.question), ApiError);

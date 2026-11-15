@@ -58,10 +58,11 @@ from sqlalchemy.orm import Session
 from app.analysis_llm import AnalysisLLM
 from app.analysis_retry import RevisionMetadata, analyze_with_retry
 from app.comparison import compare_revisions
-from app.contracts import AnalysisRevision, RevisionComparison
+from app.contracts import AnalysisRevision, EvidenceWindow, RevisionComparison
 from app.db import utcnow
 from app.embeddings import Embedder
 from app.evidence_store import list_records
+from app.evidence_window import DEFAULT_WINDOW, coverage_of, window_of
 from app.ids import new_id
 from app.models import AnalysisRevisionRow, Case, EvidenceRecordRow, RevisionRestoreRow
 from app.retrieval import RetrievalConfig, permitted_records, retrieve
@@ -95,6 +96,10 @@ class InvalidExclusionError(RevisionStoreError):
 class ComparisonNotApplicableError(RevisionStoreError):
     """The revision's question differs from its parent's (a follow-up), so a support diff
     would not describe the effect of an exclusion."""
+
+
+class InvalidRerunError(RevisionStoreError):
+    """The rerun would repeat the revision's own evidence window (BLA-64)."""
 
 
 class InvalidRevisionError(RevisionStoreError):
@@ -304,8 +309,11 @@ def saved_revision_lookup(
 
 
 def _records_for(session: Session, revision: AnalysisRevision):
-    """The case's stored records that the revision retrieves, excludes or cites."""
+    """The case's stored records that the revision retrieves, excludes, cites or lists as
+    skipped by the evidence window."""
     ids = {*revision.retrieved_record_ids, *revision.excluded_record_ids}
+    if revision.retrieval_coverage is not None:
+        ids.update(skip.record_id for skip in revision.retrieval_coverage.skipped)
     for item in (*revision.claims, *revision.graph.edges, *revision.timeline_events):
         ids.update(item.evidence_ids)
     for node in revision.graph.nodes:
@@ -387,9 +395,12 @@ def run_case_analysis(
     *,
     retrieval_config: RetrievalConfig | None = None,
     prior_analysis_id: str | None = None,
+    evidence_window: EvidenceWindow | None = None,
     now: datetime | None = None,
 ) -> AnalysisRevision:
     """Retrieve, analyze with retry, save and return a new immutable revision (BLA-20).
+
+    ``evidence_window`` (BLA-64) defaults to the prior revision's window, or ``standard``.
 
     Optional ``prior_analysis_id`` loads a saved revision of this case: it becomes
     ``parent_analysis_id``, supplies prompt context tagged as prior analysis (not evidence),
@@ -403,11 +414,13 @@ def run_case_analysis(
     parent_id: str | None = None
     prior_text: str | None = None
     excluded: list[str] = []
+    window = evidence_window or DEFAULT_WINDOW
     if prior_analysis_id is not None:
         prior = get_revision(session, case_id, prior_analysis_id)
         parent_id = prior.analysis_id
         prior_text = prior_analysis_summary(prior)
         excluded = list(prior.excluded_record_ids)
+        window = evidence_window or window_of(prior)
 
     return _analyze_and_save(
         session,
@@ -419,6 +432,7 @@ def run_case_analysis(
         parent_id=parent_id,
         prior_text=prior_text,
         retrieval_config=retrieval_config,
+        window=window,
         now=now,
     )
 
@@ -432,9 +446,12 @@ def exclude_records(
     embedder: Embedder,
     *,
     retrieval_config: RetrievalConfig | None = None,
+    evidence_window: EvidenceWindow | None = None,
     now: datetime | None = None,
 ) -> AnalysisRevision:
     """Exclude ``record_ids`` from revision ``analysis_id`` and rerun its question (BLA-33).
+
+    The rerun uses the base's evidence window unless ``evidence_window`` overrides it.
 
     The new revision's excluded set is the base's plus ``record_ids``; it is generated from
     the remaining evidence only, saved as a child of the base, and returned. Nothing is
@@ -478,6 +495,51 @@ def exclude_records(
         parent_id=base.analysis_id,
         prior_text=prior_findings_context(base, excluded),
         retrieval_config=retrieval_config,
+        window=evidence_window or window_of(base),
+        now=now,
+    )
+
+
+def rerun_with_window(
+    session: Session,
+    case_id: str,
+    analysis_id: str,
+    evidence_window: EvidenceWindow,
+    llm: AnalysisLLM,
+    embedder: Embedder,
+    *,
+    retrieval_config: RetrievalConfig | None = None,
+    now: datetime | None = None,
+) -> AnalysisRevision:
+    """Rerun revision ``analysis_id``'s question with another evidence window (BLA-64).
+
+    "Want more evidence?": the same question, the same exclusions, a different window; the
+    result is saved as a new child and the base is never changed. As for exclusion reruns,
+    the base's findings are passed as "prior analysis — not evidence" so findings that are
+    still supported keep their identity for ``compare_to_parent``. A follow-up's board
+    context is not stored on the revision, so rerunning a follow-up uses its findings only.
+
+    Raises ``RevisionNotFoundError`` for an unknown revision, ``InvalidRerunError`` if the
+    revision already used ``evidence_window``, ``ExcludedRecordLeakError`` (a server bug)
+    and ``AnalysisLLMError`` on provider failure.
+    """
+    base = get_revision(session, case_id, analysis_id)
+    if window_of(base) == evidence_window:
+        raise InvalidRerunError(
+            f"analysis {analysis_id} already used the {evidence_window} evidence window"
+        )
+    excluded = list(base.excluded_record_ids)
+    return _analyze_and_save(
+        session,
+        case_id,
+        base.question,
+        llm,
+        embedder,
+        excluded=excluded,
+        parent_id=base.analysis_id,
+        prior_text=prior_findings_context(base, excluded),
+        retrieval_config=retrieval_config,
+        window=evidence_window,
         now=now,
     )
 
@@ -564,16 +626,19 @@ def _analyze_and_save(
     parent_id: str | None,
     prior_text: str | None,
     retrieval_config: RetrievalConfig | None,
+    window: EvidenceWindow,
     now: datetime | None,
 ) -> AnalysisRevision:
-    """Retrieve without ``excluded``, analyze with one retry, save and return the revision."""
+    """Retrieve without ``excluded`` in evidence window ``window``, analyze with one retry,
+    record what the window left out, save and return the revision."""
+    config = (retrieval_config or RetrievalConfig()).for_window(window)
     retrieval = retrieve(
         session,
         case_id,
         question,
         embedder,
         excluded_record_ids=excluded,
-        config=retrieval_config,
+        config=config,
     )
     # Defense in depth before the LLM prompt; a leak is a bug upstream.
     permitted_records(retrieval, excluded)
@@ -594,4 +659,14 @@ def _analyze_and_save(
         excluded_record_ids=excluded,
         prior_analysis=prior_text,
     )
-    return save_revision(session, result.revision)
+    coverage = coverage_of(
+        retrieval,
+        window,
+        max_records=config.max_records,
+        max_excerpt_chars=config.max_excerpt_chars,
+        excluded_record_ids=excluded,
+    )
+    revision = _reparsed(
+        _contract_json(result.revision.model_copy(update={"retrieval_coverage": coverage}))
+    )
+    return save_revision(session, revision)
