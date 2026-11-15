@@ -1,3 +1,5 @@
+@import url("/blanc/archive.css?v=baskerville-1");
+
 .blanc-workspace {
   min-height: 100svh;
   background: #e0d9c8;
@@ -554,3 +556,10 @@
 .blanc-original-question p { margin: 12px 0 0; }
 .blanc-investigations button:disabled { opacity: .5; cursor: default; }
 @media(max-width:600px) { .blanc-entry .blanc-investigation-open strong { font-size: 15px; } .blanc-home-case { gap: 10px; } }
+
+/* Keep retrieval bookkeeping subordinate to the findings. */
+.blanc-evidence-offer { margin-top: 24px; }
+.blanc-evidence-offer.is-details-only { padding: 12px 0; background: transparent; border: 0; border-top: 1px solid #a99e8955; }
+.blanc-skipped-details > summary { cursor: pointer; font: 11px/1.6 Arial, sans-serif; color: #7a6a5a; }
+.blanc-skipped-details[open] > summary { margin-bottom: 12px; }
+.blanc-evidence-offer .blanc-skipped { max-height: 210px; overflow: auto; overscroll-behavior: contain; padding: 0 8px 0 0; margin: 0; }

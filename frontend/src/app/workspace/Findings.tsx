@@ -1,16 +1,18 @@
 "use client";
 
-import dynamic from "next/dynamic";
 import Link from "next/link";
 import { EvidenceWindowNotice, FollowUpWindowChoice } from "@/components/EvidenceWindowNotice";
 import { InvestigationNavigation } from "@/components/InvestigationNavigation";
+import { RailResizer } from "@/components/RailResizer";
 import { windowLabel } from "@/lib/evidence-window";
-import { investigationTitle } from "@/lib/investigation-navigation";
+import { groupInvestigations, investigationTitle } from "@/lib/investigation-navigation";
 import { SpatialConnections } from "@/components/SpatialConnections";
 import { presentSource } from "@/lib/source-presentation";
+import { earlierTurns, turnLabel } from "@/lib/thread";
 import { SourcePanel } from "./SourcePanel";
+import { RevisionHistoryView } from "@/components/RevisionHistoryView";
 import { TimelineView } from "@/components/TimelineView";
-import { Component, useEffect, useRef, useSyncExternalStore, useState, type ReactNode } from "react";
+import { useEffect, useRef, useSyncExternalStore, useState } from "react";
 import type { AnalysisRevision, EvidenceRecord } from "@/lib/analysis";
 import { citedRecordIds } from "@/lib/citations";
 import { anchorCitations, splitCitations, type Anchor } from "@/lib/inline-citations";
@@ -18,20 +20,6 @@ import { itemFor, sameFindingNote, sourcesInOrder, supportChanged, supportLabel,
 import { addReconstruction, createBoard, loadCaseBoard } from "@/lib/boards-api";
 import { analyzeCase, ApiError, askFollowUp, excludeRecords, getComparison, getRevision, listCaseRecordsPage, listCases, listRevisions, loadRevisionSources, rerunWithWindow, restoreRecords, type CaseSummary, type RevisionSummary } from "@/lib/live-api";
 
-/** Thrown by the dynamic() catch fallback when the map chunk fails to import. */
-const MAP_LOAD_ERROR = "Connection map failed to load.";
-
-const ConnectionMap = dynamic(
-  () =>
-    import("./ConnectionMap")
-      .then(mod => ({ default: mod.ConnectionMap }))
-      .catch(() => ({
-        default: function MapLoadError(): never {
-          throw new Error(MAP_LOAD_ERROR);
-        },
-      })),
-  { ssr: false, loading: () => <p className="blanc-map-hint">Drawing the connections…</p> },
-);
 
 const views = ["Findings", "Connections", "Timeline", "Revisions"] as const;
 
@@ -75,6 +63,8 @@ export function Findings() {
   const caseTitle = cases?.find(item => item.case_id === caseId)?.title ?? caseId;
 
   const [feedback, setFeedback] = useState("");
+  // "Updated with more evidence" note, tied to the revision it describes.
+  const [expandedNote, setExpandedNoteFor] = useState<{ id: string; text: string } | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -108,6 +98,39 @@ export function Findings() {
   const shown = showingPrevious && previous ? previous : revision;
   const followWindow = shown && followWindowFor?.id === shown.analysis_id ? followWindowFor.choice : "inherit";
   const sources = records;
+
+  // Follow-up thread: the earlier questions in this revision's lineage, shown above
+  // the current answer instead of being replaced by it.
+  const [thread, setThread] = useState<{ for: string; turns: AnalysisRevision[] } | null>(null);
+  const revisionCache = useRef(new Map<string, AnalysisRevision>());
+  const scrollToLatest = useRef(false);
+  useEffect(() => {
+    if (!revision?.parent_analysis_id) return;
+    const target = revision;
+    const controller = new AbortController();
+    void (async () => {
+      const ancestors: AnalysisRevision[] = [];
+      let current = target;
+      for (let hops = 0; current.parent_analysis_id && hops < 50; hops++) {
+        const id = current.parent_analysis_id;
+        const parent = revisionCache.current.get(id) ?? await getRevision(target.case_id, id, controller.signal);
+        revisionCache.current.set(id, parent);
+        ancestors.unshift(parent);
+        current = parent;
+      }
+      const turns = earlierTurns(ancestors, target);
+      const loaded = (await Promise.all(turns.map(turn => loadRevisionSources(turn, controller.signal).catch(() => [])))).flat();
+      if (controller.signal.aborted) return;
+      setRecords(existing => [...existing, ...loaded.filter(record => !existing.some(item => item.record_id === record.record_id))]);
+      setThread({ for: target.analysis_id, turns });
+      if (scrollToLatest.current) {
+        scrollToLatest.current = false;
+        requestAnimationFrame(() => document.getElementById("blanc-current-turn")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+      }
+    })().catch(() => { /* the thread is extra context; the current answer still shows */ });
+    return () => controller.abort();
+  }, [revision]);
+  const turns = !showingPrevious && thread && revision && thread.for === revision.analysis_id ? thread.turns : [];
 
   useEffect(() => {
     if (loading) cancelRef.current?.focus();
@@ -172,13 +195,17 @@ export function Findings() {
   }, [caseId, revision?.analysis_id]);
   // Record IDs the model wrote into its prose become numbered citations too. Numbering
   // follows citation order, then any loaded source mentioned only in prose.
-  const knownIds = shown ? [...citedRecordIds(shown), ...records.map(record => record.record_id)] : [];
+  const knownIds = shown ? [...turns.flatMap(turn => citedRecordIds(turn)), ...citedRecordIds(shown), ...records.map(record => record.record_id)] : [];
   const prose = (text: string) => splitCitations(text, knownIds);
   const proseIds = shown
     ? [shown.answer, ...shown.claims.map(claim => claim.text), ...shown.unresolved_questions, ...shown.graph.edges.map(edge => edge.description ?? "")]
       .flatMap(text => prose(text).flatMap(part => "ids" in part ? part.ids : []))
     : [];
-  const citedOrder = [...new Set([...(shown ? citedRecordIds(shown) : []), ...proseIds])];
+  // Numbered across the whole thread, oldest answer first, so [3] means one record everywhere.
+  const threadIds = turns.flatMap(turn => [...citedRecordIds(turn),
+    ...[turn.answer, ...turn.claims.map(claim => claim.text), ...turn.unresolved_questions]
+      .flatMap(text => prose(text).flatMap(part => "ids" in part ? part.ids : []))]);
+  const citedOrder = [...new Set([...threadIds, ...(shown ? citedRecordIds(shown) : []), ...proseIds])];
   const sourceOrder = sourcesInOrder(citedOrder, shown?.excluded_record_ids ?? []);
 
   // Exact words from each cited record (search phrase, file name, sender), so the
@@ -450,6 +477,7 @@ export function Findings() {
       setShowingPrevious(false);
       setFollowUp("");
       setView("Findings");
+      scrollToLatest.current = true;
     } catch (error) {
       setFeedback(error instanceof Error ? error.message : "The follow-up could not be saved.");
     } finally {
@@ -468,6 +496,9 @@ export function Findings() {
       setRevision(child);
       setShowingPrevious(false);
       setView("Findings");
+      setExpandedNoteFor({ id: child.analysis_id, text: `Updated with more evidence: this answer read ${child.retrieved_record_ids.length} records (the previous one read ${shown.retrieved_record_ids.length}).` });
+      // The new answer replaces the report at the top; bring the reader there.
+      requestAnimationFrame(() => document.querySelector(".blanc-report")?.scrollIntoView({ behavior: "smooth", block: "start" }));
       try {
         setComparison(shown.question === child.question ? await getComparison(child.case_id, child.analysis_id) : null);
       } catch {
@@ -537,7 +568,7 @@ export function Findings() {
   return <div className="blanc-workspace">
     {/* The static sheet avoids the missing workspace styles in the CSS pipeline. */}
     {/* eslint-disable-next-line @next/next/no-css-tags */}
-    <link rel="stylesheet" href="/blanc/findings.css?v=evidence-window" precedence="blanc" />
+    <link rel="stylesheet" href="/blanc/findings.css?v=baskerville-1" precedence="blanc" />
     <header className="blanc-header">
       <Link href="/" aria-label="Blanc home"><svg width="92" height="37" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="210 168 1460 570"><defs>
     <filter id="ink-alpha" colorInterpolationFilters="sRGB">
@@ -557,6 +588,7 @@ export function Findings() {
 
     {shown ? <div className={`blanc-investigation${open ? " has-source" : ""}${view === "Connections" ? " is-map" : ""}`}>
       <aside className="blanc-case-rail" aria-label="Current case, investigations, and sources">
+        <RailResizer />
         <label className="blanc-case-picker">
           <small>Current case</small>
           <select aria-label="Current case" value={caseId} onChange={event => switchCase(event.target.value)}>
@@ -565,8 +597,7 @@ export function Findings() {
             {cases && caseId && !cases.some(item => item.case_id === caseId) && <option value={caseId}>{caseTitle}</option>}
           </select>
         </label>
-        <InvestigationNavigation key={`navigation-${caseId}`} history={history} ready={historyReady} activeId={shown.analysis_id} busy={!!working} onOpen={id => void openSaved(id)} />
-        <details className="blanc-rail-sources blanc-source-disclosure"><summary>Sources <span>{sourceOrder.length}</span></summary><ol>{sourceOrder.map((id, i) => {
+        <details className="blanc-rail-sources blanc-source-disclosure" open><summary>Sources <span>{sourceOrder.length}</span></summary><ol>{sourceOrder.map((id, i) => {
           const expanded = expandedSource === id;
           const excluded = shown.excluded_record_ids.includes(id);
           return <li key={id} className={[expanded ? "is-open" : "", excluded ? "is-excluded" : ""].filter(Boolean).join(" ") || undefined}
@@ -587,15 +618,19 @@ export function Findings() {
             </div>
           </li>;
         })}</ol></details>
+        <details className="blanc-rail-investigations blanc-source-disclosure">
+          <summary>Previous investigations <span>{historyReady ? groupInvestigations(history).length : ""}</span></summary>
+          <InvestigationNavigation key={`navigation-${caseId}`} history={history} ready={historyReady} activeId={shown.analysis_id} busy={!!working} onOpen={id => void openSaved(id)} />
+        </details>
       </aside>
       <main className="blanc-reading blanc-report" key={shown.analysis_id}>
       <p className="blanc-meta">{caseTitle} · {windowLabel(shown.retrieval_coverage?.evidence_window, shown.retrieval_coverage?.max_records)}{showingPrevious ? " · previous revision" : ""}</p>
       <div className="blanc-investigation-heading">
-        <h1>{investigationTitle(shown.question)}</h1>
-        <details className="blanc-original-question"><summary>View question</summary><p>{shown.question}</p></details>
+        <h1>{investigationTitle(turns[0]?.question ?? shown.question)}</h1>
+        {turns.length === 0 && <details className="blanc-original-question"><summary>View question</summary><p>{shown.question}</p></details>}
       </div>
       {(working || feedback) && <p role="status">{working || feedback}</p>}
-      <EvidenceWindowNotice key={shown.analysis_id} coverage={shown.retrieval_coverage} busy={!!working} onExpand={() => void expandEvidence()} />
+      {!working && expandedNote?.id === shown.analysis_id && <p className="blanc-expanded-note" role="status">{expandedNote.text}</p>}
       {shown.needs_review && <p>This analysis needs investigator review.</p>}
       {revision?.parent_analysis_id && <p className="blanc-revision-switch">
         <button type="button" onClick={() => void togglePrevious()} disabled={!!working}>
@@ -605,6 +640,23 @@ export function Findings() {
       <p className="blanc-revision-switch">
         <button type="button" onClick={() => void addToBoard()} disabled={!!working}>Add findings to board</button>
       </p>
+      {view === "Findings" && turns.map((turn, index) => <section key={turn.analysis_id} className="blanc-turn" aria-label={turnLabel(index)}>
+        <p className="blanc-turn-label">{turnLabel(index)}</p>
+        <p className="blanc-turn-question">{turn.question}</p>
+        <p className="blanc-turn-kicker">Finding</p>
+        <p className="blanc-turn-answer">{turn.answer ? withCitations(turn.answer) : "No answer in this revision."}</p>
+        {(turn.claims.length > 0 || turn.unresolved_questions.length > 0) && <details className="blanc-turn-details">
+          <summary>Why and what remains unresolved</summary>
+          {turn.claims.length > 0 && <><p className="blanc-turn-kicker">Why</p>
+            {turn.claims.map(claim => <p key={claim.id}><StatusLabel value={claim.status} />{withCitations(claim.text, claim.evidence_ids)}</p>)}</>}
+          {turn.unresolved_questions.length > 0 && <><p className="blanc-turn-kicker">What remains unresolved</p>
+            {turn.unresolved_questions.map((question, i) => <p key={`${i}-${question}`}>{withCitations(question)}</p>)}</>}
+        </details>}
+      </section>)}
+      {view === "Findings" && turns.length > 0 && <div id="blanc-current-turn" className="blanc-turn-current">
+        <p className="blanc-turn-label">{turnLabel(turns.length)} · latest</p>
+        <p className="blanc-turn-question">{shown.question}</p>
+      </div>}
       {view === "Findings" && <>
         <h2>Finding</h2>
         <p>{shown.answer ? withCitations(shown.answer, [], true) : "No answer in this revision."}</p>
@@ -630,21 +682,12 @@ export function Findings() {
         {shown.unresolved_questions.length > 0 && <><h2>What remains unresolved</h2>{shown.unresolved_questions.map((question, index) => <p key={`${index}-${question}`}>{withCitations(question)}</p>)}</>}
       </>}
       {view === "Connections" && <>
-      <SpatialConnections graph={shown.graph} excludedRecordIds={shown.excluded_record_ids} onOpenSource={setOpen} />
-      <details><summary>Relationship review and comparison</summary><ConnectionMapPane
-        nodes={shown.graph.nodes}
-        edges={shown.graph.edges}
-        records={sources}
-        claims={shown.claims}
-        events={shown.timeline_events}
-        questions={shown.unresolved_questions}
-        cite={id => citation(id)}
-        edgeSupport={supportMap("edge")}
-      /></details></>}
-      {view === "Timeline" && <><h2>Timeline</h2><TimelineView key={shown.analysis_id} events={shown.timeline_events} caseId={shown.case_id} records={sources} excludedRecordIds={shown.excluded_record_ids} eventSupport={supportMap("event")} /></>}
+      <SpatialConnections graph={shown.graph} records={sources} excludedRecordIds={shown.excluded_record_ids} onOpenSource={setOpen} />
+      </>}
+      {view === "Timeline" && <><h2>Timeline</h2><TimelineView key={shown.analysis_id} events={shown.timeline_events} caseId={shown.case_id} records={sources} excludedRecordIds={shown.excluded_record_ids} eventSupport={supportMap("event")} onOpenSource={setOpen} openSourceId={open} /></>}
       {view === "Revisions" && <>
-        <h2>{showingPrevious ? "Previous revision" : "This revision"}</h2>
-        <p className="blanc-meta">{shown.analysis_id}</p>
+        <RevisionHistoryView history={history} revision={shown} busy={!!working} onOpen={id => { void openSaved(id).then(() => setView("Revisions")); }} />
+        <h2>Evidence in this version</h2>
         <p>Excluded records: {shown.excluded_record_ids.length === 0 ? "None" : shown.excluded_record_ids.map(id => <button key={id} type="button" className="blanc-excluded-link" onClick={() => setOpen(id)}>{citationTitle(id)}</button>)}</p>
         {comparison && comparison.compared_analysis_id === revision?.analysis_id && <>
           <h2>What changed</h2>
@@ -662,6 +705,7 @@ export function Findings() {
           </ul>
         </>}
       </>}
+      <EvidenceWindowNotice key={shown.analysis_id} coverage={shown.retrieval_coverage} busy={!!working} onExpand={() => void expandEvidence()} />
       {view === "Findings" && <section className="blanc-ruled">
         <h3>Follow-ups</h3>
         <form className="blanc-followup" onSubmit={event => { event.preventDefault(); void submitFollowUp(); }}>
@@ -833,47 +877,4 @@ function sourceTitle(record: EvidenceRecord) {
 
 function StatusLabel({ value }: { value: string }) {
   return <span className={`blanc-status blanc-status-${value}`}>{value.replaceAll("_", " ")}</span>;
-}
-
-/** next/dynamic caches a failed import, so Retry cannot recover — offer a full reload. */
-function ConnectionMapPane(props: {
-  nodes: AnalysisRevision["graph"]["nodes"];
-  edges: AnalysisRevision["graph"]["edges"];
-  records: EvidenceRecord[];
-  claims: AnalysisRevision["claims"];
-  events: AnalysisRevision["timeline_events"];
-  questions: string[];
-  cite: (id: string) => ReactNode;
-  edgeSupport?: Record<string, SupportStatus>;
-}) {
-  const [loadFailed, setLoadFailed] = useState(false);
-  if (loadFailed) {
-    return <p role="alert">The connection map failed to load.{" "}
-      <button type="button" className="blanc-retry" onClick={() => { window.location.reload(); }}>Reload the page</button>
-    </p>;
-  }
-  return <MapLoadBoundary onLoadError={() => setLoadFailed(true)}>
-    <ConnectionMap {...props} />
-  </MapLoadBoundary>;
-}
-
-class MapLoadBoundary extends Component<
-  { children: ReactNode; onLoadError: () => void },
-  { failed: boolean }
-> {
-  state = { failed: false };
-
-  static getDerivedStateFromError() {
-    return { failed: true };
-  }
-
-  componentDidCatch(error: Error) {
-    // Chunk import failures throw MAP_LOAD_ERROR; anything else that escapes the
-    // map also needs a recoverable UI (ConnectionMap already soft-falls back for canvas).
-    if (error.message === MAP_LOAD_ERROR || this.state.failed) this.props.onLoadError();
-  }
-
-  render() {
-    return this.state.failed ? null : this.props.children;
-  }
 }

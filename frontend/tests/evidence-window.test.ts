@@ -141,3 +141,16 @@ test("a follow-up inherits the expanded window and can switch back to standard",
   act(() => { radios[1].click(); });
   assert.deepEqual(choices, ["standard"]);
 });
+
+test("a long skipped-record list is collapsed by default and never expands automatically", () => {
+  const skipped = Array.from({ length: 100 }, (_, i) => ({ record_id: `record-${i}`, rank: i + 17, reason: "record_limit" as const }));
+  const view = mount(createElement(EvidenceWindowNotice, { coverage: coverage({ skipped }), busy: false, onExpand: () => assert.fail("Disclosure must not rerun analysis") }));
+  const disclosure = view.querySelector<HTMLDetailsElement>(".blanc-skipped-details");
+  assert.ok(disclosure);
+  assert.equal(disclosure.open, false);
+  assert.match(disclosure.querySelector("summary")?.textContent ?? "", /100 records not included/);
+  assert.equal(disclosure.querySelectorAll("li").length, 100);
+  assert.ok(view.querySelector(".blanc-evidence-offer.is-details-only"));
+  act(() => { disclosure.open = true; });
+  assert.equal(disclosure.open, true);
+});
