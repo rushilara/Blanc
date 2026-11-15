@@ -161,6 +161,9 @@ def restated(base_raw: dict, child_raw: dict, text: str, child_text: str) -> dic
         (TRANSFER.replace("the money", "$5,000"), TRANSFER.replace("the money", "$9,000")),
         (TRANSFER, TRANSFER.replace("Tuesday", "Thursday")),
         (TRANSFER, TRANSFER.replace("Bob", "Rob")),
+        # Punctuation that carries meaning: a sign, a decimal point.
+        ("The account balance was -$500.", "The account balance was $500."),
+        ("Alice paid Bob $5.00.", "Alice paid Bob $500."),
         # Swapped roles: the same words in a different order.
         ("Alice paid Bob.", "Bob paid Alice."),
         # Even a harmless-looking rewording is not taken as proof of identity.
@@ -176,6 +179,52 @@ def test_similar_wording_is_not_the_same_finding(base_raw, child_raw, text, chil
     assert result[("claim", "claim-1", None)] == "unresolved"
     assert result[("claim", None, "claim-a")] == "newly_supported"
     assert "still_supported" not in [v for (kind, _, _), v in result.items() if kind == "claim"]
+
+
+def renumber_nodes(raw: dict, ids: dict[str, str]) -> None:
+    for node in raw["graph"]["nodes"]:
+        node["id"] = ids[node["id"]]
+    for edge in raw["graph"]["edges"]:
+        edge["source"], edge["target"] = ids[edge["source"]], ids[edge["target"]]
+
+
+NODE_IDS = {"alex": "n1", "jordan": "n2", "casey": "n3"}
+
+
+def test_an_edge_whose_node_id_now_names_someone_else_is_not_the_same_edge(
+    base_raw, child_raw
+) -> None:
+    renumber_nodes(base_raw, NODE_IDS)
+    renumber_nodes(child_raw, NODE_IDS)
+    assert statuses(compare(base_raw, child_raw))[("edge", "edge-1", "edge-1")] == (
+        "still_supported"
+    )
+
+    # The child reuses n1 for a different person: the n1 -> n2 edge is not the same edge.
+    next(node for node in child_raw["graph"]["nodes"] if node["id"] == "n1")["label"] = "Morgan"
+    result = statuses(compare(base_raw, child_raw))
+    assert result[("edge", "edge-1", None)] == "unresolved"
+    assert result[("edge", None, "edge-1")] == "newly_supported"
+
+
+def test_an_edge_whose_node_changed_type_is_not_the_same_edge(base_raw, child_raw) -> None:
+    next(node for node in child_raw["graph"]["nodes"] if node["id"] == "alex")["type"] = (
+        "organization"
+    )
+    result = statuses(compare(base_raw, child_raw))
+    assert result[("edge", "edge-1", None)] == "unresolved"
+    assert result[("edge", None, "edge-1")] == "newly_supported"
+
+
+def test_an_edge_to_an_unknown_node_is_never_paired(base_raw, child_raw) -> None:
+    # validate_revision rejects this, but the comparison must not pair it if it gets one.
+    base_raw["graph"]["edges"][0]["source"] = "ghost"
+    child_raw["graph"]["edges"][0]["source"] = "ghost"
+    base, child = revision(base_raw), revision(child_raw)
+    comparison = compare_revisions(base, child, created_at=datetime(2026, 11, 14, tzinfo=UTC))
+    result = statuses(comparison)
+    assert result[("edge", "edge-1", None)] == "unresolved"
+    assert result[("edge", None, "edge-1")] == "newly_supported"
 
 
 def test_an_event_at_a_different_time_is_not_the_same_event(base_raw, child_raw) -> None:

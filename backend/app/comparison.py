@@ -17,12 +17,16 @@ For every claim, edge and event, `compare_revisions` says how its support change
 - `newly_supported`: present in the child only.
 
 Identity is conservative. Two findings are the same finding only when there is a
-structural reason to think so: an edge joining the same two nodes with the same
+structural reason to think so: an edge joining the same two entities with the same
 type, a claim with the same wording, or an event with the same wording and the
-same timestamp. Wording is compared after ignoring case, spacing and punctuation,
-and nothing looser: similar wording is not enough, because "Alice transferred the
-money" and "Alice never transferred the money" differ by one word, as do changed
-amounts, dates and names. Citing the same record is not enough either, because one
+same timestamp. Wording is compared after ignoring case, spacing and a closing
+full stop, and nothing looser: other punctuation counts, because a sign, decimal
+point or currency symbol can reverse a finding (`-$500` and `$500`), and similar
+wording is not enough, because "Alice transferred the money" and "Alice never
+transferred the money" differ by one word, as do changed amounts, dates and names.
+An edge's endpoints are the same entity only when both the node ID and the node
+itself (label and type) match, so a node ID reused for a different person does
+not carry the edge over. Citing the same record is not enough either, because one
 record often supports several unrelated facts; and an ID is not enough, because
 IDs are regenerated on every LLM run. When identity cannot be established, the
 base finding is reported as `unresolved` or `not_supported` and the child finding
@@ -36,7 +40,7 @@ can conclude, not what happened. Explanations say "no longer supported by the
 remaining evidence", never "did not happen" or "disproved".
 """
 
-import re
+import unicodedata
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
@@ -84,7 +88,7 @@ def compare_revisions(
     for kind in _KINDS:
         base_items = _items(base, kind)
         compared_items = _items(compared, kind)
-        pairs = _match(kind, base_items, compared_items)
+        pairs = _match(kind, base_items, compared_items, _entities(base), _entities(compared))
         matched_compared = {id(after) for after in pairs.values()}
         for before in base_items:
             after = pairs.get(id(before))
@@ -112,15 +116,25 @@ def _items(revision: AnalysisRevision, kind: ComparisonItemKind) -> list[Any]:
     return list(revision.timeline_events)
 
 
+def _entities(revision: AnalysisRevision) -> dict[str, tuple[str, str]]:
+    """Each graph node ID mapped to what it names: its label wording and type."""
+    return {node.id: (_wording(node.label), node.type) for node in revision.graph.nodes}
+
+
 def _match(
-    kind: ComparisonItemKind, base_items: Sequence[Any], compared_items: Sequence[Any]
+    kind: ComparisonItemKind,
+    base_items: Sequence[Any],
+    compared_items: Sequence[Any],
+    base_entities: dict[str, tuple[str, str]],
+    compared_entities: dict[str, tuple[str, str]],
 ) -> dict[int, Any]:
     """Pair each base finding with its counterpart in the child, if one can be identified.
 
     Each child finding is used at most once, in base order:
 
-    - an edge: the same two nodes and the same type;
-    - a claim: the same wording (ignoring case, spacing and punctuation);
+    - an edge: the same type between the same two node IDs, each naming the same entity
+      (label and type) in both revisions;
+    - a claim: the same wording (ignoring case, spacing and a closing full stop);
     - an event: the same wording and the same timestamp.
 
     There is no rule based on similar wording, shared records or IDs; see the module
@@ -138,9 +152,11 @@ def _match(
 
     if kind == "edge":
         for before in base_items:
-            key = (before.source, before.target, before.type)
+            key = _edge_identity(before, base_entities)
+            if key is None:
+                continue
             for after in free(compared_items):
-                if (after.source, after.target, after.type) == key:
+                if _edge_identity(after, compared_entities) == key:
                     pair(before, after)
                     break
         return pairs
@@ -162,8 +178,17 @@ def _identity(kind: ComparisonItemKind, item: Any) -> tuple[str, str | None]:
     return _wording(item.description), timestamp
 
 
+def _edge_identity(edge: Any, entities: dict[str, tuple[str, str]]) -> tuple[Any, ...] | None:
+    """What must be equal for an edge to be the same finding; None if an endpoint is unknown."""
+    source, target = entities.get(edge.source), entities.get(edge.target)
+    if source is None or target is None:
+        return None
+    return (edge.source, source, edge.target, target, edge.type)
+
+
 def _wording(text: str) -> str:
-    return " ".join(re.sub(r"[^\w\s]", " ", text.casefold()).split())
+    """Case, spacing and a closing full stop are ignored; every other character counts."""
+    return " ".join(unicodedata.normalize("NFKC", text).casefold().split()).rstrip(" .")
 
 
 def _unique(ids: Sequence[str]) -> list[str]:
