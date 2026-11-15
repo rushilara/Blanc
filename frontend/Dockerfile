@@ -26,4 +26,7 @@ USER node
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s \
   CMD node -e "fetch('http://127.0.0.1:3000/blanc/index.html').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
-CMD ["npx", "next", "start", "-H", "0.0.0.0", "-p", "3000"]
+# No -H: next start already listens on all interfaces, and an explicit 0.0.0.0 would
+# leak into absolute redirects (sign-in would send the browser to http://0.0.0.0:3000,
+# a different host from localhost, so the session cookie would not be sent).
+CMD ["npx", "next", "start", "-p", "3000"]

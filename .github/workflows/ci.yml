@@ -176,14 +176,14 @@ jobs:
           curl -fsS http://127.0.0.1:8000/health | grep -q '"auth_required":true'
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/cases)" = 401
           curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' http://127.0.0.1:3000/workspace | tee /tmp/r
-          grep -q '^307 .*/blanc/index.html' /tmp/r
+          grep -Eq '^307 http://(localhost|127\.0\.0\.1):3000/blanc/index.html' /tmp/r
           curl -fsS -o /dev/null http://127.0.0.1:3000/blanc/index.html
       - name: Add a user in the container, sign in, and use the API
         run: |
           printf 'ci-password-123\n' | docker compose run --rm -T --no-deps frontend npm run -s auth:add-user -- ci
           curl -s -c jar -o /dev/null -w '%{http_code} %{redirect_url}\n' \
             -d 'username=ci&password=ci-password-123&next=/live' http://127.0.0.1:3000/api/auth/login | tee /tmp/r
-          grep -q '^303 .*/live$' /tmp/r
+          grep -Eq '^303 http://(localhost|127\.0\.0\.1):3000/live$' /tmp/r  # never 0.0.0.0: the cookie is per host
           test "$(curl -s -b jar -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/live)" = 200
           curl -fsS -b jar -X POST http://127.0.0.1:8000/cases -H 'Content-Type: application/json' -d '{"title":"Compose check"}'
           curl -fsS -b jar http://127.0.0.1:8000/cases | grep -q 'Compose check'
