@@ -26,9 +26,10 @@ VENV_STAMP := $(VENV)/.installed
 help:
 	@echo "Blanc local-first demo (case DB on this machine; Gemini for embed/analyze)"
 	@echo "  1. cp .env.example .env   # set GEMINI_API_KEY; keep DATABASE_URL local"
-	@echo "  2. make backend           # http://127.0.0.1:$(BACKEND_PORT)  (health: /health)"
+	@echo "  2. make backend           # http://localhost:$(BACKEND_PORT)  (health: /health)"
 	@echo "  3. make frontend          # http://localhost:3000  (sign-in → /workspace)"
 	@echo "  4. make import EVIDENCE=path/to/exports TITLE=\"Case name\""
+	@echo "     Import only the extracted evidence folder; keep answer keys and question sets elsewhere."
 	@echo "Other: make test | test-live | coverage | clean"
 	@echo "If the frontend origin is not http://localhost:3000, set CORS_ORIGINS in .env."
 
@@ -46,8 +47,10 @@ backend: install-backend
 	cd backend && .venv/bin/uvicorn app.main:app --reload --host 127.0.0.1 --port $(BACKEND_PORT)
 
 # Import extracted evidence into the local SQLite case DB (DATABASE_URL), embedding
-# chunks with Gemini. EVIDENCE is a file or folder, relative to the repo root or
-# absolute; files are read in place, not copied. Prints the case_id on stdout.
+# text chunks with Gemini. EVIDENCE is a file or folder (relative to the repo root
+# or absolute)—use only the evidence export, not answer keys / question sets. Text
+# is read in place; images/PDFs are copied under CASES_DIR/{case_id}/media/.
+# Prints the case_id on stdout.
 import: install-backend
 	@test -n "$(EVIDENCE)" || { echo 'usage: make import EVIDENCE=path/to/exports TITLE="Case title"  (or CASE=case_id)'; exit 2; }
 	@test -n "$(TITLE)$(CASE)" || { echo 'make import: set TITLE="..." for a new case, or CASE=case_id to add to one'; exit 2; }

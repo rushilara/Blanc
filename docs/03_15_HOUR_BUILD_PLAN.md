@@ -38,7 +38,7 @@ Runbook detail lives in the root `README.md`. On a clean checkout:
 1. `cp .env.example .env` and set `GEMINI_API_KEY` (leave `DATABASE_URL=sqlite:///./data/blanc.db`).
 2. `make backend` and `make frontend` in separate terminals (Python 3.12 + Node 20.12+).
 3. Open `http://localhost:3000` → sign-in landing → `/workspace`. Health: `http://localhost:8000/health`.
-4. `make import EVIDENCE=path/to/exports TITLE="Case name"` (embeds via Gemini into the local DB).
+4. `make import EVIDENCE=path/to/exports TITLE="Case name"` (embeds via Gemini into the local DB). Point `EVIDENCE` at the extracted evidence folder only—keep answer keys, briefs, and question sets out of that path.
 
 **Accurate today vs still open:** setup, local DB defaults, import, ask-on-`/workspace`, citation open, and auto-persisted revisions (reopen via `/live` → Saved versions) are the demo path. Follow-up and exclude/restore UI on the demo pages are **not** wired yet (backend endpoints exist; exclude control shows “available in a later step”). Do not check those boxes until the UI path works. End-to-end rehearsal and citation audit of the full checklist is **BLA-46**.
 
