@@ -486,6 +486,94 @@ def test_init_db_adds_media_columns_on_existing_table(tmp_path: Path) -> None:
     engine.dispose()
 
 
+def test_init_db_adds_embedding_coverage_on_existing_chunks(tmp_path: Path) -> None:
+    """ALTER TABLE migration must add embedding_coverage so old DBs can still load chunks."""
+    from sqlalchemy import select
+
+    from app.models import EvidenceChunk
+
+    db_path = tmp_path / "old_chunks.db"
+    engine = make_engine(f"sqlite:///{db_path}")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE cases ("
+                "case_id VARCHAR(64) PRIMARY KEY, "
+                "title VARCHAR(200) NOT NULL, "
+                "created_at DATETIME NOT NULL, "
+                "import_status VARCHAR(16) NOT NULL)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE TABLE evidence_records ("
+                "case_id VARCHAR(64) NOT NULL, "
+                "record_id VARCHAR(200) NOT NULL, "
+                "source_file TEXT NOT NULL, "
+                "source_locator TEXT NOT NULL, "
+                "content TEXT NOT NULL, "
+                "content_hash VARCHAR(64) NOT NULL, "
+                "created_at DATETIME NOT NULL, "
+                "PRIMARY KEY (case_id, record_id))"
+            )
+        )
+        # Pre-BLA-69 shape: no embedding_coverage (create_all will not add it later).
+        connection.execute(
+            text(
+                "CREATE TABLE evidence_chunks ("
+                "chunk_id VARCHAR(64) PRIMARY KEY, "
+                "case_id VARCHAR(64) NOT NULL, "
+                "record_id VARCHAR(200) NOT NULL, "
+                "chunk_index INTEGER NOT NULL, "
+                "char_start INTEGER NOT NULL, "
+                "char_end INTEGER NOT NULL, "
+                "text TEXT NOT NULL, "
+                "embedding_model VARCHAR(200) NOT NULL, "
+                "embedding_dim INTEGER NOT NULL, "
+                "created_at DATETIME NOT NULL)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO cases (case_id, title, created_at, import_status) "
+                "VALUES ('case-a', 'Old case', '2024-01-01 00:00:00', 'ready')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO evidence_records ("
+                "case_id, record_id, source_file, source_locator, content, "
+                "content_hash, created_at) "
+                "VALUES ('case-a', 'rec-1', 'a.txt', 'entire file', 'hello', 'abc', "
+                "'2024-01-01 00:00:00')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO evidence_chunks "
+                "(chunk_id, case_id, record_id, chunk_index, char_start, char_end, text, "
+                "embedding_model, embedding_dim, created_at) "
+                "VALUES ('chunk-1', 'case-a', 'rec-1', 0, 0, 5, 'hello', 'old-model', 8, "
+                "'2024-01-01 00:00:00')"
+            )
+        )
+        cols = {row[1] for row in connection.execute(text("PRAGMA table_info(evidence_chunks)"))}
+        assert "embedding_coverage" not in cols
+
+    init_db(engine, FakeEmbedder().dim)
+
+    with engine.connect() as connection:
+        cols = {row[1] for row in connection.execute(text("PRAGMA table_info(evidence_chunks)"))}
+    assert "embedding_coverage" in cols
+
+    with make_session_factory(engine)() as session:
+        chunk = session.scalar(select(EvidenceChunk).where(EvidenceChunk.chunk_id == "chunk-1"))
+        assert chunk is not None
+        assert chunk.text == "hello"
+        assert chunk.embedding_coverage is None
+    engine.dispose()
+
+
 def test_schema_rejects_traversal_media_path_and_odd_content_type() -> None:
     good = {
         "record_id": "rec_0123456789abcdef",
