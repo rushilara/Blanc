@@ -35,7 +35,7 @@ GitHub Actions runs on every PR and on pushes to `main` (`.github/workflows/ci.y
 |---|---|---|
 | Contracts + fixtures | Schemas are valid JSON Schema; fixtures conform; source-grounding checks in `starter/` pass | Always |
 | Backend | `ruff check`, then `pytest` with line coverage in `backend/` (fails below 80%) | Once `backend/requirements.txt` exists |
-| Frontend | `npm ci`, then `lint`, `build` and `test` scripts if defined | Once `frontend/package.json` exists |
+| Frontend | `npm ci`, then `lint`, `typecheck` (`tsc --noEmit`), `build` and `test` scripts if defined | Once `frontend/package.json` exists |
 
 Backend conventions CI relies on: runtime deps in `backend/requirements.txt`, optional dev deps in `backend/requirements-dev.txt`, tests in `backend/tests/`. Frontend: commit `frontend/package-lock.json`.
 

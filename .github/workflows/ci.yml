@@ -145,7 +145,10 @@ jobs:
       - name: Lint
         if: steps.detect.outputs.present == 'true'
         run: npm run lint --if-present
-      - name: Type check / build
+      - name: Type check
+        if: steps.detect.outputs.present == 'true'
+        run: npm run typecheck --if-present
+      - name: Build
         if: steps.detect.outputs.present == 'true'
         run: npm run build --if-present
       - name: Tests
