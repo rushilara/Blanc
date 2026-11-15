@@ -161,7 +161,8 @@ class SkippedRecord(BaseModel):
     record_id: str
     rank: int  # 1-based fused rank among all candidates
     score: float  # fused RRF score
-    # media_limit: an image/PDF inside the window beyond RETRIEVAL_MAX_MEDIA (BLA-70).
+    # media_limit: an image/PDF beyond RETRIEVAL_MAX_MEDIA (BLA-70); media never takes a
+    # text slot, so record_limit is for text only.
     reason: Literal["budget", "record_limit", "media_limit"]
     # budget skips: size of the record's best excerpt, which did not fit; else None
     excerpt_chars: int | None = None
@@ -175,11 +176,12 @@ class RetrievalResult(BaseModel):
     case_id: str
     question: str
     fts_query: str | None  # the FTS5 query actually run; None if the keyword search was skipped
-    records: list[RetrievedRecord]  # best first, at most max_records
+    # best first: at most max_records text records plus at most max_media image/PDF records
+    records: list[RetrievedRecord]
     vector_candidates: int  # chunk hits from the vector index
     keyword_candidates: int  # chunk hits from the keyword index
     fused_records: int  # distinct records among all candidates, before the window cut
-    dropped_by_limit: int  # fused records beyond max_records
+    dropped_by_limit: int  # text records beyond the max_records text slots
     dropped_by_budget: int  # records within max_records left out by the character budget
     excerpt_chars: int  # total excerpt characters returned (<= max_excerpt_chars)
     excluded_record_ids: list[str]  # sorted; see ``retrieve``
@@ -443,9 +445,10 @@ def retrieve(
 
     # Image/PDF records (BLA-70) rank in the same fused list as text: their vector is the
     # multimodal embedding of the file and their keyword match is the FTS sidecar
-    # (filename, parent email subject). In the window they carry no excerpt, since the
-    # sidecar is not record content, and they cost no character budget; at most
-    # ``max_media`` are kept, the rest are skipped as ``media_limit``.
+    # (filename, parent email subject). They never take a text slot: the window holds up to
+    # ``max_records`` text records plus up to ``max_media`` media records, which carry no
+    # excerpt (the sidecar is not record content) and cost no character budget. Media past
+    # the cap is skipped as ``media_limit``; ranks stay the fused rank among all candidates.
     fused = fuse(
         vector_hits,
         keyword_hits,
@@ -453,7 +456,14 @@ def retrieve(
         vector_weight=cfg.vector_weight,
         keyword_weight=cfg.keyword_weight,
     )
-    window = fused[:max_records]
+    modality_of = _modalities(session, case_id, [f.record_id for f in fused])
+    ranked = list(enumerate(fused, start=1))
+    text_ranked = [(rank, f) for rank, f in ranked if f.record_id not in modality_of]
+    window_ranks = {rank for rank, _ in text_ranked[:max_records]} | {
+        rank for rank, f in ranked if f.record_id in modality_of
+    }
+    window = [f for rank, f in ranked if rank in window_ranks]
+    beyond = text_ranked[max_records:]
     rows = _load_rows(session, case_id, (f.record_id for f in window))
     chunk_ids = [cid for f in window for cid in f.chunk_scores]
     spans = {
@@ -466,7 +476,9 @@ def retrieve(
     dropped_by_budget = 0
     budget_substituted = False
     media_kept = 0
-    for rank, f in enumerate(window, start=1):
+    for rank, f in ranked:
+        if rank not in window_ranks:
+            continue
         row = rows.get(f.record_id)
         if row is None:  # pragma: no cover - index and tables are kept consistent
             continue
@@ -564,8 +576,6 @@ def retrieve(
             )
         )
 
-    beyond = fused[max_records:]
-    beyond_modality = _modalities(session, case_id, [f.record_id for f in beyond])
     skipped.extend(
         SkippedRecord(
             record_id=f.record_id,
@@ -574,10 +584,10 @@ def retrieve(
             reason="record_limit",
             vector_rank=f.vector.rank if f.vector else None,
             keyword_rank=f.keyword.rank if f.keyword else None,
-            modality=beyond_modality.get(f.record_id, "text"),
         )
-        for rank, f in enumerate(beyond, start=max_records + 1)
+        for rank, f in beyond
     )
+    skipped.sort(key=lambda skip: skip.rank)
     return empty.model_copy(
         update={
             "records": records,
@@ -586,7 +596,7 @@ def retrieve(
             "vector_candidates": len(vector_hits),
             "keyword_candidates": len(keyword_hits),
             "fused_records": len(fused),
-            "dropped_by_limit": len(fused) - len(window),
+            "dropped_by_limit": len(beyond),
             "dropped_by_budget": dropped_by_budget,
             "excerpt_chars": budget - remaining,
         }

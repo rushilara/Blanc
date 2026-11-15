@@ -78,8 +78,13 @@ def _coverage_errors(analysis: dict, known: set[str]) -> list[str]:
     window = coverage['max_records']
     if len(analysis['retrieved_record_ids']) > window:
         errors.append('retrieval_coverage max_records is below the retrieved count')
+    # Media never takes a text slot (BLA-70): record-limit skips rank past the window, and
+    # budget skips rank before the first record-limit skip.
+    cut = min((s['rank'] for s in skipped if s['reason'] == 'record_limit'), default=None)
     for s in skipped:
-        if (s['reason'] == 'record_limit') == (s['rank'] <= window):
+        if s['reason'] == 'record_limit' and s['rank'] <= window:
+            errors.append(f"retrieval_coverage rank {s['rank']} does not fit reason {s['reason']}")
+        if s['reason'] == 'budget' and cut is not None and s['rank'] > cut:
             errors.append(f"retrieval_coverage rank {s['rank']} does not fit reason {s['reason']}")
         if (s['reason'] == 'media') != (s.get('modality') is not None) and s['reason'] != 'record_limit':
             errors.append(f"retrieval_coverage {s['record_id']}: media skips need a modality, budget skips none")

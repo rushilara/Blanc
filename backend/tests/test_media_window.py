@@ -146,23 +146,68 @@ def test_media_beyond_the_cap_is_skipped_not_dropped(tmp_path: Path) -> None:
     }
 
 
-def test_record_limit_skips_carry_modality_and_media_never_triggers_the_offer(
+def test_media_never_takes_a_text_slot_and_never_triggers_the_offer(
     tmp_path: Path,
 ) -> None:
     with make_client(tmp_path) as client:
         case_id, (image,) = seed(client, tmp_path)
         with client.app.state.session_factory() as session:
-            # A text question with a one-record window: the image is pushed out.
+            # One text slot, and the image outranks the text: both are kept.
             result = retrieve(
-                session, case_id, "warehouse key", SteeredEmbedder(),
+                session, case_id, "zebra key", SteeredEmbedder(),
                 config=RetrievalConfig(max_records=1),
             )
-    skip = next(s for s in result.skipped if s.record_id == image.record_id)
-    assert (skip.reason, skip.modality) == ("record_limit", "image")
+    assert [(r.record_id, r.modality) for r in result.records] == [
+        (image.record_id, "image"),
+        ("rec-text", "text"),
+    ]
+    assert result.skipped == [] and result.dropped_by_limit == 0
     coverage = coverage_of(result, "standard", max_records=1, max_excerpt_chars=32000)
     entry = next(s for s in coverage.skipped if s.record_id == image.record_id)
-    assert entry.modality == "image"
+    assert (entry.reason, entry.modality) == ("media", "image")
     assert image.record_id not in coverage.left_out_record_ids
+
+
+def test_media_over_the_cap_does_not_push_text_out_of_the_window(tmp_path: Path) -> None:
+    """Review of #78: five images matching the question outrank four text records. With
+    four text slots and one media slot, every text record still reaches the model."""
+    with make_client(tmp_path) as client:
+        case_id = client.post("/cases", json={"title": "Photos"}).json()["case_id"]
+        media_dir = tmp_path / "cases" / case_id / "media"
+        src = tmp_path / "photos"
+        images = [
+            rec
+            for i in range(5)
+            for rec in import_file(
+                write_bytes(src, f"zebra_{i}.png", PNG_BYTES),
+                case_id,
+                source_root=src,
+                media_dir=media_dir,
+            )
+        ]
+        texts = [
+            EvidenceRecord.model_validate(
+                {"record_id": f"rec-text-{i}", "case_id": case_id, "source_file": "notes.txt",
+                 "source_locator": f"line {i}", "content": f"Note {i} about the zebra key."}
+            )
+            for i in range(4)
+        ]
+        with client.app.state.session_factory() as session:
+            store_records(session, case_id, [*images, *texts], SteeredEmbedder(),
+                          media_dir=media_dir)
+            session.commit()
+            result = retrieve(
+                session, case_id, "zebra", SteeredEmbedder(),
+                config=RetrievalConfig(max_records=4, max_media=1),
+            )
+    assert result.skipped and result.skipped[0].modality == "image"  # media outranks text
+    kept = [r for r in result.records if r.modality == "text"]
+    assert sorted(r.record_id for r in kept) == [t.record_id for t in texts]
+    assert sum(r.modality == "image" for r in result.records) == 1
+    assert [s.reason for s in result.skipped] == ["media_limit"] * 4
+    assert result.dropped_by_limit == 0
+    coverage = coverage_of(result, "standard", max_records=4, max_excerpt_chars=32000)
+    assert all(s.reason == "media" for s in coverage.skipped)
 
 
 def test_media_first_does_not_block_truncating_the_first_text_excerpt(tmp_path: Path) -> None:
@@ -279,8 +324,6 @@ def _revision_with(skipped: list[dict[str, Any]], tmp_path: Path):
         ({"record_id": "IMAGE", "rank": 1, "reason": "media"}, "as media but gives no modality"),
         ({"record_id": "IMAGE", "rank": 1, "reason": "budget", "modality": "image"},
          "uses no character budget"),
-        ({"record_id": "IMAGE", "rank": 99, "reason": "media", "modality": "image"},
-         "as unanalyzed media at rank 99"),
     ],
 )
 def test_validation_rejects_inconsistent_media_skips(tmp_path, skip, message) -> None:

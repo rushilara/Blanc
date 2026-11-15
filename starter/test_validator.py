@@ -91,6 +91,7 @@ class TestRetrievalCoverage(unittest.TestCase):
             ({'budget_substituted':True},'budget_substituted without a budget skip'),
             ({'skipped':[{'record_id':'rec-02','rank':1,'reason':'record_limit','vector_rank':1}]},'does not fit reason'),
             ({'skipped':[{'record_id':'rec-99','rank':2,'reason':'record_limit'}],'left_out_record_ids':[],'offer_expanded_window':False},'not in the case corpus'),
+            ({'skipped':[{'record_id':'rec-02','rank':2,'reason':'record_limit','vector_rank':1},{'record_id':'rec-03','rank':3,'reason':'budget'}],'left_out_record_ids':['rec-02']},'does not fit reason'),
         ]
         for change,message in changes:
             broken=covered(); broken['retrieval_coverage'].update(change)

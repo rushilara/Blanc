@@ -279,21 +279,20 @@ def _coverage_errors(analysis: AnalysisRevision, known: set[str]) -> list[str]:
             f"{label} max_records is {coverage.max_records} but "
             f"{len(analysis.retrieved_record_ids)} records were retrieved"
         )
+    # Text fills max_records slots; image/PDF records sit on top of them and never take one
+    # (BLA-70). So a record-limit skip ranks past max_records, and a budget skip (inside the
+    # text window) ranks before every record-limit skip. Media ranks are not bounded.
+    first_cut = min((s.rank for s in coverage.skipped if s.reason == "record_limit"), default=None)
     for skip in coverage.skipped:
         if skip.reason == "record_limit" and skip.rank <= coverage.max_records:
             errors.append(
                 f"{label} skips {skip.record_id} for the record limit at rank {skip.rank}, "
                 f"inside the {coverage.max_records}-record window"
             )
-        if skip.reason == "budget" and skip.rank > coverage.max_records:
+        if skip.reason == "budget" and first_cut is not None and skip.rank > first_cut:
             errors.append(
                 f"{label} skips {skip.record_id} for the budget at rank {skip.rank}, "
-                f"outside the {coverage.max_records}-record window"
-            )
-        if skip.reason == "media" and skip.rank > coverage.max_records:
-            errors.append(
-                f"{label} skips {skip.record_id} as unanalyzed media at rank {skip.rank}, "
-                f"outside the {coverage.max_records}-record window"
+                f"after the record limit cut the window at rank {first_cut}"
             )
         if skip.reason == "media" and skip.modality is None:
             errors.append(f"{label} skips {skip.record_id} as media but gives no modality")
