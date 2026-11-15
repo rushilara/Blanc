@@ -19,6 +19,7 @@ Blanc is a **general-purpose software pipeline**, not a Narcos-specific chatbot.
 4. **Progressive reconstruction:** Follow-up questions retrieve new evidence and contribute verified, sourced elements to the saved workspace.
 5. **Case-agnostic ingestion:** Supported extracted file formats follow the same schema and inference pipeline, whatever the case theme.
 6. **Prototype honesty:** Missing evidence, weak support and unknown timestamps are explicit. This is investigative decision support, not autonomous fact finding or a guilt classifier.
+7. **Local-first data, cloud AI compute:** Original forensic files, extracted records, embeddings, SQLite databases and saved investigations stay on the investigator’s machine. Gemini (or a future provider) is used for embeddings and LLM analysis, so evidence content is still sent to that cloud API. Local-first is **not** the same as confidential-to-third-parties or fully offline.
 
 ## 3. Core user journey
 
@@ -81,6 +82,9 @@ Example illustrative questions (not claims about any particular dataset):
 - Native E01/raw disk, RAM, cloud export and mobile extraction ingestion.
 - Advanced entity disambiguation, geospatial views and richer temporal reasoning.
 - Role-based permissions, organization-wide case management and forensic-grade chain-of-custody integrations.
+- Desktop packaging (downloadable app) and optional full cloud deploy of the app for teams that want hosted workspaces.
+- Fully offline / local embeddings and LLM so evidence never leaves the machine.
+- Keep the landing **login page**; wire real **cloud auth** so investigators can lock the local app against casual local misuse (shared machine / shoulder access) and so the same gate works if parts of the product are hosted later.
 
 ## 7. Epics and prioritized user stories
 
@@ -107,13 +111,17 @@ Example illustrative questions (not claims about any particular dataset):
 
 ## 9. Open engineering decisions (defaults recommended)
 
-- **Embedding baseline:** choose one pretrained model/service and lock it at kickoff. Avoid fine-tuning now.
-- **Storage:** SQLite for cases, source records and revision history; local vector index for embeddings. No Neo4j required.
+- **Embedding baseline:** Gemini embeddings for MVP; lock model + dimension at kickoff. Avoid fine-tuning now.
+- **Storage:** SQLite on the local machine for cases, source records and revision history; local sqlite-vec + FTS5 indexes. No Neo4j; no cloud object store for MVP evidence.
+- **Runtime:** FastAPI + Next.js on localhost for the hackathon demo. Optional static landing host is fine; do not host the case DB for MVP.
 - **UI:** React graph library, simple event list/timeline; functionality before elaborate animation.
 - **Source granularity:** exclude at evidence-record level; optionally add document-level exclusion later.
 - **Merging follow-up findings:** match exact canonical IDs where available; otherwise ask user to confirm a merge and never silently equate similar names.
 - **Investigation branches:** save every exclusion analysis as a revision linked to a parent; do not mutate history.
+- **Auth:** keep the login UI. Prefer cloud-backed auth (session/token) that gates the local workspace so unauthorized local users cannot casually open investigations. Auth is an application gate, not full disk encryption of SQLite — combine with OS user accounts / disk encryption for stronger local protection. Org accounts and hosted workspaces can reuse the same auth later.
 
 ## 10. Safety, reliability and governance
 
 Uploaded documents are untrusted data and may contain instructions directed at the model. Treat them as quoted evidence, not as higher-priority prompts. Maintain case isolation and prevent retrieval across case IDs. Preserve file provenance, file hashes where practical, and a record of excluded evidence. Do not equate communication, shared identifiers or proximity with criminal culpability. Report uncertainty; allow a human investigator to verify each claim. Synthetic datasets support prototype demonstrations but do not establish operational reliability.
+
+**Cloud AI honesty:** Embeddings and analysis send evidence excerpts/content to Gemini. Keeping files on the investigator’s disk reduces storage cost and keeps the corpus local, but it does **not** eliminate third-party processing of the text used for retrieval and reconstruction. Prefer public/synthetic datasets until a stronger offline or contractual posture exists.

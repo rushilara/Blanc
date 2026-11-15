@@ -121,7 +121,7 @@ Example illustrative questions (not claims about any particular dataset):
 ### 9. Open engineering decisions (defaults recommended)
 
 - **Embedding baseline:** choose one pretrained model/service and lock it at kickoff. Avoid fine-tuning now.
-- **Storage:** SQLite for cases, source records and revision history; local vector index for embeddings. No Neo4j required.
+- **Storage:** Local SQLite for cases, source records and revision history; local vector index for embeddings. No Neo4j; no cloud evidence store for MVP. Gemini remains cloud compute for embeddings/LLM.
 - **UI:** React graph library, simple event list/timeline; functionality before elaborate animation.
 - **Source granularity:** exclude at evidence-record level; optionally add document-level exclusion later.
 - **Merging follow-up findings:** match exact canonical IDs where available; otherwise ask user to confirm a merge and never silently equate similar names.
@@ -234,10 +234,10 @@ The board stores: user-pinned claim IDs, graph nodes/edges, timeline events, not
 
 ### 8. Implementation choices
 
-- **Backend:** FastAPI + Pydantic, SQLite, embedding and LLM API of choice.
-- **Retrieval:** local Chroma/FAISS or sqlite-based vector extension; keyword search with SQLite FTS5; start with simple weighted rank fusion.
+- **Backend:** FastAPI + Pydantic on localhost; local SQLite; Gemini for embeddings and LLM analysis.
+- **Retrieval:** sqlite-vec + SQLite FTS5; start with simple weighted rank fusion.
 - **Frontend:** Next.js + React, a graph library (e.g., React Flow), custom timeline and evidence drawer.
-- **Storage:** SQLite for durable evidence metadata/versions; upload directory for originals; vector index scoped to case.
+- **Storage:** Local SQLite for durable evidence metadata/versions; local upload directory for originals; vector index scoped to case. No hosted case DB in MVP.
 - **No new model training, Neo4j, or heavyweight agent framework required for the prototype.**
 
 ### 9. What can go wrong and the mitigation
@@ -313,4 +313,4 @@ The board stores: user-pinned claim IDs, graph nodes/edges, timeline events, not
 
 **Milestone 2 (MLP):** second/third case benchmarks, analyst annotations, robust merge/diff, export, better retrieval and entity resolution.  
 **Milestone 3 (research):** collect relevance-pair labels, test fine-tuned vs generic embeddings, add capped agentic retrieval and run held-out case evaluations.  
-**Milestone 4 (real deployments):** audited access, secure deployment, supported forensic tool export adapters, rigorous provenance/case isolation, human review workflows.
+**Milestone 4 (optional cloud + real deployments):** optional hosted app deploy, audited access/auth, secure deployment, supported forensic tool export adapters, rigorous provenance/case isolation, human review workflows; explore fully offline/local models.

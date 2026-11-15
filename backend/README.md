@@ -67,7 +67,7 @@ If it prints `x86_64`, install a native arm64 Python 3.12 (the python.org instal
 
 ## Persistence
 
-SQLite via SQLAlchemy 2.0 (typed `Mapped[...]` ORM) at `DATABASE_URL` (default `sqlite:///./data/blanc.db`, relative to `backend/`; `data/` is gitignored). On Railway, mount the volume at `/data` and set `DATABASE_URL=sqlite:////data/blanc.db` (four slashes: absolute path); run a single instance, since SQLite is a local file. Tables are created with `Base.metadata.create_all` at startup. There are no migrations yet (Alembic can come later), so during development delete `backend/data/blanc.db` after changing a table.
+SQLite via SQLAlchemy 2.0 (typed `Mapped[...]` ORM) at `DATABASE_URL` (default `sqlite:///./data/blanc.db`, relative to `backend/`; `data/` is gitignored). **MVP is local-first:** keep the DB file on the investigator’s machine and run a single local uvicorn process. Hosted volumes (Railway/Render/etc.) are not part of the MVP evidence path; optional cloud deploy of the app can come later. Tables are created with `Base.metadata.create_all` at startup. There are no migrations yet (Alembic can come later), so during development delete `backend/data/blanc.db` after changing a table.
 
 The DB is opened in the lifespan, not at import. In tests, enter the client (`with TestClient(app) as client:`) so the lifespan runs.
 
