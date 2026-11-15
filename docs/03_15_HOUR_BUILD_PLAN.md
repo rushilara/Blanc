@@ -21,7 +21,7 @@
 | 4–7 | End-to-end first question | Question → hybrid retrieval → structured JSON → cited answer/graph/timeline for one verified case. | Use one LLM pass; skip extra retrieval hops. |
 | 7–10 | Persistent workspace + follow-up | Save/reload a revision, ask follow-up, add new sourced elements to board; original saved version remains intact. | Save snapshots rather than complex automated graph merging. |
 | 10–12.5 | Exclusion and comparison | Exclude record; retrieval and LLM both respect exclusion; show changed/unresolved finding; restore or branch. | Use deterministic changed/unchanged/unsupported diff if LLM comparison is unreliable. |
-| 12.5–15 | QA, second-case check, presentation | Fresh-start demo, verify citations/locators, demonstrate saving and evidence sensitivity. If time permits, load second case unchanged. | Prefer one truly real, reliable case over two shallow or fabricated ones. |
+| 12.5–15 | QA, second-case check, presentation | Fresh-start **localhost** demo (`make backend` + `make frontend` + local Gemini key), verify citations/locators, demonstrate saving and evidence sensitivity. If time permits, load second case unchanged. Do not spend MVP time on cloud-hosting the case DB. | Prefer one truly real, reliable case over two shallow or fabricated ones; optional static landing host only. |
 
 ## Hard priorities under time pressure
 
@@ -33,6 +33,8 @@
 
 ## Demo acceptance checklist
 
+- [ ] Demo runs locally (backend + frontend on localhost); case DB and evidence files are on the demo machine, not a hosted volume.
+- [ ] Team can state clearly: Gemini is used for embeddings/LLM (evidence text leaves the machine for those calls); storage is local-first, not fully offline.
 - [ ] A case is opened and at least several unrelated records are also indexed.
 - [ ] Investigator asks a question whose answer requires at least two real records.
 - [ ] Retrieved source IDs and locators match actual artifacts.
@@ -54,6 +56,6 @@
 
 ## After the hackathon
 
-**Milestone 2 (MLP):** second/third case benchmarks, analyst annotations, robust merge/diff, export, better retrieval and entity resolution.  
-**Milestone 3 (research):** collect relevance-pair labels, test fine-tuned vs generic embeddings, add capped agentic retrieval and run held-out case evaluations.  
-**Milestone 4 (real deployments):** audited access, secure deployment, supported forensic tool export adapters, rigorous provenance/case isolation, human review workflows.
+**Milestone 2 (MLP):** second/third case benchmarks, analyst annotations, robust merge/diff, export, better retrieval and entity resolution; desktop packaging polish.  
+**Milestone 3 (research):** collect relevance-pair labels, test fine-tuned vs generic embeddings, add capped agentic retrieval and run held-out case evaluations; explore fully offline/local models.  
+**Milestone 4 (optional cloud + real deployments):** optional hosted app deploy for teams that want it (still preferring local evidence where possible), audited access/auth, secure deployment, supported forensic tool export adapters, rigorous provenance/case isolation, human review workflows.
