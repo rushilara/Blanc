@@ -7,10 +7,11 @@ runs, and must then filter every query by the resolved ``case.case_id``.
 
 from typing import Annotated
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.db import get_session
+from app.embeddings import Embedder
 from app.models import Case
 
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -30,3 +31,12 @@ def require_case(case_id: str, session: SessionDep) -> Case:
 
 
 CaseDep = Annotated[Case, Depends(require_case)]
+
+
+def get_embedder(request: Request) -> Embedder:
+    """Dependency: the app's embedder (``GeminiEmbedder``; tests may swap in a fake by
+    setting ``app.state.embedder``). Pass it to ``app.evidence_store.store_records``."""
+    return request.app.state.embedder
+
+
+EmbedderDep = Annotated[Embedder, Depends(get_embedder)]
