@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 
 export function QuestionInput({ question, onAsk }: {
   question: string;
@@ -9,14 +9,20 @@ export function QuestionInput({ question, onAsk }: {
   const [draft, setDraft] = useState(question);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const retryRef = useRef<HTMLButtonElement>(null);
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  useEffect(() => {
+    if (error) retryRef.current?.focus();
+  }, [error]);
+
+  async function ask() {
     if (!onAsk || pending || !draft.trim()) return;
     setPending(true);
     setError("");
     try {
       await onAsk(draft.trim());
+      inputRef.current?.focus();
     } catch {
       setError("The question could not be submitted. Please try again.");
     } finally {
@@ -24,11 +30,16 @@ export function QuestionInput({ question, onAsk }: {
     }
   }
 
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await ask();
+  }
+
   return (
     <form onSubmit={submit} className="space-y-2">
       <label htmlFor="investigation-question" className="text-sm font-medium">Investigation question</label>
       <div className="flex flex-col gap-2 sm:flex-row">
-        <input id="investigation-question" value={draft} onChange={(event) => setDraft(event.target.value)}
+        <input ref={inputRef} id="investigation-question" value={draft} onChange={(event) => setDraft(event.target.value)}
           aria-describedby="question-help" disabled={pending} required
           className="min-w-0 flex-1 rounded-lg border border-zinc-300 bg-white px-3 py-3 text-base focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600 dark:border-zinc-700 dark:bg-zinc-900" />
         <button type="submit" disabled={!onAsk || pending || !draft.trim()}
@@ -39,7 +50,12 @@ export function QuestionInput({ question, onAsk }: {
       <p id="question-help" className="text-xs text-zinc-500">
         {onAsk ? "Results below show the saved analysis until a new answer is returned." : "Preview mode: the saved analysis is shown below. New questions cannot be submitted yet."}
       </p>
-      {error && <p role="alert" className="text-sm text-red-700 dark:text-red-300">{error}</p>}
+      {error && (
+        <p role="alert" className="text-sm text-red-700 [overflow-wrap:anywhere] dark:text-red-300">
+          {error}{" "}
+          <button type="button" ref={retryRef} className="underline" onClick={() => void ask()}>Retry</button>
+        </p>
+      )}
     </form>
   );
 }

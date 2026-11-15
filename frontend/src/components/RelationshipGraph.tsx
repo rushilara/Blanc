@@ -1,7 +1,16 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  Component,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
 import type { AnalysisRevision, EvidenceRecord } from "@/lib/analysis";
 import { SourceReferences } from "@/components/SourceReferences";
@@ -21,14 +30,45 @@ import {
   filterGraph,
 } from "@/lib/graphFilter";
 
-const RelationshipGraphCanvas = dynamic(() => import("./RelationshipGraphCanvas"), {
-  ssr: false,
-  loading: () => (
-    <p role="status" className="p-5 text-sm text-zinc-500">
-      Loading relationship graph…
-    </p>
-  ),
-});
+/** Thrown by the dynamic() catch fallback when the canvas chunk fails to import. */
+const GRAPH_LOAD_ERROR = "Relationship graph failed to load.";
+
+const RelationshipGraphCanvas = dynamic(
+  () =>
+    import("./RelationshipGraphCanvas").catch(() => ({
+      default: function GraphLoadError(): never {
+        throw new Error(GRAPH_LOAD_ERROR);
+      },
+    })),
+  {
+    ssr: false,
+    loading: () => (
+      <p role="status" className="p-5 text-sm text-zinc-500">
+        Loading relationship graph…
+      </p>
+    ),
+  },
+);
+
+class GraphCanvasBoundary extends Component<
+  { children: ReactNode; onError: (error: Error) => void },
+  { failed: boolean }
+> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: Error) {
+    this.props.onError(error);
+  }
+
+  render() {
+    if (this.state.failed) return null;
+    return this.props.children;
+  }
+}
 
 type Graph = AnalysisRevision["graph"];
 
@@ -108,6 +148,10 @@ export function RelationshipGraph({
   const [edgeTypes, setEdgeTypes] = useState<string[]>([]);
   const [localPins, setLocalPins] = useState<string[]>([]);
   const [pinBusy, setPinBusy] = useState(false);
+  /** Remount key for render-error Retry only — not tied to filters. */
+  const [canvasKey, setCanvasKey] = useState(0);
+  /** `load` = chunk import failed (Retry cannot recover); `render` = canvas threw after load. */
+  const [canvasFailed, setCanvasFailed] = useState<"load" | "render" | null>(null);
   const pairHeading = useRef<HTMLHeadingElement>(null);
   const pairTitleId = useId();
   const searchId = useId();
@@ -135,6 +179,7 @@ export function RelationshipGraph({
   const names = new Map(graph.nodes.map((node) => [node.id, node.label]));
   const name = (id: string) => names.get(id) ?? id;
   const sourceProps = { records, caseId, excludedRecordIds, onExclude, onAnnotate };
+  const emptyGraph = graph.nodes.length === 0 && graph.edges.length === 0;
 
   useEffect(() => {
     if (pair) pairHeading.current?.focus();
@@ -248,15 +293,58 @@ export function RelationshipGraph({
           </li>
         ))}
       </ul>
-      <div className="h-[min(28rem,55vh)] min-h-[18rem] overflow-hidden rounded-lg border border-zinc-200 dark:border-zinc-800">
-        <RelationshipGraphCanvas
-          nodes={filtered.nodes}
-          edges={drawable}
-          pinnedIds={pinnedIds}
-          onInspectNode={onInspectNode}
-          onSelectEdge={onSelectEdge}
-        />
-      </div>
+      {emptyGraph ? (
+        <p className="text-sm text-zinc-500">No supported relationships.</p>
+      ) : (
+        <div className="h-[min(28rem,55vh)] min-h-[18rem] overflow-hidden rounded-lg border border-zinc-200 dark:border-zinc-800">
+          {canvasFailed ? (
+            <p role="alert" className="space-y-2 p-5 text-sm text-red-700 [overflow-wrap:anywhere] dark:text-red-300">
+              <span>
+                {canvasFailed === "load"
+                  ? "The relationship graph failed to load."
+                  : "The relationship graph could not be drawn."}
+              </span>{" "}
+              {canvasFailed === "load" ? (
+                <button
+                  type="button"
+                  className="underline"
+                  onClick={() => {
+                    window.location.reload();
+                  }}
+                >
+                  Reload the page
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="underline"
+                  onClick={() => {
+                    setCanvasFailed(null);
+                    setCanvasKey((key) => key + 1);
+                  }}
+                >
+                  Retry
+                </button>
+              )}
+            </p>
+          ) : (
+            <GraphCanvasBoundary
+              key={canvasKey}
+              onError={(error) =>
+                setCanvasFailed(error.message === GRAPH_LOAD_ERROR ? "load" : "render")
+              }
+            >
+              <RelationshipGraphCanvas
+                nodes={filtered.nodes}
+                edges={drawable}
+                pinnedIds={pinnedIds}
+                onInspectNode={onInspectNode}
+                onSelectEdge={onSelectEdge}
+              />
+            </GraphCanvasBoundary>
+          )}
+        </div>
+      )}
       {graph.nodes.length > 0 && (
         <ul aria-label="Pin entities" className="flex flex-wrap gap-2">
           {graph.nodes.map((node) => {
@@ -283,7 +371,7 @@ export function RelationshipGraph({
         </ul>
       )}
       {status && (
-        <p role="status" className="text-xs text-amber-800 dark:text-amber-300">
+        <p role="status" className="text-xs text-amber-800 dark:text-amber-300 [overflow-wrap:anywhere]">
           {status}
         </p>
       )}
@@ -315,7 +403,7 @@ export function RelationshipGraph({
           </ul>
         </section>
       )}
-      {filtered.edges.length > 0 ? (
+      {!emptyGraph && (filtered.edges.length > 0 ? (
         <ul aria-label="Relationships" className="space-y-3">
           {filtered.edges.map((edge) => (
             <li key={edge.id} data-edge-id={edge.id} className="space-y-2 rounded-lg bg-zinc-50 p-3 dark:bg-zinc-900">
@@ -338,7 +426,7 @@ export function RelationshipGraph({
         <p className="text-sm text-zinc-500">
           {filtered.active ? "No relationships match the current filters." : "No supported relationships."}
         </p>
-      )}
+      ))}
       {drawerIds.length > 0 && (
         <SourceReferences
           key={openToken}

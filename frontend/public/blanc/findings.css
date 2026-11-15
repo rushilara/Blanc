@@ -83,7 +83,18 @@
 .blanc-entry textarea:focus { outline: none; }
 .blanc-entry form button { border-radius: 4px; padding: 3px 11px; color: #822b33; background: transparent; font-size: 21px; }
 .blanc-entry form button:disabled { opacity: .55; }
-.blanc-entry [role="status"] { margin-top: 12px; }
+.blanc-entry [role="status"],
+.blanc-entry [role="alert"] { margin-top: 12px; overflow-wrap: anywhere; }
+.blanc-retry {
+  margin-left: .25rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
 
 .blanc-case-list { margin-top: 28px; }
 .blanc-case-list h2 { margin: 0 0 8px; font-style: normal; }
