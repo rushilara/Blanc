@@ -4,7 +4,8 @@
 the investigator's board:
 
 - Retrieval runs fresh over the case corpus for the new question, with the parent's
-  exclusions inherited, so an excluded record cannot come back through a follow-up.
+  exclusions inherited, so an excluded record cannot come back through a follow-up. The
+  parent's evidence window (BLA-64) is inherited too unless the request overrides it.
 - The result is a new revision whose parent is the revision the follow-up builds on; the
   parent is never changed.
 - The parent's question, answer, claims and unresolved questions, and the board's topic
@@ -35,8 +36,9 @@ from sqlalchemy.orm import Session
 from app.analyses import _analyze_and_save, get_revision, saved_revision_lookup
 from app.analysis_llm import AnalysisLLM
 from app.boards import _finding, get_board
-from app.contracts import AnalysisRevision, InvestigationBoard
+from app.contracts import AnalysisRevision, EvidenceWindow, InvestigationBoard
 from app.embeddings import Embedder
+from app.evidence_window import window_of
 from app.retrieval import RetrievalConfig
 
 # Caps that keep the context small: it is orientation, not evidence.
@@ -56,10 +58,11 @@ def ask_follow_up(
     *,
     board_id: str | None = None,
     retrieval_config: RetrievalConfig | None = None,
+    evidence_window: EvidenceWindow | None = None,
     now: datetime | None = None,
 ) -> AnalysisRevision:
     """Ask ``question`` as a follow-up to saved revision ``analysis_id``; save and return
-    the new child revision.
+    the new child revision. ``evidence_window`` (BLA-64) defaults to the parent's window.
 
     Raises ``RevisionNotFoundError`` for an unknown revision, ``BoardNotFoundError`` for a
     board that is not in this case, ``ExcludedRecordLeakError`` if retrieval leaked an
@@ -83,6 +86,7 @@ def ask_follow_up(
         parent_id=parent.analysis_id,
         prior_text=context,
         retrieval_config=retrieval_config,
+        window=evidence_window or window_of(parent),
         now=now,
     )
 

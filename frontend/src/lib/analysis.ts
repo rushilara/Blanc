@@ -44,4 +44,21 @@ export type AnalysisRevision = {
   excluded_record_ids: string[];
   needs_review?: boolean;
   validation_errors?: string[];
+  retrieval_coverage?: RetrievalCoverage;
+};
+
+// Server-assigned record of what the evidence window left out (BLA-64). Absent on older
+// revisions: treat those as the standard window with no offer.
+export type EvidenceWindow = "standard" | "expanded";
+export type RetrievalCoverage = {
+  evidence_window: EvidenceWindow;
+  max_records: number;
+  max_excerpt_chars: number;
+  // IDs and ranks only, never content, and never citations.
+  skipped: { record_id: string; rank: number; reason: "budget" | "record_limit"; vector_rank?: number; keyword_rank?: number }[];
+  budget_substituted: boolean;
+  // Records one search ranked inside the window but fusion pushed out: "N relevant records were left out".
+  left_out_record_ids: string[];
+  // Standard window and something was left out: show "Want more evidence?".
+  offer_expanded_window: boolean;
 };

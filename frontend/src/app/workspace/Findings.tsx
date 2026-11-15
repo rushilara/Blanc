@@ -2,11 +2,12 @@
 
 import Link from "next/link";
 import { presentSource } from "@/lib/source-presentation";
-import { SourceReferences } from "@/components/SourceReferences";
+import { SourcePanel } from "./SourcePanel";
 import { TimelineView } from "@/components/TimelineView";
 import { useEffect, useRef, useSyncExternalStore, useState } from "react";
 import type { AnalysisRevision, EvidenceRecord } from "@/lib/analysis";
 import { citedRecordIds } from "@/lib/citations";
+import { anchorCitations, splitCitations, type Anchor } from "@/lib/inline-citations";
 import { analyzeCase, listCaseRecordsPage, listCases, loadRevisionSources, type CaseSummary } from "@/lib/live-api";
 
 const views = ["Findings", "Connections", "Timeline", "Revisions"] as const;
@@ -62,7 +63,34 @@ export function Findings() {
   const [view, setView] = useState<(typeof views)[number]>("Findings");
   const [open, setOpen] = useState<string>();
   const sources = records;
-  const citedOrder = revision ? citedRecordIds(revision) : [];
+  // Record IDs the model wrote into its prose become numbered citations too. Numbering
+  // follows citation order, then any loaded source mentioned only in prose.
+  const knownIds = revision ? [...citedRecordIds(revision), ...records.map(record => record.record_id)] : [];
+  const prose = (text: string) => splitCitations(text, knownIds);
+  const proseIds = revision
+    ? [revision.answer, ...revision.claims.map(claim => claim.text), ...revision.unresolved_questions, ...revision.graph.edges.map(edge => edge.description ?? "")]
+      .flatMap(text => prose(text).flatMap(part => "ids" in part ? part.ids : []))
+    : [];
+  const citedOrder = [...new Set([...(revision ? citedRecordIds(revision) : []), ...proseIds])];
+
+  // Exact words from each cited record (search phrase, file name, sender), so the
+  // answer can carry a citation right where it mentions them.
+  const anchors: Anchor[] = citedOrder.flatMap(id => {
+    const record = records.find(item => item.record_id === id);
+    const presentation = record ? presentSource(record) : null;
+    return (presentation?.anchors ?? []).map(text => ({ text, ids: [id] }));
+  });
+
+  function withCitations(text: string, extra: string[] = [], anchored = false) {
+    const parts = anchored ? anchorCitations(prose(text), anchors) : prose(text);
+    const extraIds = [...new Set(extra)].filter(id => !parts.some(part => "ids" in part && part.ids.includes(id)));
+    return <>
+      {parts.map((part, index) => "ids" in part
+        ? <sup key={index}>{part.ids.map(id => citation(id))}</sup>
+        : <span key={index}>{part.text}</span>)}
+      {extraIds.length > 0 && <> <sup>{extraIds.map(id => citation(id))}</sup></>}
+    </>;
+  }
   const nodes = new Map(revision?.graph.nodes.map(node => [node.id, node.label]));
 
   async function ask() {
@@ -105,20 +133,46 @@ export function Findings() {
     }
   }
 
+  function citationKind(id: string) {
+    const source = sources.find(record => record.record_id === id);
+    return (source && presentSource(source)?.kind) ?? (source ? "Evidence record" : "Not loaded yet");
+  }
+
   function citationTitle(id: string) {
     const source = sources.find(record => record.record_id === id);
     return source ? sourceTitle(source) : id;
   }
 
   // Unloaded sources still open the drawer, which fetches the original itself.
+  // One line of the record's own text for the hover card: a message, URL or saved path.
+  function citationSnippet(id: string) {
+    const source = sources.find(record => record.record_id === id);
+    if (!source) return "Not loaded yet. Open to fetch the original record.";
+    const view = presentSource(source);
+    const text = view?.message ?? view?.fields.find(field => /URL|Saved location/.test(field.label))?.value ?? source.content;
+    return text.replace(/\s+/g, " ").slice(0, 140);
+  }
+
+  /** A numbered citation. In the Sources rail (``label`` set) it has no hover card,
+   *  since the rail already shows the name and kind. */
   function citation(id: string, label?: string) {
     const number = citedOrder.indexOf(id) + 1 || citedOrder.length + 1;
-    const loaded = sources.some(record => record.record_id === id);
     const title = citationTitle(id);
-    return <span key={id} className="blanc-citation">
-      <button type="button" onClick={() => setOpen(id)} aria-label={label ?? `Open source ${number}: ${title}`}>{label ?? number}</button>
-      <span className="blanc-preview" aria-hidden="true"><strong>{title}</strong><span>{loaded ? "Open to inspect the original record." : "Open to load the original record."}</span></span>
+    return <span key={id} className={`blanc-citation${open === id ? " is-active" : ""}`}>
+      <button type="button" onClick={() => setOpen(id)} aria-pressed={open === id}
+        aria-label={label ? `Open source ${number}: ${title}` : `Source ${number}: ${title}`}>{label ?? number}</button>
+      {!label && <span className="blanc-preview" aria-hidden="true">
+        <small>{number} · {citationKind(id)}</small>
+        <strong>{title}</strong>
+        <span>{citationSnippet(id)}</span>
+      </span>}
     </span>;
+  }
+
+  function stepSource(direction: -1 | 1) {
+    const index = citedOrder.indexOf(open ?? "");
+    const next = citedOrder[index + direction];
+    if (next) setOpen(next);
   }
 
   return <div className="blanc-workspace">
@@ -142,11 +196,11 @@ export function Findings() {
       )}</nav>}
     </header>
 
-    {revision ? <div className="blanc-investigation">
+    {revision ? <div className={`blanc-investigation${open ? " has-source" : ""}`}>
       <aside className="blanc-case-rail" aria-label="Current case and sources">
         <small>Current case</small>
         <h2>{caseTitle}</h2>
-        <section className="blanc-rail-sources"><h3>Sources</h3><ol>{citedOrder.map((id, i) => <li key={id}><span>{i + 1}</span>{citation(id, citationTitle(id))}</li>)}</ol></section>
+        <section className="blanc-rail-sources"><h3>Sources</h3><ol>{citedOrder.map((id, i) => <li key={id}><span>{i + 1}</span><span className="blanc-rail-source">{citation(id, citationTitle(id))}<small>{citationKind(id)}</small></span></li>)}</ol></section>
       </aside>
       <main className="blanc-reading blanc-report" key={revision.analysis_id}>
       <p className="blanc-meta">{caseTitle}</p>
@@ -155,17 +209,21 @@ export function Findings() {
       {revision.needs_review && <p>This analysis needs investigator review.</p>}
       {view === "Findings" && <>
         <h2>Finding</h2>
-        <p>{revision.answer || "No answer in this revision."}</p>
+        <p>{revision.answer ? withCitations(revision.answer, [], true) : "No answer in this revision."}</p>
         <h2>Why</h2>
-        {revision.claims.map(claim => <p key={claim.id}><StatusLabel value={claim.status} />{claim.text} <sup>{[...new Set(claim.evidence_ids)].map(id => citation(id))}</sup></p>)}
-        {revision.unresolved_questions.length > 0 && <><h2>What remains unresolved</h2>{revision.unresolved_questions.map((question, index) => <p key={`${index}-${question}`}>{question}</p>)}</>}
+        {revision.claims.map(claim => <p key={claim.id}><StatusLabel value={claim.status} />{withCitations(claim.text, claim.evidence_ids)}</p>)}
+        {revision.unresolved_questions.length > 0 && <><h2>What remains unresolved</h2>{revision.unresolved_questions.map((question, index) => <p key={`${index}-${question}`}>{withCitations(question)}</p>)}</>}
       </>}
-      {view === "Connections" && <><h2>Connections</h2>{revision.graph.edges.map(edge => <p key={edge.id}><StatusLabel value={edge.status} />{nodes.get(edge.source) ?? edge.source} → {nodes.get(edge.target) ?? edge.target}<br />{edge.description ?? edge.type.replaceAll("_", " ")} <sup>{[...new Set(edge.evidence_ids)].map(id => citation(id))}</sup></p>)}</>}
+      {view === "Connections" && <><h2>Connections</h2>{revision.graph.edges.map(edge => <p key={edge.id}><StatusLabel value={edge.status} />{nodes.get(edge.source) ?? edge.source} → {nodes.get(edge.target) ?? edge.target}<br />{edge.description ? withCitations(edge.description, edge.evidence_ids) : withCitations(edge.type.replaceAll("_", " "), edge.evidence_ids)}</p>)}</>}
       {view === "Timeline" && <><h2>Timeline</h2><TimelineView key={revision.analysis_id} events={revision.timeline_events} caseId={revision.case_id} records={sources} excludedRecordIds={revision.excluded_record_ids} /></>}
       {view === "Revisions" && <><h2>Current revision</h2><p>{revision.analysis_id}</p><p>Excluded records: {revision.excluded_record_ids.join(", ") || "None"}</p></>}
-      {open && <SourceReferences key={open} ids={[open]} caseId={revision.case_id} records={sources} excludedRecordIds={revision.excluded_record_ids} autoOpen hideTriggers onClose={() => setOpen(undefined)} />}
       {view === "Findings" && <section className="blanc-ruled"><h3>Follow-ups</h3><input aria-label="Ask a follow-up" placeholder="Ask a follow-up…" disabled /><small>Follow-up analysis is not connected yet.</small></section>}
-    </main></div> : <main className="blanc-reading blanc-entry">
+    </main>
+      {open && <SourcePanel key={open} caseId={revision.case_id} recordId={open} records={sources}
+        number={citedOrder.indexOf(open) + 1 || citedOrder.length} total={citedOrder.length}
+        excluded={revision.excluded_record_ids.includes(open)}
+        onClose={() => setOpen(undefined)} onStep={stepSource} />}
+    </div> : <main className="blanc-reading blanc-entry">
       <h1 aria-label={greeting || undefined}><TypedGreeting key={greeting} text={greeting} /></h1>
       <form onSubmit={event => { event.preventDefault(); void ask(); }}>
         <textarea rows={2} required aria-label="Ask a question about a case" placeholder="Ask a question about a case…" value={question} onKeyDown={event => {
@@ -301,7 +359,7 @@ function TypedGreeting({ text }: { text: string }) {
 }
 
 function sourceTitle(record: EvidenceRecord) {
-  return presentSource(record)?.title ?? (record.source_file.split(/[\\/]/).filter(Boolean).at(-1) || "Evidence record");
+  return presentSource(record)?.name ?? (record.source_file.split(/[\\/]/).filter(Boolean).at(-1) || "Evidence record");
 }
 
 function StatusLabel({ value }: { value: string }) {

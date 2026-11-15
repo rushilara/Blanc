@@ -285,6 +285,91 @@
         "minLength": 1
       }
     },
+    "retrieval_coverage": {
+      "type": "object",
+      "description": "Server-assigned record of what the evidence window held back (BLA-64). Never LLM-produced. Absent on revisions saved before it existed; treat those as the standard window with no offer.",
+      "additionalProperties": false,
+      "required": [
+        "evidence_window",
+        "max_records",
+        "max_excerpt_chars",
+        "skipped",
+        "budget_substituted",
+        "left_out_record_ids",
+        "offer_expanded_window"
+      ],
+      "properties": {
+        "evidence_window": {
+          "type": "string",
+          "enum": [
+            "standard",
+            "expanded"
+          ]
+        },
+        "max_records": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_excerpt_chars": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "skipped": {
+          "type": "array",
+          "description": "Every ranked candidate left out of the window, in rank order. IDs only, never content; not citations.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "record_id",
+              "rank",
+              "reason"
+            ],
+            "properties": {
+              "record_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "rank": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "budget",
+                  "record_limit"
+                ]
+              },
+              "vector_rank": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "keyword_rank": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        },
+        "budget_substituted": {
+          "type": "boolean"
+        },
+        "left_out_record_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "description": "record_limit skips that the vector or keyword search alone ranked within max_records, in rank order.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "offer_expanded_window": {
+          "type": "boolean",
+          "description": "True when evidence_window is standard and left_out_record_ids is non-empty."
+        }
+      }
+    },
     "created_at": {
       "type": "string",
       "format": "date-time"
