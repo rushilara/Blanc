@@ -133,6 +133,7 @@ def init_db(engine: Engine, embedding_dim: int = DEFAULT_EMBEDDING_DIM) -> None:
     Base.metadata.create_all(engine)
     with engine.begin() as connection:
         _ensure_evidence_record_media_columns(connection)
+        _ensure_evidence_chunk_embedding_coverage_column(connection)
         ensure_search_index(connection, embedding_dim)
         # Cases imported before ``store_records`` set ``ready`` were left ``empty``.
         connection.execute(
@@ -147,9 +148,7 @@ def _ensure_evidence_record_media_columns(connection) -> None:
     """Add BLA-68 media columns on existing SQLite DBs created before those fields existed."""
     if connection.dialect.name != "sqlite":
         return
-    existing = {
-        row[1] for row in connection.execute(text("PRAGMA table_info(evidence_records)"))
-    }
+    existing = {row[1] for row in connection.execute(text("PRAGMA table_info(evidence_records)"))}
     for name, ddl in (
         ("modality", "ALTER TABLE evidence_records ADD COLUMN modality VARCHAR(16)"),
         ("media_path", "ALTER TABLE evidence_records ADD COLUMN media_path TEXT"),
@@ -157,6 +156,15 @@ def _ensure_evidence_record_media_columns(connection) -> None:
     ):
         if name not in existing:
             connection.execute(text(ddl))
+
+
+def _ensure_evidence_chunk_embedding_coverage_column(connection) -> None:
+    """Add BLA-69 ``embedding_coverage`` on existing SQLite DBs (create_all does not ALTER)."""
+    if connection.dialect.name != "sqlite":
+        return
+    existing = {row[1] for row in connection.execute(text("PRAGMA table_info(evidence_chunks)"))}
+    if "embedding_coverage" not in existing:
+        connection.execute(text("ALTER TABLE evidence_chunks ADD COLUMN embedding_coverage JSON"))
 
 
 def get_session(request: Request) -> Iterator[Session]:

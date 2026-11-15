@@ -1,4 +1,4 @@
-"""Persist evidence records and their embedded chunks (BLA-12).
+"""Persist evidence records and their embedded chunks (BLA-12 / BLA-69).
 
 The importer (BLA-9) parses files into ``EvidenceRecord`` objects and calls
 ``store_records``. Retrieval (BLA-13) reads chunks back through ``app.search_index``.
@@ -28,21 +28,28 @@ Rules:
 - All new chunks are embedded before anything is written, so an embedding failure leaves
   the database unchanged. Like other services, this flushes but does not commit; the
   caller owns the transaction.
+- Media (image/PDF) records keep empty ``content`` but get one chunk whose ``text`` is a
+  lexical FTS sidecar (filename; for email images, parent subject/headers). The vector
+  comes from ``Embedder.embed_media`` (bytes + MIME), not from that sidecar text.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.case_media import prepare_media_for_embedding
 from app.chunking import chunk_spans
 from app.contracts import EvidenceRecord
-from app.embeddings import Embedder, EmbeddingError
+from app.embeddings import Embedder, EmbeddingError, MediaInput
 from app.models import Case, EvidenceChunk, EvidenceRecordRow, ImportStatus
 from app.search_index import (
     IndexedChunk,
@@ -53,8 +60,12 @@ from app.search_index import (
     vector_index_dim,
 )
 
+logger = logging.getLogger(__name__)
+
 # Keep IN (...) lists well under SQLite's bound-parameter limit.
 _IN_BATCH = 500
+
+_MEDIA_MODALITIES = frozenset({"image", "pdf"})
 
 
 class CaseNotFoundError(LookupError):
@@ -108,6 +119,66 @@ def differing_fields(a: EvidenceRecord, b: EvidenceRecord) -> list[str]:
     return sorted(k for k in keys if ja.get(k, _MISSING) != jb.get(k, _MISSING))
 
 
+def is_media_record(record: EvidenceRecord) -> bool:
+    """True when the record is an image/PDF with on-disk bytes to embed."""
+    return (
+        record.modality in _MEDIA_MODALITIES
+        and record.media_path is not None
+        and record.content_type is not None
+    )
+
+
+def lexical_sidecar(record: EvidenceRecord) -> str:
+    """FTS text for a media record whose ``content`` is empty.
+
+    Includes the filename and, for email-promoted images, parent subject/headers so hybrid
+    RRF is not vector-only. Never empty (DB requires ``char_end > char_start``).
+    """
+    meta = record.metadata or {}
+    parts: list[str] = []
+    filename = meta.get("filename")
+    if isinstance(filename, str) and filename.strip():
+        parts.append(filename.strip())
+    else:
+        name = Path(record.source_file).name
+        if name:
+            parts.append(name)
+    subject = meta.get("Subject") if isinstance(meta.get("Subject"), str) else None
+    if not subject and isinstance(meta.get("subject"), str):
+        subject = meta["subject"]
+    if subject and subject.strip():
+        parts.append(subject.strip())
+    for key in ("From", "To", "Date", "Message-ID", "Sender", "Cc"):
+        value = meta.get(key)
+        if isinstance(value, str) and value.strip():
+            parts.append(f"{key}: {value.strip()}")
+    text = "\n".join(parts).strip()
+    return text or "media"
+
+
+def resolve_media_path(
+    case_id: str,
+    record: EvidenceRecord,
+    *,
+    cases_dir: Path | None = None,
+    media_dir: Path | None = None,
+) -> Path:
+    """Absolute path to a media record's bytes on disk."""
+    if record.media_path is None:
+        raise EmbeddingError(f"record {record.record_id!r} has no media_path")
+    name = Path(record.media_path).name
+    if media_dir is not None:
+        return Path(media_dir) / name
+    root = Path(cases_dir) if cases_dir is not None else _default_cases_dir()
+    return root / case_id / record.media_path
+
+
+def _default_cases_dir() -> Path:
+    from app.config import get_settings
+
+    return Path(get_settings().CASES_DIR)
+
+
 def _require_case(session: Session, case_id: str) -> None:
     if session.get(Case, case_id) is None:
         raise CaseNotFoundError(f"case {case_id!r} does not exist")
@@ -122,11 +193,40 @@ def _check_embedder(session: Session, embedder: Embedder) -> None:
         )
 
 
-def _embed(embedder: Embedder, texts: list[str]) -> list[list[float]]:
+def _embed_texts(embedder: Embedder, texts: list[str]) -> list[list[float]]:
     vectors = embedder.embed_documents(texts) if texts else []
     if len(vectors) != len(texts) or any(len(v) != embedder.dim for v in vectors):
         raise EmbeddingError("embedder returned the wrong number or size of vectors")
     return vectors
+
+
+def _embed_media(embedder: Embedder, items: list[MediaInput]) -> list[list[float]]:
+    vectors = embedder.embed_media(items) if items else []
+    if len(vectors) != len(items) or any(len(v) != embedder.dim for v in vectors):
+        raise EmbeddingError("embedder returned the wrong number or size of media vectors")
+    return vectors
+
+
+def _embed_pending(
+    embedder: Embedder, pending: Sequence[tuple[EvidenceChunk, str | MediaInput]]
+) -> list[list[float]]:
+    """Embed a mixed list of text and media payloads, preserving order."""
+    vectors: list[list[float] | None] = [None] * len(pending)
+    text_idxs = [i for i, (_, payload) in enumerate(pending) if isinstance(payload, str)]
+    media_idxs = [i for i, (_, payload) in enumerate(pending) if isinstance(payload, MediaInput)]
+    if text_idxs:
+        texts = [pending[i][1] for i in text_idxs]
+        assert all(isinstance(t, str) for t in texts)
+        for index, vector in zip(text_idxs, _embed_texts(embedder, texts), strict=True):  # type: ignore[arg-type]
+            vectors[index] = vector
+    if media_idxs:
+        items = [pending[i][1] for i in media_idxs]
+        assert all(isinstance(m, MediaInput) for m in items)
+        for index, vector in zip(media_idxs, _embed_media(embedder, items), strict=True):  # type: ignore[arg-type]
+            vectors[index] = vector
+    if any(v is None for v in vectors):
+        raise EmbeddingError("internal error: unfinished embedding batch")
+    return vectors  # type: ignore[return-value]
 
 
 def _batched(items: Sequence[str]) -> Iterable[Sequence[str]]:
@@ -166,10 +266,86 @@ def _write_index(session: Session, chunks: list[EvidenceChunk], vectors: list[li
     insert_keywords(session, indexed)
 
 
+def _media_input_for(
+    case_id: str,
+    record: EvidenceRecord,
+    *,
+    cases_dir: Path | None,
+    media_dir: Path | None,
+) -> tuple[MediaInput, dict[str, Any] | None]:
+    path = resolve_media_path(case_id, record, cases_dir=cases_dir, media_dir=media_dir)
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise EmbeddingError(
+            f"cannot read media for {record.record_id!r} at {path}: {exc}"
+        ) from exc
+    assert record.content_type is not None
+    prepared, mime_type, coverage = prepare_media_for_embedding(data, record.content_type)
+    return MediaInput(data=prepared, mime_type=mime_type), coverage
+
+
+def _chunks_for_record(
+    case_id: str,
+    record: EvidenceRecord,
+    embedder: Embedder,
+    *,
+    cases_dir: Path | None,
+    media_dir: Path | None,
+) -> list[tuple[EvidenceChunk, str | MediaInput]]:
+    """Build chunk rows + embed payloads for one newly stored record.
+
+    PDF truncation coverage is stored on the media chunk's ``embedding_coverage``, never on
+    the evidence record (records stay immutable after insert).
+    """
+    if is_media_record(record):
+        sidecar = lexical_sidecar(record)
+        media_input, coverage = _media_input_for(
+            case_id, record, cases_dir=cases_dir, media_dir=media_dir
+        )
+        chunk = EvidenceChunk(
+            case_id=case_id,
+            record_id=record.record_id,
+            chunk_index=0,
+            char_start=0,
+            char_end=len(sidecar),
+            text=sidecar,
+            embedding_model=embedder.model,
+            embedding_dim=embedder.dim,
+            embedding_coverage=coverage,
+        )
+        return [(chunk, media_input)]
+    pending: list[tuple[EvidenceChunk, str | MediaInput]] = []
+    for index, (start, end) in enumerate(chunk_spans(record.content)):
+        text = record.content[start:end]
+        chunk = EvidenceChunk(
+            case_id=case_id,
+            record_id=record.record_id,
+            chunk_index=index,
+            char_start=start,
+            char_end=end,
+            text=text,
+            embedding_model=embedder.model,
+            embedding_dim=embedder.dim,
+        )
+        pending.append((chunk, text))
+    return pending
+
+
 def store_records(
-    session: Session, case_id: str, records: Sequence[EvidenceRecord], embedder: Embedder
+    session: Session,
+    case_id: str,
+    records: Sequence[EvidenceRecord],
+    embedder: Embedder,
+    *,
+    cases_dir: Path | None = None,
+    media_dir: Path | None = None,
 ) -> StoreResult:
     """Store ``records`` in ``case_id``: rows, chunks, vectors and keyword index entries.
+
+    ``cases_dir`` / ``media_dir`` locate on-disk image and PDF bytes for multimodal
+    embedding. Prefer ``media_dir`` when the importer wrote to a custom directory; otherwise
+    bytes are read from ``{cases_dir or CASES_DIR}/{case_id}/{media_path}``.
 
     See the module docstring for the dedupe and rejection rules.
     """
@@ -221,8 +397,11 @@ def store_records(
             )
 
     rows: list[EvidenceRecordRow] = []
-    chunks: list[EvidenceChunk] = []
+    pending: list[tuple[EvidenceChunk, str | MediaInput]] = []
     for record, digest in new_records:
+        record_pending = _chunks_for_record(
+            case_id, record, embedder, cases_dir=cases_dir, media_dir=media_dir
+        )
         rows.append(
             EvidenceRecordRow(
                 case_id=case_id,
@@ -240,22 +419,11 @@ def store_records(
                 content_hash=digest,
             )
         )
-        for index, (start, end) in enumerate(chunk_spans(record.content)):
-            chunks.append(
-                EvidenceChunk(
-                    case_id=case_id,
-                    record_id=record.record_id,
-                    chunk_index=index,
-                    char_start=start,
-                    char_end=end,
-                    text=record.content[start:end],
-                    embedding_model=embedder.model,
-                    embedding_dim=embedder.dim,
-                )
-            )
+        pending.extend(record_pending)
 
     # Embed first: if this fails nothing has been written.
-    vectors = _embed(embedder, [c.text for c in chunks])
+    vectors = _embed_pending(embedder, pending)
+    chunks = [chunk for chunk, _ in pending]
 
     session.add_all(rows)
     session.flush()
@@ -298,32 +466,171 @@ def _stale_chunks(session: Session, case_id: str, embedder: Embedder) -> list[Ev
     ]
 
 
-def stale_chunk_count(session: Session, case_id: str, embedder: Embedder) -> int:
-    """How many chunks of ``case_id`` ``reembed_stale_chunks`` would re-embed."""
-    return len(_stale_chunks(session, case_id, embedder))
+def _ensure_media_chunks(
+    session: Session,
+    case_id: str,
+    embedder: Embedder,
+    *,
+    cases_dir: Path | None,
+    media_dir: Path | None,
+) -> list[EvidenceChunk]:
+    """Create missing sidecar chunks for stored media records (pre-BLA-69 imports).
+
+    Returns the new chunk rows (still without vectors / FTS until the caller indexes them).
+    """
+    rows = session.scalars(
+        select(EvidenceRecordRow)
+        .where(EvidenceRecordRow.case_id == case_id)
+        .order_by(EvidenceRecordRow.record_id)
+    )
+    created: list[EvidenceChunk] = []
+    for row in rows:
+        record = row.to_contract()
+        if not is_media_record(record):
+            continue
+        existing = session.scalars(
+            select(EvidenceChunk)
+            .where(
+                EvidenceChunk.case_id == case_id,
+                EvidenceChunk.record_id == record.record_id,
+            )
+            .limit(1)
+        ).first()
+        if existing is not None:
+            continue
+        sidecar = lexical_sidecar(record)
+        # Validate bytes are readable before inserting a chunk that cannot be embedded.
+        try:
+            _payload, coverage = _media_input_for(
+                case_id, record, cases_dir=cases_dir, media_dir=media_dir
+            )
+        except EmbeddingError as exc:
+            logger.warning(
+                "skipping media backfill for %s in case %s: %s",
+                record.record_id,
+                case_id,
+                exc,
+            )
+            continue
+        chunk = EvidenceChunk(
+            case_id=case_id,
+            record_id=record.record_id,
+            chunk_index=0,
+            char_start=0,
+            char_end=len(sidecar),
+            text=sidecar,
+            embedding_model=embedder.model,
+            embedding_dim=embedder.dim,
+            embedding_coverage=coverage,
+        )
+        session.add(chunk)
+        created.append(chunk)
+    if created:
+        session.flush()
+    return created
 
 
-def reembed_stale_chunks(session: Session, case_id: str, embedder: Embedder) -> int:
+def stale_chunk_count(
+    session: Session,
+    case_id: str,
+    embedder: Embedder,
+    *,
+    cases_dir: Path | None = None,
+    media_dir: Path | None = None,
+) -> int:
+    """How many chunks of ``case_id`` ``reembed_stale_chunks`` would re-embed.
+
+    Counts media records that still need a sidecar chunk (pre-BLA-69 imports) as stale.
+    """
+    _require_case(session, case_id)
+    pending_media = 0
+    rows = session.scalars(select(EvidenceRecordRow).where(EvidenceRecordRow.case_id == case_id))
+    for row in rows:
+        record = row.to_contract()
+        if not is_media_record(record):
+            continue
+        has_chunk = session.scalars(
+            select(EvidenceChunk.chunk_id)
+            .where(
+                EvidenceChunk.case_id == case_id,
+                EvidenceChunk.record_id == record.record_id,
+            )
+            .limit(1)
+        ).first()
+        if has_chunk is None:
+            pending_media += 1
+    return pending_media + len(_stale_chunks(session, case_id, embedder))
+
+
+def reembed_stale_chunks(
+    session: Session,
+    case_id: str,
+    embedder: Embedder,
+    *,
+    cases_dir: Path | None = None,
+    media_dir: Path | None = None,
+) -> int:
     """Re-embed the chunks of ``case_id`` whose vector is missing or was made by a different
-    model/dimension than ``embedder``. Returns how many chunks were re-embedded.
+    model/dimension than ``embedder``. Also creates sidecar chunks for media records that
+    were imported before multimodal embedding. Returns how many chunks were re-embedded.
 
-    Use after changing ``EMBEDDING_MODEL`` or ``EMBEDDING_DIM``. Flushes, does not commit.
+    Use after changing ``EMBEDDING_MODEL`` or ``EMBEDDING_DIM``. Re-sends every stale
+    record to Gemini — re-run Owl / keyword baseline / "want more evidence?" measurements
+    after a corpus-wide model switch. Flushes, does not commit.
     """
     _require_case(session, case_id)
     _check_embedder(session, embedder)
+    new_media_chunks = _ensure_media_chunks(
+        session, case_id, embedder, cases_dir=cases_dir, media_dir=media_dir
+    )
     stale = _stale_chunks(session, case_id, embedder)
     if not stale:
         return 0
-    vectors = _embed(embedder, [c.text for c in stale])
-    # Replace any old vector (delete is a no-op for chunks that had none).
-    delete_vectors(session, [c.chunk_id for c in stale])
-    indexed = [IndexedChunk(c.chunk_id, c.case_id, c.record_id, c.text) for c in stale]
-    insert_vectors(session, indexed, vectors)
+    records = _stored_records(session, case_id, [c.record_id for c in stale])
+    pending: list[tuple[EvidenceChunk, str | MediaInput]] = []
+    skipped_chunk_ids: set[str] = set()
     for chunk in stale:
+        record = records.get(chunk.record_id)
+        if record is not None and is_media_record(record):
+            try:
+                payload, coverage = _media_input_for(
+                    case_id, record, cases_dir=cases_dir, media_dir=media_dir
+                )
+            except EmbeddingError as exc:
+                logger.warning(
+                    "skipping re-embed of media chunk %s (%s) in case %s: %s",
+                    chunk.chunk_id,
+                    chunk.record_id,
+                    case_id,
+                    exc,
+                )
+                skipped_chunk_ids.add(chunk.chunk_id)
+                continue
+            # Index metadata only — never mutate the stored evidence record.
+            chunk.embedding_coverage = coverage
+            pending.append((chunk, payload))
+        else:
+            pending.append((chunk, chunk.text))
+    if not pending:
+        return 0
+    vectors = _embed_pending(embedder, pending)
+    updated = [chunk for chunk, _ in pending]
+    # Replace any old vector (delete is a no-op for chunks that had none).
+    delete_vectors(session, [c.chunk_id for c in updated])
+    indexed = [IndexedChunk(c.chunk_id, c.case_id, c.record_id, c.text) for c in updated]
+    insert_vectors(session, indexed, vectors)
+    # Only newly created media chunks that were successfully embedded need FTS rows.
+    new_ok = [c for c in new_media_chunks if c.chunk_id not in skipped_chunk_ids]
+    if new_ok:
+        insert_keywords(
+            session,
+            [IndexedChunk(c.chunk_id, c.case_id, c.record_id, c.text) for c in new_ok],
+        )
+    for chunk in updated:
         chunk.embedding_model = embedder.model
         chunk.embedding_dim = embedder.dim
     session.flush()
-    return len(stale)
+    return len(updated)
 
 
 # --- Case-scoped reads ------------------------------------------------------------------
@@ -350,9 +657,7 @@ def list_chunks(
     query = select(EvidenceChunk).where(EvidenceChunk.case_id == case_id)
     if record_id is not None:
         query = query.where(EvidenceChunk.record_id == record_id)
-    return list(
-        session.scalars(query.order_by(EvidenceChunk.record_id, EvidenceChunk.chunk_index))
-    )
+    return list(session.scalars(query.order_by(EvidenceChunk.record_id, EvidenceChunk.chunk_index)))
 
 
 def get_chunks(session: Session, case_id: str, chunk_ids: Sequence[str]) -> list[EvidenceChunk]:

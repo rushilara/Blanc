@@ -778,7 +778,7 @@ def _media_record(
     try:
         return builder.build(
             locator=locator,
-            content="",  # no text chunks until multimodal embedding (BLA-69)
+            content="",  # binary; FTS sidecar + multimodal embed happen in store_records
             timestamp=timestamp,
             timestamp_kind=timestamp_kind,
             metadata=details,
@@ -890,7 +890,13 @@ def _message_records(
         if kind == "media":
             try:
                 yield _email_image_record(
-                    part, where, builder, base=base, date=date, parent_locator=headers_locator
+                    part,
+                    where,
+                    builder,
+                    base=base,
+                    headers=headers,
+                    date=date,
+                    parent_locator=headers_locator,
                 )
             except (EvidenceImportError, ValidationError) as error:
                 # Mislabelled or truncated attachments are common; keep the email text and
@@ -1106,10 +1112,15 @@ def _email_image_record(
     builder: _RecordBuilder,
     *,
     base: Mapping[str, Any],
+    headers: Mapping[str, str],
     date: str | None,
     parent_locator: str,
 ) -> EvidenceRecord:
-    """Turn a PNG/JPEG MIME part into a media EvidenceRecord with parent email linkage."""
+    """Turn a PNG/JPEG MIME part into a media EvidenceRecord with parent email linkage.
+
+    Copies parent From/To/Date/Subject/Message-ID into metadata so BLA-69 can build an
+    FTS sidecar without joining back to the headers record.
+    """
     content_type = part.get_content_type()
     filename = part.get_filename()
     extension = extension_for_content_type(content_type, filename)
@@ -1136,6 +1147,9 @@ def _email_image_record(
         "parent_locator": parent_locator,
         "content_type": content_type,
     }
+    for key in ("From", "To", "Date", "Subject", "Message-ID"):
+        if key in headers and headers[key]:
+            details[key] = headers[key]
     return _media_record(
         builder,
         locator=locator,
