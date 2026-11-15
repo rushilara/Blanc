@@ -156,6 +156,42 @@ jobs:
         run: npm test --if-present
 
   # BLA-61: the optional hosted backend image builds, starts, and keeps evidence out.
+  compose:
+    name: Laptop stack (docker compose)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Settings with sign-in on (CI-only secret; no Gemini key needed)
+        run: |
+          echo "BLANC_AUTH_SECRET=$(openssl rand -hex 32)" > .env
+          mkdir -p .blanc && chmod 777 .blanc
+      - name: Build and start, waiting for both health checks
+        run: docker compose up -d --build --wait
+      - name: No evidence, databases or secrets in the frontend image
+        run: |
+          docker compose run --rm --no-deps --entrypoint sh frontend -c \
+            'test ! -e /app/.env && test ! -e /app/frontend/.env && ! find /app -name "*.db" -not -path "*/node_modules/*" | grep -q .'
+      - name: Signed out, the app and the API are closed
+        run: |
+          curl -fsS http://127.0.0.1:8000/health | grep -q '"auth_required":true'
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/cases)" = 401
+          curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' http://127.0.0.1:3000/workspace | tee /tmp/r
+          grep -Eq '^307 http://(localhost|127\.0\.0\.1):3000/blanc/index.html' /tmp/r
+          curl -fsS -o /dev/null http://127.0.0.1:3000/blanc/index.html
+      - name: Add a user in the container, sign in, and use the API
+        run: |
+          printf 'ci-password-123\n' | docker compose run --rm -T --no-deps frontend npm run -s auth:add-user -- ci
+          curl -s -c jar -o /dev/null -w '%{http_code} %{redirect_url}\n' \
+            -d 'username=ci&password=ci-password-123&next=/live' http://127.0.0.1:3000/api/auth/login | tee /tmp/r
+          grep -Eq '^303 http://(localhost|127\.0\.0\.1):3000/live$' /tmp/r  # never 0.0.0.0: the cookie is per host
+          test "$(curl -s -b jar -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/live)" = 200
+          curl -fsS -b jar -X POST http://127.0.0.1:8000/cases -H 'Content-Type: application/json' -d '{"title":"Compose check"}'
+          curl -fsS -b jar http://127.0.0.1:8000/cases | grep -q 'Compose check'
+          docker compose exec -T backend test -f /data/blanc.db
+      - name: Logs
+        if: always()
+        run: docker compose logs --tail 40
+
   backend-image:
     name: Backend image
     runs-on: ubuntu-latest
