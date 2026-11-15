@@ -12,12 +12,14 @@ Blanc is a persistent investigative workspace in which an investigator asks case
 
 ## Start here
 
-1. [`docs/01_PRODUCT_PRD.md`](docs/01_PRODUCT_PRD.md): final product vision, MVP/MLP, requirements, epics, acceptance criteria.
-2. [`docs/02_ARCHITECTURE_AND_DATA_CONTRACTS.md`](docs/02_ARCHITECTURE_AND_DATA_CONTRACTS.md): lean RAG architecture; save, expand and evidence-exclusion mechanics; APIs and shared JSON contracts.
-3. [`docs/03_15_HOUR_BUILD_PLAN.md`](docs/03_15_HOUR_BUILD_PLAN.md): three parallel workstreams, stage gates, fallback decisions and 2-minute demo sequence.
-4. [`docs/04_DATASETS_AND_EVALUATION.md`](docs/04_DATASETS_AND_EVALUATION.md): prioritized sources, ground-truth realities and test protocol.
-5. [`docs/05_CLAUDE_CODE_KICKOFF.md`](docs/05_CLAUDE_CODE_KICKOFF.md): initial issue board and handoff prompts for developers/coding agents.
-6. [`contracts/`](contracts/): minimal machine-readable evidence and reconstruction schemas plus a synthetic example.
+1. [`docs/07_LAPTOP_INSTALL.md`](docs/07_LAPTOP_INSTALL.md): **primary demo / share install** — Docker Desktop + compose on a laptop (BLA-74).
+2. [`docs/01_PRODUCT_PRD.md`](docs/01_PRODUCT_PRD.md): final product vision, MVP/MLP, requirements, epics, acceptance criteria.
+3. [`docs/02_ARCHITECTURE_AND_DATA_CONTRACTS.md`](docs/02_ARCHITECTURE_AND_DATA_CONTRACTS.md): lean RAG architecture; save, expand and evidence-exclusion mechanics; APIs and shared JSON contracts.
+4. [`docs/03_15_HOUR_BUILD_PLAN.md`](docs/03_15_HOUR_BUILD_PLAN.md): three parallel workstreams, stage gates, fallback decisions and 2-minute demo sequence.
+5. [`docs/04_DATASETS_AND_EVALUATION.md`](docs/04_DATASETS_AND_EVALUATION.md): prioritized sources, ground-truth realities and test protocol.
+6. [`docs/05_CLAUDE_CODE_KICKOFF.md`](docs/05_CLAUDE_CODE_KICKOFF.md): initial issue board and handoff prompts for developers/coding agents.
+7. [`contracts/`](contracts/): minimal machine-readable evidence and reconstruction schemas plus a synthetic example.
+8. [`docs/06_DEPLOYMENT.md`](docs/06_DEPLOYMENT.md): optional hosted landing / container notes only — **not** the demo deploy.
 
 ## Architecture posture (MVP)
 
@@ -58,6 +60,24 @@ Copy `.env.example` to `.env` for local config; `.env` is gitignored.
 
 **Talk track:** case storage is local-first (SQLite + evidence files on this machine). Gemini is cloud compute for embeddings and structured analysis, so evidence *text* still leaves the machine for those API calls. This is not fully offline. MVP demos do **not** use Railway/Render volumes or cloud object storage for case evidence.
 
+**How do we deploy?** Put Blanc on a laptop with Docker Desktop + compose. That is the primary install and the intended share/demo path (BLA-74). Full steps: [`docs/07_LAPTOP_INSTALL.md`](docs/07_LAPTOP_INSTALL.md).
+
+```bash
+cp .env.example .env
+# Edit .env and set GEMINI_API_KEY=...  (https://aistudio.google.com/apikey)
+
+docker compose up --build -d
+# then open http://localhost:3000
+```
+
+**No Vercel or Railway required**; Gemini is the only cloud dependency.
+
+**Sign-in on a shared laptop:** set `BLANC_AUTH_SECRET` and add a user (steps in [`docs/07_LAPTOP_INSTALL.md`](docs/07_LAPTOP_INSTALL.md#sign-in-recommended-on-a-shared-laptop)). That gates the browser and API against casual misuse; it does **not** encrypt SQLite or media — use an OS login and full-disk encryption. Leave the secret empty for a demo bypass.
+
+### Dev path (`make backend` / `make frontend`)
+
+Use this when you are changing code. It is **not** the share/deploy path.
+
 Prerequisites: Python 3.12 (must load SQLite extensions — see `backend/README.md`), Node **20.12+**, npm, make. If your shell still has Node 18, switch first (for example `nvm use 20`).
 
 ```bash
@@ -75,9 +95,9 @@ If `python3.12` is not on your PATH: `make backend PYTHON=/path/to/python3.12`. 
 
 `make test` runs backend ruff + pytest and frontend lint. CI also runs frontend tests and typecheck.
 
-### Load a case
+### Load a case (dev path)
 
-A fresh database has no cases. Import **only the extracted evidence folder** (TXT, JSON, CSV, EML, plus PNG/JPEG/PDF)—keep the case brief, teacher guides, solutions, and evaluation question sets elsewhere so they never enter the searchable corpus (needs `GEMINI_API_KEY` to embed):
+A fresh database has no cases. Import **only the extracted evidence folder** (TXT, JSON, CSV, EML, plus PNG/JPEG/PDF)—keep the case brief, teacher guides, solutions, and evaluation question sets elsewhere so they never enter the searchable corpus (needs `GEMINI_API_KEY` to embed). For the Docker/laptop path, use the import command in [`docs/07_LAPTOP_INSTALL.md`](docs/07_LAPTOP_INSTALL.md) instead.
 
 ```bash
 make import EVIDENCE=path/to/exports TITLE="Owl case"      # new case; prints its case_id
@@ -92,13 +112,9 @@ Then in `/workspace`, pick the case and ask a question. Each successful ask pers
 - Embeddings: Gemini embeddings API (`GEMINI_API_KEY`, `EMBEDDING_MODEL`, `EMBEDDING_DIM`); vectors are stored locally in SQLite with sqlite-vec.
 - Persistence: local `DATABASE_URL` (default `sqlite:///./data/blanc.db` under `backend/`). Do not point MVP demos at a hosted volume for case evidence.
 
-### Run it on a laptop with Docker
+### Optional hosted landing / container notes
 
-`docker compose up --build -d`, then open <http://localhost:3000>: the backend and workspace in one command, with evidence kept in a local Docker volume. Install, importing a case and sign-in are in [`docs/07_LAPTOP_INSTALL.md`](docs/07_LAPTOP_INSTALL.md).
-
-### Optional hosted app path
-
-Blanc is local-first. To host the landing page publicly (with the workspace closed) or to run the backend in a container on storage you control, see [`docs/06_DEPLOYMENT.md`](docs/06_DEPLOYMENT.md). It is not a cloud evidence store.
+**Not the demo deploy.** Blanc is local-first; laptop Docker is how you share and demo it. [`docs/06_DEPLOYMENT.md`](docs/06_DEPLOYMENT.md) covers an optional public landing page (workspace closed) and operator-controlled container notes only. It is not a cloud evidence store.
 
 ## Suggested kickoff
 

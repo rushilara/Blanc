@@ -1,4 +1,4 @@
-@import url("/blanc/archive.css?v=baskerville-1");
+@import url("/blanc/archive.css?v=merged-main-1");
 
 .blanc-workspace {
   min-height: 100svh;
@@ -200,6 +200,20 @@
 .blanc-entry .blanc-saved { margin: 28px 0 8px; }
 .blanc-entry .blanc-history button { font-size: 15px; }
 .blanc-followup { display: grid; justify-items: start; gap: 8px; }
+/* BLA-54: AI suggestions only fill the follow-up input; the investigator still sends. */
+.blanc-suggestions { margin: 0 0 14px; }
+.blanc-suggestions-label {
+  margin: 0 0 8px; color: #8a7a68;
+  font: 600 10px/1.3 system-ui, sans-serif; letter-spacing: .06em; text-transform: uppercase;
+}
+.blanc-suggestions ul { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.blanc-suggestions button {
+  max-width: 100%; margin: 0; padding: 6px 10px; border: 1px solid #a99e89; border-radius: 2px;
+  background: #f5eddf; color: #372416; cursor: pointer; text-align: left;
+  font: 13px/1.35 Georgia, serif; overflow-wrap: anywhere;
+}
+.blanc-suggestions button:hover:not(:disabled) { border-color: #822b33; color: #822b33; }
+.blanc-suggestions button:disabled { opacity: .45; cursor: default; }
 .blanc-ruled .blanc-followup-window { margin: 0; padding: 0; border: 0; display: grid; gap: 6px; }
 .blanc-ruled .blanc-followup-window legend { margin-bottom: 2px; font: 600 12px/1.3 system-ui, sans-serif; }
 .blanc-ruled .blanc-followup-window label { display: flex; gap: 8px; align-items: center; font: 14px/1.4 Georgia, serif; }
@@ -563,3 +577,11 @@
 .blanc-skipped-details > summary { cursor: pointer; font: 11px/1.6 Arial, sans-serif; color: #7a6a5a; }
 .blanc-skipped-details[open] > summary { margin-bottom: 12px; }
 .blanc-evidence-offer .blanc-skipped { max-height: 210px; overflow: auto; overscroll-behavior: contain; padding: 0 8px 0 0; margin: 0; }
+/* The model's answer, with its Markdown rendered (lists, bold, italic, code). Lists need an
+   explicit marker: the Tailwind reset removes list styles. */
+.blanc-answer > p { margin: 0 0 10px; }
+.blanc-answer ol, .blanc-answer ul { margin: 0 0 10px; padding-left: 22px; }
+.blanc-answer ol { list-style: decimal; }
+.blanc-answer ul { list-style: disc; }
+.blanc-answer li { margin: 4px 0; padding-left: 2px; }
+.blanc-answer code { padding: 0 3px; border-radius: 2px; background: rgba(60, 40, 20, .08); font: .88em ui-monospace, monospace; overflow-wrap: anywhere; }

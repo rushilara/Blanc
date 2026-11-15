@@ -1,7 +1,7 @@
 // What the investigator sees about the evidence window (BLA-65). The server decides
 // whether more evidence is available; this only turns that record into words.
 // Skipped records stay IDs and ranks. Their content is never read here.
-import type { EvidenceWindow, RetrievalCoverage } from "./analysis";
+import type { EvidenceWindow, RetrievalCoverage, SkipReason } from "./analysis";
 
 export const TRADEOFFS = [
   ["Slower answer.", "The model reads more text."],
@@ -39,9 +39,26 @@ export function budgetNote(coverage: RetrievalCoverage | undefined): string | nu
   return "Some evidence didn't fit in this answer.";
 }
 
-export function skippedLines(coverage: RetrievalCoverage | undefined): { recordId: string; rank: number }[] {
+/** Plain wording for each skip reason (BLA-73). */
+export const SKIP_REASON_TEXT: Record<SkipReason, string> = {
+  budget: "didn't fit the character budget",
+  record_limit: "ranked past the record limit",
+  media_limit: "left out: media cap reached",
+  media_too_large: "file too large to send",
+  media: "file missing or failed integrity check",
+};
+
+export type SkippedLine = { recordId: string; rank: number; why: string; modality?: "image" | "pdf" };
+
+export function skippedLines(coverage: RetrievalCoverage | undefined): SkippedLine[] {
   if (!coverage) return [];
   return [...coverage.skipped]
     .sort((a, b) => a.rank - b.rank)
-    .map(skip => ({ recordId: skip.record_id, rank: skip.rank }));
+    .map(skip => ({
+      recordId: skip.record_id,
+      rank: skip.rank,
+      // An unknown reason from a newer server still gets a line, never a crash.
+      why: SKIP_REASON_TEXT[skip.reason] ?? "left out",
+      ...(skip.modality ? { modality: skip.modality } : {}),
+    }));
 }

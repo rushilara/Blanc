@@ -23,6 +23,12 @@ claim citing only those records does not fail the check. Matching is by citation
 so a wrong claim citing an allowed record would pass; add `must_not_contain` for
 any answer the evidence must not produce.
 
+`must_not_contain` is scanned across the answer, claims, graph, timeline,
+unresolved questions, and `suggested_followups` (BLA-54). Keep injection payloads
+there (e.g. "ignore previous instructions"). Do not put excluded-person names that
+are only meant to stay out of findings: a harmless suggestion like "Who is Jordan?"
+would fail the check if "Jordan" were listed.
+
 See `tests/examples/synthetic_question_set.json` for a complete example.
 """
 

@@ -33,34 +33,39 @@
 
 ## Fresh local machine setup (BLA-58)
 
-Runbook detail lives in the root `README.md`. On a clean checkout:
+Runbook detail lives in the root `README.md`. **Share/demo install** is laptop Docker ([`docs/07_LAPTOP_INSTALL.md`](07_LAPTOP_INSTALL.md), BLA-74). **Dev** path on a clean checkout:
 
 1. `cp .env.example .env` and set `GEMINI_API_KEY` (leave `DATABASE_URL=sqlite:///./data/blanc.db`).
-2. `make backend` and `make frontend` in separate terminals (Python 3.12 + Node 20.12+).
+2. `make backend` and `make frontend` in separate terminals (Python 3.12 + Node 20.12+) — not the share/deploy path.
 3. Open `http://localhost:3000` → sign-in landing → `/workspace`. Health: `http://localhost:8000/health`.
 4. `make import EVIDENCE=path/to/exports TITLE="Case name"` (embeds via Gemini into the local DB). Point `EVIDENCE` at the extracted evidence folder only—keep answer keys, briefs, and question sets out of that path.
 
-**Accurate today vs still open:** setup, local DB defaults, import, ask-on-`/workspace`, citation open, and auto-persisted revisions (reopen via `/live` → Saved versions) are the demo path. Follow-up and exclude/restore UI on the demo pages are **not** wired yet (backend endpoints exist; exclude control shows “available in a later step”). Do not check those boxes until the UI path works. End-to-end rehearsal and citation audit of the full checklist is **BLA-46**.
+**Accurate today (verified 2026-11-15 between 05:29 and 05:37 EST, fresh database, real Owl import, production frontend, on `main` at `95788bc`):** the dev path below and the whole investigative flow work in the UI on `/workspace`: ask, "Want more evidence?", open every citation, follow-up, exclude, restore, flip to the previous revision, and reopen any version from `/live` → Saved versions (where two versions can also be compared side by side). The Docker path is verified by the "Laptop stack (docker compose)" CI job, not yet on a demo Mac. Still to rehearse under **BLA-46**: the 2-minute narrative and the spoken limits.
+
+**Demo tips from that run:**
+- For the owner question ("What is the first name of the phone's owner, according to the messages?"), click **Yes** on "Want more evidence?". The standard window answers "Sarah" from one record; the expanded one cites three (the delivery text and two Facebook texts).
+- Exclude from a citation's source panel (Findings tab). The timeline's evidence panel still shows "Exclude · Annotate · available in a later step".
+- Known display issue: some answers show raw Markdown (`**bold**`, backticks).
 
 ## Demo acceptance checklist
 
 Setup / talk track (local-first + Gemini compute):
 
-- [ ] Demo runs locally (backend + frontend on localhost); case DB and evidence files are on the demo machine, not a hosted volume.
-- [ ] Fresh machine followed `cp .env.example .env` → set `GEMINI_API_KEY` → `make backend` → `make frontend` → open `http://localhost:3000`.
-- [ ] The case is loaded on the demo machine with `make import EVIDENCE=... TITLE=...` and shows as ready in the workspace.
-- [ ] Team can state clearly: Gemini is used for embeddings/LLM (evidence text leaves the machine for those calls); storage is local-first, not fully offline.
+- [x] Demo runs locally (backend + frontend on localhost); case DB and evidence files are on the demo machine, not a hosted volume. Prefer laptop Docker for share/demo; `make backend` / `make frontend` for development.
+- [x] Fresh machine followed either [`docs/07_LAPTOP_INSTALL.md`](07_LAPTOP_INSTALL.md) (`docker compose up --build -d`) or the dev path: `cp .env.example .env` → set `GEMINI_API_KEY` → `make backend` → `make frontend` → open `http://localhost:3000`.
+- [x] The case is loaded on the demo machine (Docker import from `07_LAPTOP_INSTALL.md`, or `make import EVIDENCE=... TITLE=...`) and shows as ready in the workspace.
+- [ ] Team can state clearly: Gemini is used for embeddings/LLM (evidence text leaves the machine for those calls); storage is local-first, not fully offline; no Vercel/Railway required for the demo.
 
 Investigative demo (rehearse under BLA-46; leave unchecked until verified on the real case):
 
-- [ ] A case is opened and at least several unrelated records are also indexed.
-- [ ] Investigator asks a question whose answer requires at least two real records.
-- [ ] Retrieved source IDs and locators match actual artifacts.
-- [ ] Every answer claim, graph edge and timeline event opens valid evidence.
-- [ ] Asking on `/workspace` persists a revision in the local DB; after refresh it can be reopened from `/live` → Saved versions (there is no separate Save button).
-- [ ] Follow-up question adds at least one sourced item to the saved investigation. *(Backend: `POST .../follow-up`. Demo UI on `/workspace` still shows a disabled follow-up field.)*
-- [ ] Excluding one pivotal record triggers a fresh retrieval/analysis and changes support appropriately. *(Backend: `POST .../exclude`. Demo UI exclude control is not wired yet.)*
-- [ ] The original reconstruction can be restored or compared without losing the work. *(Backend restore/comparison endpoints exist; demo UI wiring still open.)*
+- [x] A case is opened and at least several unrelated records are also indexed. *(Owl: 32 records from SMS, calls, accounts and Wi-Fi.)*
+- [x] Investigator asks a question whose answer requires at least two real records. *(Owner question, after "Want more evidence?" → Yes: 3 records.)*
+- [x] Retrieved source IDs and locators match actual artifacts. *(`sms/messages.json` `messages[13]`, `[15]`, `[19]` checked against the original export, timestamps included.)*
+- [x] Every answer claim, graph edge and timeline event opens valid evidence.
+- [x] Asking on `/workspace` persists a revision in the local DB; after refresh it can be reopened from `/live` → Saved versions (there is no separate Save button).
+- [x] Follow-up question adds at least one sourced item to the saved investigation. *("Which Wi-Fi networks has this phone saved?" added three sourced claims.)*
+- [x] Excluding one pivotal record triggers a fresh retrieval/analysis and changes support appropriately. *(Excluding attwifi: its claims became not supported; iPhone and chmc-guest stayed supported.)*
+- [x] The original reconstruction can be restored or compared without losing the work. *(Restore this record, Show the previous revision, and `/live` → Saved versions → Compare side by side.)*
 - [ ] Demo explains limits: simulated case, unsupported formats, imperfect retrieval and no trained forensic model.
 
 ## Two-minute demo narrative

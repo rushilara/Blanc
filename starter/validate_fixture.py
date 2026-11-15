@@ -5,11 +5,26 @@ must be enforced server-side in the actual application.
 """
 from __future__ import annotations
 import json
+import re
 import unicodedata
 from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def names_excluded_record(text: str, excluded_ids) -> bool:
+    """True if ``text`` names any excluded record ID as a whole token (case-insensitive).
+
+    Keep in sync with ``backend.app.analysis_llm.names_excluded_record`` (starter CI cannot
+    import ``app``; both must use the same token-boundary regex).
+    """
+    if not text:
+        return False
+    for rid in excluded_ids:
+        if rid and re.search(rf"(?<![\w-]){re.escape(rid)}(?![\w-])", text, re.I):
+            return True
+    return False
 
 
 def validate_revision(records: list[dict], analysis: dict) -> list[str]:
@@ -44,6 +59,12 @@ def validate_revision(records: list[dict], analysis: dict) -> list[str]:
             errors.append(f"edge {edge['id']} references unknown graph node")
     media = {r['record_id'] for r in records if r.get('modality') in ('image', 'pdf')}
     errors += _coverage_errors(analysis, known, media)
+    # Invariant 13: suggested follow-ups (BLA-54) are model text, never findings; they must
+    # not name an excluded record.
+    for i, text in enumerate(analysis.get('suggested_followups') or []):
+        for rid in sorted(rid for rid in excluded if rid):
+            if names_excluded_record(text, [rid]):
+                errors.append(f"suggested follow-up {i + 1} names excluded record {rid}")
     return errors
 
 

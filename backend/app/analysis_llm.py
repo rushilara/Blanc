@@ -5,8 +5,10 @@
 depth), makes exactly one ``AnalysisLLM.generate`` call and returns the parsed output.
 
 ``AnalysisOutput`` is the LLM-authored part of an ``AnalysisRevision``: ``answer``, ``claims``,
-``graph`` (nodes, edges), ``timeline_events`` and ``unresolved_questions``. It reuses the item
-models from ``app.contracts``, so it cannot drift from ``contracts/analysis_revision.schema.json``.
+``graph`` (nodes, edges), ``timeline_events``, ``unresolved_questions`` and the optional
+``suggested_followups`` (BLA-54: 1-3 questions offered to the investigator, never run). It
+reuses the item models from ``app.contracts``, so it cannot drift from
+``contracts/analysis_revision.schema.json``.
 Revision metadata (IDs, retrieved/excluded sets, timestamps) is assigned by the server, and
 cross-reference checks (cited IDs were retrieved and not excluded, edge endpoints exist) live
 in ``app.validation``; this module only guarantees schema-shaped output or an
@@ -24,17 +26,26 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
-from pydantic import ValidationError
+from pydantic import ValidationError, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.analysis_media import MediaPart, media_inputs
 from app.config import Settings
-from app.contracts import Claim, ContractModel, Graph, TimelineEvent
+from app.contracts import (
+    MAX_FOLLOWUP_CHARS,
+    MAX_SUGGESTED_FOLLOWUPS,
+    Claim,
+    ContractModel,
+    Graph,
+    Omittable,
+    TimelineEvent,
+)
 from app.models import EvidenceRecordRow
 from app.retrieval import RetrievalResult, RetrievedRecord
 from evidence_prompt import build_evidence_messages
@@ -78,6 +89,70 @@ class AnalysisOutput(ContractModel):
     graph: Graph
     timeline_events: list[TimelineEvent]
     unresolved_questions: list[str]
+    # Loose here: full sanitize (cap, exclusions, blanks) runs in ``analysis_retry._revision``
+    # once excluded IDs are known. The before-validator only coerces bad shapes so parsing
+    # never fails on optional suggestions (BLA-54).
+    suggested_followups: Omittable[list[str]] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _clean_followups(cls, data: Any) -> Any:
+        """Coerce unusable ``suggested_followups`` shapes to omit; do not cap or filter
+        exclusions here (that would drop good suggestions that sit past excluded ones)."""
+        if not isinstance(data, dict) or "suggested_followups" not in data:
+            return data
+        data = dict(data)
+        raw = data.pop("suggested_followups")
+        if isinstance(raw, list | tuple):
+            strings = [item for item in raw if isinstance(item, str)]
+            if strings:
+                data["suggested_followups"] = strings
+        return data
+
+
+def names_excluded_record(text: str, excluded_ids: Iterable[str]) -> bool:
+    """True if ``text`` names any excluded record ID as a whole token (case-insensitive).
+
+    Token boundaries are non-``[\\w-]`` characters, so ``rec-1`` does not match inside
+    ``rec-12``, while ``REC-02`` still matches ``rec-02``. Loose forms like ``rec 02`` are
+    not treated as IDs.
+    """
+    if not text:
+        return False
+    for rid in excluded_ids:
+        if rid and re.search(rf"(?<![\w-]){re.escape(rid)}(?![\w-])", text, re.I):
+            return True
+    return False
+
+
+def sanitize_followups(value: Any, *, excluded_record_ids: Iterable[str] = ()) -> list[str]:
+    """Model-suggested follow-up questions, made contract-valid by dropping, never failing.
+
+    Keeps strings only, collapses whitespace (so the UI shows one plain line), drops empty
+    and overlong items (over ``MAX_FOLLOWUP_CHARS``; cutting a question could change what
+    it asks), drops any that name an ``excluded_record_ids`` value, removes duplicates
+    (ignoring case) and keeps the first ``MAX_SUGGESTED_FOLLOWUPS``. Anything that is not a
+    list gives ``[]``. Call this once exclusions are known (``analysis_retry._revision``).
+    """
+    if not isinstance(value, list | tuple):
+        return []
+    excluded = [rid for rid in excluded_record_ids if rid]
+    kept: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        text = " ".join(item.split())
+        key = text.casefold()
+        if not text or len(text) > MAX_FOLLOWUP_CHARS or key in seen:
+            continue
+        if names_excluded_record(text, excluded):
+            continue
+        seen.add(key)
+        kept.append(text)
+        if len(kept) == MAX_SUGGESTED_FOLLOWUPS:
+            break
+    return kept
 
 
 def parse_analysis_output(text: str | None) -> AnalysisOutput:
@@ -117,10 +192,14 @@ def _readable_errors(exc: ValidationError) -> list[str]:
 
 # Keywords kept in the schema sent to Gemini. Dropped: ``$defs``/``$ref`` (inlined),
 # ``title``/``default``/``description`` (Pydantic fills these from class names and
-# docstrings), ``minLength``/``uniqueItems`` (not in Gemini's supported subset) and
+# docstrings), ``minLength``/``maxLength``/``pattern``/``uniqueItems`` (not in Gemini's
+# supported subset) and
 # ``additionalProperties`` (google-genai rejects it on the Developer API for
 # ``response_schema``; constrained decoding only emits declared properties anyway).
 # Pydantic still enforces all of them.
+# ``maxItems`` is intentionally omitted: Gemini would apply it to every capped list in the
+# schema. Server-side ``sanitize_followups`` (and contract validation on save) still enforce
+# the BLA-54 cap of three suggestions.
 _GEMINI_KEYWORDS = frozenset(
     {"type", "enum", "items", "minItems", "properties", "required", "anyOf"}
 )
