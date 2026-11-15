@@ -35,6 +35,8 @@ python3.12 -m venv .venv
 - `app/schemas/`: Pydantic request/response models. Kept separate from ORM tables.
 - `app/deps.py`: shared dependencies: `SessionDep`, `require_case` / `CaseDep`, `get_case_or_404`.
 - `app/ids.py`: `new_id(prefix)` returns prefixed ULIDs (`case_01J...`). Use it for every server-generated ID (`analysis_`, `board_`, `rec_`, ...).
+- `app/contracts.py`: Pydantic models for the shared contracts in `../contracts/` (`EvidenceRecord`, `AnalysisRevision`, `InvestigationBoard`, `RevisionComparison`). Kept in sync with the JSON Schemas by `tests/test_contracts.py`.
+- `app/validation.py`: cross-reference checks (`validate_revision`, `validate_board`, `validate_comparison`) plus `schema_errors` for parsing untrusted JSON. Each returns readable error strings; an empty list means valid.
 - `app/routers/`: HTTP routers (`cases.py`: `POST /cases`, `GET /cases`, `GET /cases/{case_id}`).
 - `tests/`: pytest suite (`TestClient`). `conftest.py` gives each test its own temp SQLite file.
 
@@ -52,3 +54,9 @@ Every piece of evidence belongs to exactly one case. Search for one case must ne
 2. **Every route under `/cases/{case_id}/...` resolves the case with `CaseDep`** (or `require_case`). An unknown case returns 404 before any other query runs.
 3. **Every query is scoped by the resolved `case.case_id`.** Never look up a record, chunk or analysis by its own ID alone. Filter by `(case_id, id)`, so an ID from another case behaves as not found (404). The same applies to vector-index searches: filter by `case_id` inside the search, not after it.
 4. Tests for each new table or endpoint must create two cases and assert that nothing from one case is visible through the other.
+
+## Returning contract models
+
+Serialize contract models with `to_contract_json(model)` (or `model.to_contract_json()`) from `app.contracts`. If a route returns the model directly, set `response_model_exclude_unset=True`.
+
+Plain `model_dump()` / `model_dump_json()` is **not** schema-valid. Some fields may be left out but must not be `null` (edge `description`, a node board item's `status`, `needs_review`, ...). These default to `None` internally, so a plain dump writes them as `null`, which `../contracts/*.schema.json` rejects. `to_contract_json` drops them and keeps the fields the schema allows to be `null` (`parent_analysis_id`, `base_ref_id`, ...).
