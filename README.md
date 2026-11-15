@@ -72,6 +72,8 @@ docker compose up --build -d
 
 **No Vercel or Railway required**; Gemini is the only cloud dependency.
 
+**Sign-in on a shared laptop:** set `BLANC_AUTH_SECRET` and add a user (steps in [`docs/07_LAPTOP_INSTALL.md`](docs/07_LAPTOP_INSTALL.md#sign-in-recommended-on-a-shared-laptop)). That gates the browser and API against casual misuse; it does **not** encrypt SQLite or media — use an OS login and full-disk encryption. Leave the secret empty for a demo bypass.
+
 ### Dev path (`make backend` / `make frontend`)
 
 Use this when you are changing code. It is **not** the share/deploy path.
