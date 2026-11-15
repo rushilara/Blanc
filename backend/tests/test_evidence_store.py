@@ -25,7 +25,7 @@ from app.evidence_store import (
     store_records,
 )
 from app.ids import id_pattern
-from app.models import Case, EvidenceChunk, EvidenceRecordRow
+from app.models import Case, EvidenceChunk, EvidenceRecordRow, ImportStatus
 from app.search_index import FTS_TABLE, VEC_TABLE, keyword_search, vector_search
 
 LONG_WORDS = 1200  # ~6000+ chars, several 1600-char windows
@@ -543,3 +543,73 @@ def test_dimension_change_rebuilds_index(db_path, engine, session, cases, embedd
 def test_reembed_unknown_case_raises(session, embedder) -> None:
     with pytest.raises(CaseNotFoundError):
         reembed_stale_chunks(session, "case_missing", embedder)
+
+
+# --- Import status ------------------------------------------------------------------------
+
+
+def status(session: Session, case_id: str) -> ImportStatus:
+    session.expire_all()
+    return session.get(Case, case_id).import_status
+
+
+def test_storing_records_marks_the_case_ready(session, cases, embedder) -> None:
+    a, b = cases
+    assert status(session, a) == ImportStatus.EMPTY
+    store_records(session, a, [record(a, "rec-1", "Alex emails Jordan.")], embedder)
+    session.commit()
+    assert status(session, a) == ImportStatus.READY
+    assert status(session, b) == ImportStatus.EMPTY  # other cases untouched
+
+
+def test_a_call_that_stores_nothing_leaves_an_empty_case_empty(session, cases, embedder):
+    a, b = cases
+    result = store_records(session, a, [record(b, "rec-1", "belongs to B")], embedder)
+    session.commit()
+    assert result.inserted == 0
+    assert status(session, a) == ImportStatus.EMPTY
+    store_records(session, a, [], embedder)
+    assert status(session, a) == ImportStatus.EMPTY
+
+
+def test_a_failed_embedding_does_not_mark_the_case_ready(session, cases) -> None:
+    a, _ = cases
+
+    class Broken(FakeEmbedder):
+        def embed_documents(self, texts):
+            raise EmbeddingError("provider down")
+
+    with pytest.raises(EmbeddingError):
+        store_records(session, a, [record(a, "rec-1", "x")], Broken())
+    session.rollback()
+    assert status(session, a) == ImportStatus.EMPTY
+
+
+def test_startup_marks_cases_stored_before_this_change_ready(db_path, engine, embedder):
+    factory = make_session_factory(engine)
+    with factory() as session:
+        stored, empty, failed = Case(title="Stored"), Case(title="Empty"), Case(title="Failed")
+        session.add_all([stored, empty, failed])
+        session.commit()
+        ids = stored.case_id, empty.case_id, failed.case_id
+        store_records(session, ids[0], [record(ids[0], "rec-1", "Alex emails Jordan.")], embedder)
+        store_records(session, ids[2], [record(ids[2], "rec-1", "Casey calls Morgan.")], embedder)
+        session.commit()
+        # Simulate a database written before store_records set the status.
+        session.execute(text("UPDATE cases SET import_status = 'empty' WHERE case_id = :c"),
+                        {"c": ids[0]})
+        session.execute(text("UPDATE cases SET import_status = 'error' WHERE case_id = :c"),
+                        {"c": ids[2]})
+        session.commit()
+    engine.dispose()
+
+    reopened = open_engine(db_path)
+    try:
+        with make_session_factory(reopened)() as session:
+            assert [status(session, c) for c in ids] == [
+                ImportStatus.READY,
+                ImportStatus.EMPTY,
+                ImportStatus.ERROR,  # only empty cases are backfilled
+            ]
+    finally:
+        reopened.dispose()
