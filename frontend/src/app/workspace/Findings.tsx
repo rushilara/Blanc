@@ -6,7 +6,8 @@ import { SourceReferences } from "@/components/SourceReferences";
 import { TimelineView } from "@/components/TimelineView";
 import { useEffect, useRef, useSyncExternalStore, useState } from "react";
 import type { AnalysisRevision, EvidenceRecord } from "@/lib/analysis";
-import { analyzeCase, getSource, listCaseRecordsPage, listCases, type CaseSummary } from "@/lib/live-api";
+import { citedRecordIds } from "@/lib/citations";
+import { analyzeCase, listCaseRecordsPage, listCases, loadRevisionSources, type CaseSummary } from "@/lib/live-api";
 
 const views = ["Findings", "Connections", "Timeline", "Revisions"] as const;
 
@@ -42,8 +43,10 @@ export function Findings() {
     const controller = new AbortController();
     listCases(controller.signal).then(items => {
       setCases(items);
+      // import_status is not kept up to date by every import path, so it only breaks ties.
       const ready = items.filter(item => item.import_status === "ready");
-      if (ready.length === 1) setCaseId(ready[0].case_id);
+      const candidates = ready.length ? ready : items;
+      if (candidates.length === 1) setCaseId(candidates[0].case_id);
     }).catch(error => {
       if (!controller.signal.aborted) {
         setCases([]);
@@ -59,13 +62,14 @@ export function Findings() {
   const [view, setView] = useState<(typeof views)[number]>("Findings");
   const [open, setOpen] = useState<string>();
   const sources = records;
+  const citedOrder = revision ? citedRecordIds(revision) : [];
   const nodes = new Map(revision?.graph.nodes.map(node => [node.id, node.label]));
 
   async function ask() {
     const prompt = question.trim();
     if (!prompt || request.current) return;
-    if (!cases?.some(item => item.case_id === caseId && item.import_status === "ready")) {
-      setFeedback("Select a case with evidence before asking a question.");
+    if (!cases?.some(item => item.case_id === caseId)) {
+      setFeedback("Select a case before asking a question.");
       return;
     }
     const controller = new AbortController();
@@ -73,20 +77,21 @@ export function Findings() {
     setLoading(true);
     setFeedback("");
     try {
-      const result = await analyzeCase(caseId, prompt, controller.signal);
-      const cited = new Set([
-        ...result.claims.flatMap(claim => claim.evidence_ids),
-        ...result.graph.edges.flatMap(edge => edge.evidence_ids),
-        ...result.timeline_events.flatMap(event => event.evidence_ids),
-      ]);
-      const results = await Promise.allSettled(
-        [...cited].map(id => getSource(caseId, id, controller.signal)),
-      );
+      // Gate on the case actually holding records, not on import_status.
+      const evidence = await listCaseRecordsPage(caseId, 0, 1, controller.signal);
       if (controller.signal.aborted) return;
-      setRecords(results.flatMap(record => record.status === "fulfilled" ? [record.value] : []));
+      if (evidence.total === 0) {
+        setFeedback("This case has no evidence yet. Import records before asking a question.");
+        return;
+      }
+      const result = await analyzeCase(caseId, prompt, controller.signal);
+      const loaded = await loadRevisionSources(result, controller.signal);
+      if (controller.signal.aborted) return;
+      setRecords(loaded);
       setRevision(result);
-      if (results.some(record => record.status === "rejected")) {
-        setFeedback("Some original sources could not be loaded.");
+      const expected = new Set([...citedRecordIds(result), ...result.excluded_record_ids]).size;
+      if (loaded.length < expected) {
+        setFeedback("Some original sources could not be loaded. Open a citation to retry.");
       }
     } catch (error) {
       if (!controller.signal.aborted) {
@@ -100,13 +105,19 @@ export function Findings() {
     }
   }
 
+  function citationTitle(id: string) {
+    const source = sources.find(record => record.record_id === id);
+    return source ? sourceTitle(source) : id;
+  }
+
+  // Unloaded sources still open the drawer, which fetches the original itself.
   function citation(id: string, label?: string) {
-    const index = sources.findIndex(r => r.record_id === id);
-    if (index === -1) return <span key={id}> {id} (unavailable)</span>;
-    const source = sources[index];
+    const number = citedOrder.indexOf(id) + 1 || citedOrder.length + 1;
+    const loaded = sources.some(record => record.record_id === id);
+    const title = citationTitle(id);
     return <span key={id} className="blanc-citation">
-      <button type="button" onClick={() => setOpen(id)} aria-label={label ?? `Open source ${index + 1}: ${sourceTitle(source)}`}>{label ?? index + 1}</button>
-      <span className="blanc-preview" aria-hidden="true"><strong>{sourceTitle(source)}</strong><span>Open to inspect the original record.</span></span>
+      <button type="button" onClick={() => setOpen(id)} aria-label={label ?? `Open source ${number}: ${title}`}>{label ?? number}</button>
+      <span className="blanc-preview" aria-hidden="true"><strong>{title}</strong><span>{loaded ? "Open to inspect the original record." : "Open to load the original record."}</span></span>
     </span>;
   }
 
@@ -135,7 +146,7 @@ export function Findings() {
       <aside className="blanc-case-rail" aria-label="Current case and sources">
         <small>Current case</small>
         <h2>{caseTitle}</h2>
-        <section className="blanc-rail-sources"><h3>Sources</h3><ol>{sources.map((source, i) => <li key={source.record_id}><span>{i + 1}</span>{citation(source.record_id, sourceTitle(source))}</li>)}</ol></section>
+        <section className="blanc-rail-sources"><h3>Sources</h3><ol>{citedOrder.map((id, i) => <li key={id}><span>{i + 1}</span>{citation(id, citationTitle(id))}</li>)}</ol></section>
       </aside>
       <main className="blanc-reading blanc-report" key={revision.analysis_id}>
       <p className="blanc-meta">{caseTitle}</p>
@@ -178,9 +189,7 @@ export function Findings() {
               setExpandedCase(expandedCase === item.case_id ? undefined : item.case_id);
               setFeedback("");
             }}>
-            <span><strong>{item.title}</strong>{(caseId === item.case_id || item.import_status === "empty") && (
-              <small>{caseId === item.case_id ? "Selected" : "No evidence files yet"}</small>
-            )}</span>
+            <span><strong>{item.title}</strong>{caseId === item.case_id && <small>Selected</small>}</span>
             <span className="blanc-case-chevron" aria-hidden="true" />
           </button>
           {expandedCase === item.case_id && <CaseFiles caseId={item.case_id} />}
