@@ -5,14 +5,24 @@ import Link from "next/link";
 import { presentSource } from "@/lib/source-presentation";
 import { SourcePanel } from "./SourcePanel";
 import { TimelineView } from "@/components/TimelineView";
-import { useEffect, useRef, useSyncExternalStore, useState } from "react";
+import { Component, useEffect, useRef, useSyncExternalStore, useState, type ReactNode } from "react";
 import type { AnalysisRevision, EvidenceRecord } from "@/lib/analysis";
 import { citedRecordIds } from "@/lib/citations";
 import { anchorCitations, splitCitations, type Anchor } from "@/lib/inline-citations";
-import { analyzeCase, listCaseRecordsPage, listCases, loadRevisionSources, type CaseSummary } from "@/lib/live-api";
+import { analyzeCase, ApiError, listCaseRecordsPage, listCases, loadRevisionSources, type CaseSummary } from "@/lib/live-api";
+
+/** Thrown by the dynamic() catch fallback when the map chunk fails to import. */
+const MAP_LOAD_ERROR = "Connection map failed to load.";
 
 const ConnectionMap = dynamic(
-  () => import("./ConnectionMap").then(mod => mod.ConnectionMap),
+  () =>
+    import("./ConnectionMap")
+      .then(mod => ({ default: mod.ConnectionMap }))
+      .catch(() => ({
+        default: function MapLoadError(): never {
+          throw new Error(MAP_LOAD_ERROR);
+        },
+      })),
   { ssr: false, loading: () => <p className="blanc-map-hint">Drawing the connections…</p> },
 );
 
@@ -41,7 +51,13 @@ export function Findings() {
   const [caseId, setCaseId] = useState("");
   const [expandedCase, setExpandedCase] = useState<string>();
   const [loading, setLoading] = useState(false);
+  const [askFailed, setAskFailed] = useState(false);
+  const [casesReload, setCasesReload] = useState(0);
+  const [casesError, setCasesError] = useState(false);
   const request = useRef<AbortController | null>(null);
+  const questionRef = useRef<HTMLTextAreaElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const retryAskRef = useRef<HTMLButtonElement>(null);
   const caseTitle = cases?.find(item => item.case_id === caseId)?.title ?? caseId;
 
   const [feedback, setFeedback] = useState("");
@@ -50,6 +66,7 @@ export function Findings() {
     const controller = new AbortController();
     listCases(controller.signal).then(items => {
       setCases(items);
+      setCasesError(false);
       // import_status is not kept up to date by every import path, so it only breaks ties.
       const ready = items.filter(item => item.import_status === "ready");
       const candidates = ready.length ? ready : items;
@@ -57,20 +74,26 @@ export function Findings() {
     }).catch(error => {
       if (!controller.signal.aborted) {
         setCases([]);
-        setFeedback(error instanceof Error ? error.message : "Could not load cases.");
+        setCasesError(true);
+        setFeedback(error instanceof ApiError ? error.message : "Could not load cases. Check the backend connection.");
       }
     });
     return () => {
       controller.abort();
       request.current?.abort();
     };
-  }, []);
+  }, [casesReload]);
   const [question, setQuestion] = useState("");
   const [view, setView] = useState<(typeof views)[number]>("Findings");
   const [open, setOpen] = useState<string>();
   const [expandedSource, setExpandedSource] = useState<string>();
   const [sourceHover, setSourceHover] = useState<{ id: string; top: number; left: number } | null>(null);
   const sources = records;
+
+  useEffect(() => {
+    if (loading) cancelRef.current?.focus();
+    else if (askFailed) retryAskRef.current?.focus();
+  }, [loading, askFailed]);
   // Record IDs the model wrote into its prose become numbered citations too. Numbering
   // follows citation order, then any loaded source mentioned only in prose.
   const knownIds = revision ? [...citedRecordIds(revision), ...records.map(record => record.record_id)] : [];
@@ -99,16 +122,26 @@ export function Findings() {
       {extraIds.length > 0 && <> <sup>{extraIds.map(id => citation(id))}</sup></>}
     </>;
   }
+  function cancelAsk() {
+    request.current?.abort();
+    request.current = null;
+    setLoading(false);
+    // Keep the question so an interrupted analysis can be retried.
+    queueMicrotask(() => questionRef.current?.focus());
+  }
+
   async function ask() {
     const prompt = question.trim();
     if (!prompt || request.current) return;
     if (!cases?.some(item => item.case_id === caseId)) {
+      setAskFailed(false);
       setFeedback("Select a case before asking a question.");
       return;
     }
     const controller = new AbortController();
     request.current = controller;
     setLoading(true);
+    setAskFailed(false);
     setFeedback("");
     try {
       // Gate on the case actually holding records, not on import_status.
@@ -129,7 +162,8 @@ export function Findings() {
       }
     } catch (error) {
       if (!controller.signal.aborted) {
-        setFeedback(error instanceof Error ? error.message : "Analysis could not be completed.");
+        setAskFailed(true);
+        setFeedback(error instanceof ApiError ? error.message : "Could not reach the backend. Check that it is running, then try again.");
       }
     } finally {
       if (request.current === controller) {
@@ -183,7 +217,7 @@ export function Findings() {
   return <div className="blanc-workspace">
     {/* The static sheet avoids the missing workspace styles in the CSS pipeline. */}
     {/* eslint-disable-next-line @next/next/no-css-tags */}
-    <link rel="stylesheet" href="/blanc/findings.css?v=connection-map-13" precedence="blanc" />
+    <link rel="stylesheet" href="/blanc/findings.css?v=connection-map-13-bla-52" precedence="blanc" />
     <header className="blanc-header">
       <Link href="/" aria-label="Blanc home"><svg width="92" height="37" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="210 168 1460 570"><defs>
     <filter id="ink-alpha" colorInterpolationFilters="sRGB">
@@ -241,7 +275,7 @@ export function Findings() {
         {revision.claims.map(claim => <p key={claim.id}><StatusLabel value={claim.status} />{withCitations(claim.text, claim.evidence_ids)}</p>)}
         {revision.unresolved_questions.length > 0 && <><h2>What remains unresolved</h2>{revision.unresolved_questions.map((question, index) => <p key={`${index}-${question}`}>{withCitations(question)}</p>)}</>}
       </>}
-      {view === "Connections" && <ConnectionMap
+      {view === "Connections" && <ConnectionMapPane
         nodes={revision.graph.nodes}
         edges={revision.graph.edges}
         records={sources}
@@ -261,7 +295,7 @@ export function Findings() {
     </div> : <main className="blanc-reading blanc-entry">
       <h1 aria-label={greeting || undefined}><TypedGreeting key={greeting} text={greeting} /></h1>
       <form onSubmit={event => { event.preventDefault(); void ask(); }}>
-        <textarea rows={2} required aria-label="Ask a question about a case" placeholder="Ask a question about a case…" value={question} onKeyDown={event => {
+        <textarea ref={questionRef} rows={2} required aria-label="Ask a question about a case" placeholder="Ask a question about a case…" value={question} disabled={loading} onKeyDown={event => {
           if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
             event.preventDefault();
             event.currentTarget.form?.requestSubmit();
@@ -269,17 +303,19 @@ export function Findings() {
         }} onChange={event => setQuestion(event.target.value)} />
         <button type="submit" aria-label="Ask question" disabled={loading || !question.trim()}>→</button>
       </form>
-      {(loading || feedback) && <p role="status">{loading ? "Searching case records…" : feedback}</p>}
+      {loading && <p role="status">Searching case records… <button type="button" ref={cancelRef} className="blanc-retry" onClick={cancelAsk}>Cancel</button></p>}
+      {!loading && feedback && <p role={askFailed || casesError ? "alert" : "status"}>{feedback}{askFailed && question.trim() && <>{" "}<button type="button" ref={retryAskRef} className="blanc-retry" onClick={() => void ask()}>Retry analysis</button></>}{casesError && <>{" "}<button type="button" className="blanc-retry" onClick={() => { setCases(null); setCasesError(false); setFeedback(""); setCasesReload(n => n + 1); }}>Retry</button></>}</p>}
       <section className="blanc-case-list" aria-labelledby="blanc-case-list-heading">
         <h2 id="blanc-case-list-heading">Available cases</h2>
         {cases === null && <p role="status">Loading cases…</p>}
-        {cases?.length === 0 && !feedback && <p>No cases are available.</p>}
+        {cases?.length === 0 && !casesError && <p>No cases are available.</p>}
         {cases?.map(item => <div key={item.case_id}>
           <button type="button" className="blanc-case-option" disabled={loading}
             aria-expanded={expandedCase === item.case_id}
             onClick={() => {
               setCaseId(item.case_id);
               setExpandedCase(expandedCase === item.case_id ? undefined : item.case_id);
+              setAskFailed(false);
               setFeedback("");
             }}>
             <span><strong>{item.title}</strong>{caseId === item.case_id && <small>Selected</small>}</span>
@@ -304,6 +340,7 @@ function CaseFiles({ caseId }: { caseId: string }) {
   const [total, setTotal] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
+  const [reload, setReload] = useState(0);
   const request = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -312,11 +349,12 @@ function CaseFiles({ caseId }: { caseId: string }) {
     listCaseRecordsPage(caseId, 0, RECORDS_PER_PAGE, controller.signal).then(page => {
       setRecords(page.items);
       setTotal(page.total);
+      setError("");
     }).catch(() => {
-      if (!controller.signal.aborted) setError("Could not load sources. Reopen the case to retry.");
+      if (!controller.signal.aborted) setError("Could not load sources.");
     });
     return () => controller.abort();
-  }, [caseId]);
+  }, [caseId, reload]);
 
   async function showMore() {
     if (!records || loadingMore) return;
@@ -335,7 +373,11 @@ function CaseFiles({ caseId }: { caseId: string }) {
     }
   }
 
-  if (!records) return error ? <p role="status">{error}</p> : <p role="status">Loading sources…</p>;
+  if (!records) {
+    return error
+      ? <p role="alert">{error} <button type="button" className="blanc-retry" onClick={() => { setError(""); setReload(n => n + 1); }}>Retry</button></p>
+      : <p role="status">Loading sources…</p>;
+  }
   if (!records.length) return <p>No evidence files in this case.</p>;
 
   const files = new Map<string, EvidenceRecord[]>();
@@ -356,7 +398,7 @@ function CaseFiles({ caseId }: { caseId: string }) {
       </li>)}
     </ul>
     <p className="blanc-case-files-count">Showing {records.length} of {total} records</p>
-    {error && <p role="status">{error}</p>}
+    {error && <p role="alert">{error} {remaining > 0 && <button type="button" className="blanc-retry" onClick={() => void showMore()}>Retry</button>}</p>}
     {remaining > 0 && <button type="button" className="blanc-show-more" onClick={() => void showMore()} disabled={loadingMore}>
       {loadingMore ? "Loading…" : `Show ${Math.min(RECORDS_PER_PAGE, remaining)} more records`}
     </button>}
@@ -404,4 +446,46 @@ function sourceTitle(record: EvidenceRecord) {
 
 function StatusLabel({ value }: { value: string }) {
   return <span className={`blanc-status blanc-status-${value}`}>{value.replaceAll("_", " ")}</span>;
+}
+
+/** next/dynamic caches a failed import, so Retry cannot recover — offer a full reload. */
+function ConnectionMapPane(props: {
+  nodes: AnalysisRevision["graph"]["nodes"];
+  edges: AnalysisRevision["graph"]["edges"];
+  records: EvidenceRecord[];
+  claims: AnalysisRevision["claims"];
+  events: AnalysisRevision["timeline_events"];
+  questions: string[];
+  cite: (id: string) => ReactNode;
+}) {
+  const [loadFailed, setLoadFailed] = useState(false);
+  if (loadFailed) {
+    return <p role="alert">The connection map failed to load.{" "}
+      <button type="button" className="blanc-retry" onClick={() => { window.location.reload(); }}>Reload the page</button>
+    </p>;
+  }
+  return <MapLoadBoundary onLoadError={() => setLoadFailed(true)}>
+    <ConnectionMap {...props} />
+  </MapLoadBoundary>;
+}
+
+class MapLoadBoundary extends Component<
+  { children: ReactNode; onLoadError: () => void },
+  { failed: boolean }
+> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: Error) {
+    // Chunk import failures throw MAP_LOAD_ERROR; anything else that escapes the
+    // map also needs a recoverable UI (ConnectionMap already soft-falls back for canvas).
+    if (error.message === MAP_LOAD_ERROR || this.state.failed) this.props.onLoadError();
+  }
+
+  render() {
+    return this.state.failed ? null : this.props.children;
+  }
 }

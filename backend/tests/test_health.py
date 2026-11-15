@@ -17,7 +17,7 @@ def test_health_ok_without_keys() -> None:
     assert body["status"] == "ok"
     assert body["config"]["gemini_api_key_set"] is False
     assert body["config"]["embedding_provider"] == "gemini"
-    assert body["config"]["embedding_model"] == "gemini-embedding-001"
+    assert body["config"]["embedding_model"] == "gemini-embedding-2"
     assert body["config"]["embedding_dim"] == 768
     assert "openai_api_key_set" not in body["config"]
 

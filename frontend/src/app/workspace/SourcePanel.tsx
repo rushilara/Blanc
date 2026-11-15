@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { EvidenceRecord } from "@/lib/analysis";
 import { fetchRecord, RecordFetchError } from "@/lib/records";
+import { isRetryableStatus } from "@/lib/retryable";
 import { presentSource } from "@/lib/source-presentation";
 import {
   interpretMediaResponse,
@@ -23,7 +24,10 @@ function linkLabel(url: string): string {
   }
 }
 
-type Remote = { status: "loading" } | { status: "ready"; record: EvidenceRecord } | { status: "error"; message: string };
+type Remote =
+  | { status: "loading" }
+  | { status: "ready"; record: EvidenceRecord }
+  | { status: "error"; message: string; retryable: boolean };
 
 /**
  * A non-modal panel docked beside the findings, so the investigator reads the source
@@ -43,6 +47,7 @@ export function SourcePanel({ caseId, recordId, number, total, records, excluded
 }) {
   const preloaded = records.find(item => item.case_id === caseId && item.record_id === recordId);
   const [remote, setRemote] = useState<Remote>({ status: "loading" });
+  const [reload, setReload] = useState(0);
   const heading = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => {
@@ -52,10 +57,15 @@ export function SourcePanel({ caseId, recordId, number, total, records, excluded
       .then(read => setRemote({ status: "ready", record: read.record }))
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
-        setRemote({ status: "error", message: error instanceof RecordFetchError ? error.message : "Could not load this source record." });
+        const status = error instanceof RecordFetchError ? error.status : null;
+        setRemote({
+          status: "error",
+          message: error instanceof RecordFetchError ? error.message : "Could not load this source record.",
+          retryable: isRetryableStatus(status),
+        });
       });
     return () => controller.abort();
-  }, [caseId, recordId, preloaded]);
+  }, [caseId, recordId, preloaded, reload]);
 
   useEffect(() => { heading.current?.focus({ preventScroll: true }); }, [recordId]);
 
@@ -85,7 +95,8 @@ export function SourcePanel({ caseId, recordId, number, total, records, excluded
     </header>
 
     {!record && remote.status === "loading" && <p role="status">Loading the original record…</p>}
-    {!record && remote.status === "error" && <p role="alert">{remote.message} Its content cannot be verified here.</p>}
+    {!record && remote.status === "error" && <p role="alert">{remote.message} Its content cannot be verified here.{remote.retryable && <>{" "}
+      <button type="button" className="blanc-retry" onClick={() => { setRemote({ status: "loading" }); setReload(n => n + 1); }}>Retry</button></>}</p>}
 
     {record && <>
       {localImageName(record) && <SourceImage key={record.record_id} caseId={caseId} recordId={record.record_id} name={localImageName(record)!} />}

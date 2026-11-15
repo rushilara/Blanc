@@ -23,7 +23,7 @@ from app.case_media import (
 )
 from app.contracts import EvidenceRecord
 from app.db import init_db, make_engine, make_session_factory
-from app.embeddings import EmbeddingError, FakeEmbedder
+from app.embeddings import EmbeddingError, FakeEmbedder, MediaInput
 from app.evidence import EvidenceImportError, UnsupportedFormatError, import_file, import_path
 from app.evidence.importer import ImportSink
 from app.evidence.records import stable_record_id
@@ -350,19 +350,26 @@ def test_folder_import_mixes_text_and_media(tmp_path: Path) -> None:
 
 
 def test_media_round_trip_through_store_records(tmp_path: Path) -> None:
-    """Storing and reading back must keep media_path / modality / content_type."""
+    """Storing embeds media bytes and indexes an FTS sidecar (filename)."""
+    from sqlalchemy import text
+
+    from app.evidence_store import list_chunks
+    from app.search_index import FTS_TABLE, VEC_TABLE, keyword_search, to_fts_query
+
     path = write_bytes(tmp_path, "shot.png", PNG_BYTES)
     media_dir = tmp_path / "media"
     (record,) = import_file(path, "case-a", source_root=tmp_path, media_dir=media_dir)
 
+    embedder = FakeEmbedder()
     engine = make_engine(f"sqlite:///{tmp_path / 'round.db'}")
-    init_db(engine, FakeEmbedder().dim)
+    init_db(engine, embedder.dim)
     with make_session_factory(engine)() as session:
         session.add(Case(case_id="case-a", title="Media"))
         session.flush()
-        stored = store_records(session, "case-a", [record], FakeEmbedder())
+        stored = store_records(session, "case-a", [record], embedder, media_dir=media_dir)
         session.commit()
         assert stored.inserted == 1
+        assert stored.chunks_created == 1
         loaded = get_record(session, "case-a", record.record_id)
         assert loaded is not None
         assert loaded.modality == "image"
@@ -370,7 +377,91 @@ def test_media_round_trip_through_store_records(tmp_path: Path) -> None:
         assert loaded.content_type == "image/png"
         assert loaded.content == ""
         assert loaded.to_contract_json()["media_path"] == record.media_path
+        chunks = list_chunks(session, "case-a", record.record_id)
+        assert len(chunks) == 1
+        assert chunks[0].text == "shot.png"
+        assert embedder.embedded_media and embedder.embedded_media[0].data == PNG_BYTES
+        assert session.execute(text(f"SELECT count(*) FROM {VEC_TABLE}")).scalar() == 1
+        assert session.execute(text(f"SELECT count(*) FROM {FTS_TABLE}")).scalar() == 1
+        hits = keyword_search(session, "case-a", to_fts_query("shot"))
+        assert [h.record_id for h in hits] == [record.record_id]
     engine.dispose()
+
+
+def test_email_image_fts_sidecar_includes_subject(tmp_path: Path) -> None:
+    msg = EmailMessage()
+    msg["From"] = "Alex <alex@example.test>"
+    msg["To"] = "Jordan <jordan@example.test>"
+    msg["Date"] = DATE
+    msg["Subject"] = "Warehouse photo"
+    msg["Message-ID"] = "<photo2@example.test>"
+    msg.set_content("See attached.")
+    msg.add_attachment(PNG_BYTES, maintype="image", subtype="png", filename="dock.png")
+
+    path = write_bytes(tmp_path, "mail.eml", msg.as_bytes())
+    media_dir = tmp_path / "media"
+    records = import_file(path, "case-a", source_root=tmp_path, media_dir=media_dir)
+    image = next(r for r in records if r.modality == "image")
+
+    embedder = FakeEmbedder()
+    engine = make_engine(f"sqlite:///{tmp_path / 'email.db'}")
+    init_db(engine, embedder.dim)
+    with make_session_factory(engine)() as session:
+        session.add(Case(case_id="case-a", title="Email media"))
+        session.flush()
+        store_records(session, "case-a", records, embedder, media_dir=media_dir)
+        session.commit()
+        from app.evidence_store import list_chunks
+        from app.search_index import keyword_search, to_fts_query
+
+        chunks = list_chunks(session, "case-a", image.record_id)
+        assert len(chunks) == 1
+        assert "dock.png" in chunks[0].text
+        assert "Warehouse photo" in chunks[0].text
+        assert "From: Alex" in chunks[0].text
+        hits = keyword_search(session, "case-a", to_fts_query("Warehouse"))
+        assert image.record_id in {h.record_id for h in hits}
+    engine.dispose()
+
+
+def test_pdf_truncated_at_embed_time(tmp_path: Path) -> None:
+    from io import BytesIO
+    from types import SimpleNamespace
+
+    from pypdf import PdfReader, PdfWriter
+
+    from app.case_media import GEMINI_PDF_MAX_PAGES, truncate_pdf_for_embedding
+    from app.embeddings import GeminiEmbedder, MediaInput
+
+    del tmp_path  # unused; keeps pytest fixture signature consistent with siblings
+    writer = PdfWriter()
+    for _ in range(GEMINI_PDF_MAX_PAGES + 3):
+        writer.add_blank_page(width=72, height=72)
+    buf = BytesIO()
+    writer.write(buf)
+    long_pdf = buf.getvalue()
+
+    truncated = truncate_pdf_for_embedding(long_pdf)
+    assert truncated.truncated is True
+    assert truncated.embedding_pages == GEMINI_PDF_MAX_PAGES
+    assert truncated.page_count == GEMINI_PDF_MAX_PAGES + 3
+    assert len(PdfReader(BytesIO(truncated.data)).pages) == GEMINI_PDF_MAX_PAGES
+    short = truncate_pdf_for_embedding(PDF_BYTES)
+    assert short.data == PDF_BYTES and short.truncated is False
+
+    models_requests: list = []
+
+    class RecordingModels:
+        def embed_content(self, *, model, contents, config):  # noqa: ANN001
+            models_requests.append(contents)
+            return SimpleNamespace(embeddings=[SimpleNamespace(values=[0.1] * 8)])
+
+    embedder = GeminiEmbedder(
+        None, "gemini-embedding-2", 8, client=SimpleNamespace(models=RecordingModels())
+    )
+    embedder.embed_media([MediaInput(data=long_pdf, mime_type="application/pdf")])
+    sent = models_requests[0][0].inline_data.data
+    assert len(PdfReader(BytesIO(sent)).pages) == GEMINI_PDF_MAX_PAGES
 
 
 def test_init_db_adds_media_columns_on_existing_table(tmp_path: Path) -> None:
@@ -392,6 +483,94 @@ def test_init_db_adds_media_columns_on_existing_table(tmp_path: Path) -> None:
     with engine.connect() as connection:
         cols = {row[1] for row in connection.execute(text("PRAGMA table_info(evidence_records)"))}
     assert {"modality", "media_path", "content_type"} <= cols
+    engine.dispose()
+
+
+def test_init_db_adds_embedding_coverage_on_existing_chunks(tmp_path: Path) -> None:
+    """ALTER TABLE migration must add embedding_coverage so old DBs can still load chunks."""
+    from sqlalchemy import select
+
+    from app.models import EvidenceChunk
+
+    db_path = tmp_path / "old_chunks.db"
+    engine = make_engine(f"sqlite:///{db_path}")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE cases ("
+                "case_id VARCHAR(64) PRIMARY KEY, "
+                "title VARCHAR(200) NOT NULL, "
+                "created_at DATETIME NOT NULL, "
+                "import_status VARCHAR(16) NOT NULL)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE TABLE evidence_records ("
+                "case_id VARCHAR(64) NOT NULL, "
+                "record_id VARCHAR(200) NOT NULL, "
+                "source_file TEXT NOT NULL, "
+                "source_locator TEXT NOT NULL, "
+                "content TEXT NOT NULL, "
+                "content_hash VARCHAR(64) NOT NULL, "
+                "created_at DATETIME NOT NULL, "
+                "PRIMARY KEY (case_id, record_id))"
+            )
+        )
+        # Pre-BLA-69 shape: no embedding_coverage (create_all will not add it later).
+        connection.execute(
+            text(
+                "CREATE TABLE evidence_chunks ("
+                "chunk_id VARCHAR(64) PRIMARY KEY, "
+                "case_id VARCHAR(64) NOT NULL, "
+                "record_id VARCHAR(200) NOT NULL, "
+                "chunk_index INTEGER NOT NULL, "
+                "char_start INTEGER NOT NULL, "
+                "char_end INTEGER NOT NULL, "
+                "text TEXT NOT NULL, "
+                "embedding_model VARCHAR(200) NOT NULL, "
+                "embedding_dim INTEGER NOT NULL, "
+                "created_at DATETIME NOT NULL)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO cases (case_id, title, created_at, import_status) "
+                "VALUES ('case-a', 'Old case', '2024-01-01 00:00:00', 'ready')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO evidence_records ("
+                "case_id, record_id, source_file, source_locator, content, "
+                "content_hash, created_at) "
+                "VALUES ('case-a', 'rec-1', 'a.txt', 'entire file', 'hello', 'abc', "
+                "'2024-01-01 00:00:00')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO evidence_chunks "
+                "(chunk_id, case_id, record_id, chunk_index, char_start, char_end, text, "
+                "embedding_model, embedding_dim, created_at) "
+                "VALUES ('chunk-1', 'case-a', 'rec-1', 0, 0, 5, 'hello', 'old-model', 8, "
+                "'2024-01-01 00:00:00')"
+            )
+        )
+        cols = {row[1] for row in connection.execute(text("PRAGMA table_info(evidence_chunks)"))}
+        assert "embedding_coverage" not in cols
+
+    init_db(engine, FakeEmbedder().dim)
+
+    with engine.connect() as connection:
+        cols = {row[1] for row in connection.execute(text("PRAGMA table_info(evidence_chunks)"))}
+    assert "embedding_coverage" in cols
+
+    with make_session_factory(engine)() as session:
+        chunk = session.scalar(select(EvidenceChunk).where(EvidenceChunk.chunk_id == "chunk-1"))
+        assert chunk is not None
+        assert chunk.text == "hello"
+        assert chunk.embedding_coverage is None
     engine.dispose()
 
 
@@ -434,6 +613,9 @@ def test_cli_cleans_up_media_when_embedding_fails(tmp_path: Path) -> None:
 
     class BoomEmbedder(FakeEmbedder):
         def embed_documents(self, texts):  # noqa: ANN001
+            raise EmbeddingError("boom")
+
+        def embed_media(self, items):  # noqa: ANN001
             raise EmbeddingError("boom")
 
     code = main(
@@ -1010,3 +1192,454 @@ def test_cli_rejected_media_record_cleans_up_new_file(tmp_path: Path) -> None:
     assert code == 1
     leftover = list(media_dir.rglob("*.png")) if media_dir.exists() else []
     assert leftover == []
+
+
+def test_media_reembed_on_model_change_uses_bytes_not_sidecar(tmp_path: Path) -> None:
+    """A model switch must call embed_media with file bytes, never the FTS sidecar text."""
+    from app.evidence_store import list_chunks, reembed_stale_chunks, store_records
+
+    path = write_bytes(tmp_path, "shot.png", PNG_BYTES)
+    media_dir = tmp_path / "media"
+    (record,) = import_file(path, "case-a", source_root=tmp_path, media_dir=media_dir)
+    embedder = FakeEmbedder()
+    engine = make_engine(f"sqlite:///{tmp_path / 'reembed.db'}")
+    init_db(engine, embedder.dim)
+    with make_session_factory(engine)() as session:
+        session.add(Case(case_id="case-a", title="Media"))
+        session.flush()
+        store_records(session, "case-a", [record], embedder, media_dir=media_dir)
+        session.commit()
+        sidecar = list_chunks(session, "case-a", record.record_id)[0].text
+        embedder.calls.clear()
+        embedder.media_calls.clear()
+        new = FakeEmbedder(model="fake-embedding-v2")
+        assert reembed_stale_chunks(session, "case-a", new, media_dir=media_dir) == 1
+        session.commit()
+        assert new.embedded_media and new.embedded_media[0].data == PNG_BYTES
+        assert new.embedded_media[0].mime_type == "image/png"
+        assert sidecar not in new.embedded_texts
+        assert new.calls == []  # text path must not run for media
+        assert list_chunks(session, "case-a", record.record_id)[0].embedding_model == new.model
+    engine.dispose()
+
+
+def test_media_backfill_creates_chunk_and_fts(tmp_path: Path) -> None:
+    """Media imported before BLA-69 (row, no chunks) gets a sidecar chunk + FTS on reembed."""
+    from app.evidence_store import (
+        content_hash,
+        list_chunks,
+        reembed_stale_chunks,
+        stale_chunk_count,
+    )
+    from app.models import EvidenceRecordRow
+    from app.search_index import FTS_TABLE, VEC_TABLE, keyword_search, to_fts_query
+
+    path = write_bytes(tmp_path, "legacy.png", PNG_BYTES)
+    media_dir = tmp_path / "media"
+    (record,) = import_file(path, "case-a", source_root=tmp_path, media_dir=media_dir)
+    embedder = FakeEmbedder()
+    engine = make_engine(f"sqlite:///{tmp_path / 'backfill.db'}")
+    init_db(engine, embedder.dim)
+    with make_session_factory(engine)() as session:
+        session.add(Case(case_id="case-a", title="Legacy media"))
+        session.flush()
+        # Simulate a pre-BLA-69 import: record row only, no chunks / indexes.
+        session.add(
+            EvidenceRecordRow(
+                case_id="case-a",
+                record_id=record.record_id,
+                source_file=record.source_file,
+                source_locator=record.source_locator,
+                content="",
+                modality=record.modality,
+                media_path=record.media_path,
+                content_type=record.content_type,
+                record_metadata=record.metadata,
+                content_hash=content_hash(record),
+            )
+        )
+        session.commit()
+        assert list_chunks(session, "case-a", record.record_id) == []
+        assert stale_chunk_count(session, "case-a", embedder, media_dir=media_dir) == 1
+        assert reembed_stale_chunks(session, "case-a", embedder, media_dir=media_dir) == 1
+        session.commit()
+        chunks = list_chunks(session, "case-a", record.record_id)
+        assert len(chunks) == 1
+        assert chunks[0].text == "legacy.png"
+        assert session.execute(text(f"SELECT count(*) FROM {VEC_TABLE}")).scalar() == 1
+        assert session.execute(text(f"SELECT count(*) FROM {FTS_TABLE}")).scalar() == 1
+        hits = keyword_search(session, "case-a", to_fts_query("legacy"))
+        assert [h.record_id for h in hits] == [record.record_id]
+        assert embedder.embedded_media and embedder.embedded_media[0].data == PNG_BYTES
+    engine.dispose()
+
+
+def test_media_indexed_but_excluded_from_retrieve(tmp_path: Path) -> None:
+    """Media stays in vec/FTS indexes but retrieve() excludes image/pdf at query time."""
+    from app.evidence_store import list_chunks, store_records
+    from app.retrieval import RetrievalConfig, retrieve
+    from app.search_index import keyword_search, to_fts_query, vector_search
+
+    media_dir = tmp_path / "media"
+    png_path = write_bytes(tmp_path, "uniquezebra.png", PNG_BYTES)
+    (media,) = import_file(png_path, "case-a", source_root=tmp_path, media_dir=media_dir)
+    text_record = EvidenceRecord.model_validate(
+        {
+            "record_id": "rec-text",
+            "case_id": "case-a",
+            "source_file": "notes.txt",
+            "source_locator": "line 1",
+            "content": "Alex emails Jordan about the warehouse key.",
+        }
+    )
+    embedder = FakeEmbedder()
+    # Point the query vector at the media bytes so vector search would otherwise hit it.
+    media_vec = embedder.embed_media([MediaInput(PNG_BYTES, "image/png")])[0]
+    embedder.media_calls.clear()
+
+    class QueryEmbedder(FakeEmbedder):
+        def embed_query(self, text: str) -> list[float]:  # noqa: ANN001
+            if "uniquezebra" in text:
+                return media_vec
+            return super().embed_query(text)
+
+    query_embedder = QueryEmbedder()
+    engine = make_engine(f"sqlite:///{tmp_path / 'retrieve-media.db'}")
+    init_db(engine, query_embedder.dim)
+    with make_session_factory(engine)() as session:
+        session.add(Case(case_id="case-a", title="Filter media"))
+        session.flush()
+        store_records(session, "case-a", [text_record, media], query_embedder, media_dir=media_dir)
+        session.commit()
+        assert list_chunks(session, "case-a", media.record_id)
+        # Raw indexes still hold media (for a later retrieval ticket).
+        assert media.record_id in {
+            h.record_id for h in keyword_search(session, "case-a", to_fts_query("uniquezebra"))
+        }
+        assert media.record_id in {
+            h.record_id for h in vector_search(session, "case-a", media_vec, k=5)
+        }
+        # retrieve() excludes media inside the index queries (same path as exclusions).
+        result = retrieve(session, "case-a", "uniquezebra", query_embedder)
+        assert media.record_id not in {r.record_id for r in result.records}
+        assert result.records and result.records[0].record_id == "rec-text"
+        search_excluded = {media.record_id}
+        assert media.record_id not in {
+            h.record_id
+            for h in keyword_search(
+                session,
+                "case-a",
+                to_fts_query("uniquezebra"),
+                excluded_record_ids=search_excluded,
+            )
+        }
+        assert media.record_id not in {
+            h.record_id
+            for h in vector_search(
+                session, "case-a", media_vec, k=5, excluded_record_ids=search_excluded
+            )
+        }
+        # Small candidate budgets still fill with text when media would otherwise dominate.
+        crowded = retrieve(
+            session,
+            "case-a",
+            "uniquezebra warehouse",
+            query_embedder,
+            config=RetrievalConfig(vector_candidates=1, keyword_candidates=1),
+        )
+        assert {r.record_id for r in crowded.records} == {"rec-text"}
+        assert media.record_id not in {r.record_id for r in crowded.records}
+    engine.dispose()
+
+
+def test_many_media_neighbors_do_not_starve_text_recall(tmp_path: Path) -> None:
+    """Photo-heavy cases must not fill k candidate slots then discard them post-search."""
+    from app.evidence_store import store_records
+    from app.retrieval import RetrievalConfig, retrieve
+    from app.search_index import keyword_search, to_fts_query, vector_search
+
+    media_dir = tmp_path / "media"
+    media_records = []
+    for i in range(8):
+        # Underscore separates tokens (unicode61), so "uniquezebra" matches the sidecar.
+        path = write_bytes(tmp_path, f"photos/uniquezebra_{i}.png", PNG_BYTES)
+        media_records.extend(import_file(path, "case-a", source_root=tmp_path, media_dir=media_dir))
+    text_record = EvidenceRecord.model_validate(
+        {
+            "record_id": "rec-text",
+            "case_id": "case-a",
+            "source_file": "notes.txt",
+            "source_locator": "line 1",
+            "content": "uniquezebra ferry schedule for the harbour.",
+        }
+    )
+    embedder = FakeEmbedder()
+    media_vec = embedder.embed_media([MediaInput(PNG_BYTES, "image/png")])[0]
+    embedder.media_calls.clear()
+
+    class QueryEmbedder(FakeEmbedder):
+        def embed_query(self, text: str) -> list[float]:  # noqa: ANN001
+            return media_vec
+
+    query_embedder = QueryEmbedder()
+    engine = make_engine(f"sqlite:///{tmp_path / 'starve-media.db'}")
+    init_db(engine, query_embedder.dim)
+    with make_session_factory(engine)() as session:
+        session.add(Case(case_id="case-a", title="Starve"))
+        session.flush()
+        store_records(
+            session, "case-a", [*media_records, text_record], query_embedder, media_dir=media_dir
+        )
+        session.commit()
+        media_ids = {r.record_id for r in media_records}
+        k = 5
+        raw_vector = vector_search(session, "case-a", media_vec, k=k)
+        assert {h.record_id for h in raw_vector} <= media_ids
+        raw_keyword = keyword_search(session, "case-a", to_fts_query("uniquezebra"), k=k)
+        # Filename sidecars match uniquezebra*; text also matches — without exclusion media
+        # can dominate the top-k. retrieve must still surface the text record.
+        result = retrieve(
+            session,
+            "case-a",
+            "uniquezebra",
+            query_embedder,
+            config=RetrievalConfig(vector_candidates=k, keyword_candidates=k),
+        )
+        assert "rec-text" in {r.record_id for r in result.records}
+        assert not media_ids & {r.record_id for r in result.records}
+        # Same exclusion set retrieve() uses: media IDs never appear in those candidate lists.
+        search_excluded = media_ids
+        assert not media_ids & {
+            h.record_id
+            for h in vector_search(
+                session, "case-a", media_vec, k=k, excluded_record_ids=search_excluded
+            )
+        }
+        assert not media_ids & {
+            h.record_id
+            for h in keyword_search(
+                session,
+                "case-a",
+                to_fts_query("uniquezebra"),
+                k=k,
+                excluded_record_ids=search_excluded,
+            )
+        }
+        # Without exclusion, raw keyword can still hit media sidecars (index kept warm).
+        assert media_ids & {h.record_id for h in raw_keyword}
+    engine.dispose()
+
+
+def test_pdf_six_vs_seven_pages_and_truncation_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    from io import BytesIO
+
+    from pypdf import PdfReader, PdfWriter
+
+    from app.case_media import GEMINI_PDF_MAX_PAGES, truncate_pdf_for_embedding
+
+    del tmp_path
+
+    def pdf_with_pages(n: int) -> bytes:
+        writer = PdfWriter()
+        for _ in range(n):
+            writer.add_blank_page(width=72, height=72)
+        buf = BytesIO()
+        writer.write(buf)
+        return buf.getvalue()
+
+    six = pdf_with_pages(GEMINI_PDF_MAX_PAGES)
+    seven = pdf_with_pages(GEMINI_PDF_MAX_PAGES + 1)
+    with caplog.at_level("WARNING", logger="app.case_media"):
+        short = truncate_pdf_for_embedding(six)
+        assert short.data == six and short.truncated is False
+        assert not any("truncated" in m.message.lower() for m in caplog.records)
+        truncated = truncate_pdf_for_embedding(seven)
+    assert truncated.truncated is True
+    assert truncated.coverage_metadata() == {
+        "embedding_truncated": True,
+        "embedding_pages": GEMINI_PDF_MAX_PAGES,
+        "embedding_page_count": GEMINI_PDF_MAX_PAGES + 1,
+    }
+    assert len(PdfReader(BytesIO(truncated.data)).pages) == GEMINI_PDF_MAX_PAGES
+    assert any("truncated" in m.message.lower() for m in caplog.records)
+
+    with caplog.at_level("WARNING", logger="app.case_media"):
+        caplog.clear()
+        failed = truncate_pdf_for_embedding(b"%PDF-not-a-real-pdf")
+    assert failed.data == b"%PDF-not-a-real-pdf" and failed.truncated is False
+    assert any("truncation failed" in m.message.lower() for m in caplog.records)
+
+
+def test_seven_page_pdf_store_and_reembed_sets_truncation_flag(tmp_path: Path) -> None:
+    """Truncation lives on the PDF chunk's embedding_coverage, not the evidence record."""
+    from io import BytesIO
+
+    from pypdf import PdfWriter
+
+    from app.case_media import GEMINI_PDF_MAX_PAGES
+    from app.evidence_store import get_record, list_chunks, reembed_stale_chunks, store_records
+
+    writer = PdfWriter()
+    for _ in range(GEMINI_PDF_MAX_PAGES + 1):
+        writer.add_blank_page(width=72, height=72)
+    buf = BytesIO()
+    writer.write(buf)
+    seven_pdf = buf.getvalue()
+    path = write_bytes(tmp_path, "long.pdf", seven_pdf)
+    media_dir = tmp_path / "media"
+    (record,) = import_file(path, "case-a", source_root=tmp_path, media_dir=media_dir)
+    assert "embedding_truncated" not in (record.metadata or {})
+
+    embedder = FakeEmbedder()
+    engine = make_engine(f"sqlite:///{tmp_path / 'pdf-flag.db'}")
+    init_db(engine, embedder.dim)
+    with make_session_factory(engine)() as session:
+        session.add(Case(case_id="case-a", title="PDF flag"))
+        session.flush()
+        store_records(session, "case-a", [record], embedder, media_dir=media_dir)
+        session.commit()
+        stored = get_record(session, "case-a", record.record_id)
+        assert stored is not None
+        # GET /records/{id} must not expose index coverage as evidence metadata.
+        assert "embedding_truncated" not in (stored.metadata or {})
+        chunks = list_chunks(session, "case-a", record.record_id)
+        assert len(chunks) == 1
+        assert chunks[0].embedding_coverage == {
+            "embedding_truncated": True,
+            "embedding_pages": GEMINI_PDF_MAX_PAGES,
+            "embedding_page_count": GEMINI_PDF_MAX_PAGES + 1,
+        }
+        # Re-import still matches (coverage is not on the record / content_hash).
+        again = store_records(session, "case-a", [record], embedder, media_dir=media_dir)
+        assert again.unchanged == 1 and again.inserted == 0
+        # Re-embed keeps the flag on the chunk; record metadata stays untouched.
+        new = FakeEmbedder(model="fake-embedding-v2")
+        assert reembed_stale_chunks(session, "case-a", new, media_dir=media_dir) == 1
+        session.commit()
+        reembedded = get_record(session, "case-a", record.record_id)
+        assert reembedded is not None
+        assert "embedding_truncated" not in (reembedded.metadata or {})
+        rechunks = list_chunks(session, "case-a", record.record_id)
+        assert rechunks[0].embedding_coverage == {
+            "embedding_truncated": True,
+            "embedding_pages": GEMINI_PDF_MAX_PAGES,
+            "embedding_page_count": GEMINI_PDF_MAX_PAGES + 1,
+        }
+    engine.dispose()
+
+
+def test_stale_chunk_count_includes_media(tmp_path: Path) -> None:
+    from app.evidence_store import (
+        content_hash,
+        reembed_stale_chunks,
+        stale_chunk_count,
+        store_records,
+    )
+    from app.models import EvidenceRecordRow
+
+    media_dir = tmp_path / "media"
+    path = write_bytes(tmp_path, "shot.png", PNG_BYTES)
+    (media,) = import_file(path, "case-a", source_root=tmp_path, media_dir=media_dir)
+    text = EvidenceRecord.model_validate(
+        {
+            "record_id": "rec-text",
+            "case_id": "case-a",
+            "source_file": "notes.txt",
+            "source_locator": "line 1",
+            "content": "short note",
+        }
+    )
+    embedder = FakeEmbedder()
+    engine = make_engine(f"sqlite:///{tmp_path / 'stale-media.db'}")
+    init_db(engine, embedder.dim)
+    with make_session_factory(engine)() as session:
+        session.add(Case(case_id="case-a", title="Stale media"))
+        session.flush()
+        store_records(session, "case-a", [text, media], embedder, media_dir=media_dir)
+        session.commit()
+        assert stale_chunk_count(session, "case-a", embedder, media_dir=media_dir) == 0
+        new = FakeEmbedder(model="fake-embedding-v2")
+        # One text chunk + one media chunk both stale after the model change.
+        assert stale_chunk_count(session, "case-a", new, media_dir=media_dir) == 2
+        assert reembed_stale_chunks(session, "case-a", new, media_dir=media_dir) == 2
+
+        # Pre-BLA-69 media (no chunk) also counts as stale.
+        legacy_path = write_bytes(tmp_path, "legacy2.png", PNG_BYTES)
+        (legacy,) = import_file(legacy_path, "case-a", source_root=tmp_path, media_dir=media_dir)
+        session.add(
+            EvidenceRecordRow(
+                case_id="case-a",
+                record_id=legacy.record_id,
+                source_file=legacy.source_file,
+                source_locator=legacy.source_locator,
+                content="",
+                modality=legacy.modality,
+                media_path=legacy.media_path,
+                content_type=legacy.content_type,
+                record_metadata=legacy.metadata,
+                content_hash=content_hash(legacy),
+            )
+        )
+        session.commit()
+        assert stale_chunk_count(session, "case-a", new, media_dir=media_dir) == 1
+    engine.dispose()
+
+
+def test_vector_index_uses_cosine_distance(tmp_path: Path) -> None:
+    from app.search_index import VEC_TABLE
+
+    embedder = FakeEmbedder()
+    engine = make_engine(f"sqlite:///{tmp_path / 'cosine.db'}")
+    init_db(engine, embedder.dim)
+    with make_session_factory(engine)() as session:
+        ddl = session.execute(
+            text("SELECT sql FROM sqlite_master WHERE name = :name"),
+            {"name": VEC_TABLE},
+        ).scalar()
+        assert ddl is not None
+        assert "distance_metric=cosine" in ddl
+    engine.dispose()
+
+
+def test_reembed_continues_when_one_media_file_is_missing(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    from app.evidence_store import list_chunks, reembed_stale_chunks, store_records
+
+    media_dir = tmp_path / "media"
+    png = write_bytes(tmp_path, "keep.png", PNG_BYTES)
+    gone = write_bytes(tmp_path, "gone.png", PNG_BYTES)
+    keep = import_file(png, "case-a", source_root=tmp_path, media_dir=media_dir)[0]
+    missing = import_file(gone, "case-a", source_root=tmp_path, media_dir=media_dir)[0]
+    text = EvidenceRecord.model_validate(
+        {
+            "record_id": "rec-text",
+            "case_id": "case-a",
+            "source_file": "notes.txt",
+            "source_locator": "line 1",
+            "content": "text survives a missing media file",
+        }
+    )
+    embedder = FakeEmbedder()
+    engine = make_engine(f"sqlite:///{tmp_path / 'missing-media.db'}")
+    init_db(engine, embedder.dim)
+    with make_session_factory(engine)() as session:
+        session.add(Case(case_id="case-a", title="Missing media"))
+        session.flush()
+        store_records(session, "case-a", [text, keep, missing], embedder, media_dir=media_dir)
+        session.commit()
+        (media_dir / f"{missing.record_id}.png").unlink()
+        new = FakeEmbedder(model="fake-embedding-v2")
+        with caplog.at_level("WARNING", logger="app.evidence_store"):
+            updated = reembed_stale_chunks(session, "case-a", new, media_dir=media_dir)
+        session.commit()
+        # Text + keep.png re-embedded; missing media skipped with a warning.
+        assert updated == 2
+        assert any("skipping re-embed" in m.message for m in caplog.records)
+        assert list_chunks(session, "case-a", keep.record_id)[0].embedding_model == new.model
+        assert (
+            list_chunks(session, "case-a", missing.record_id)[0].embedding_model == embedder.model
+        )
+    engine.dispose()

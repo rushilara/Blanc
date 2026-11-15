@@ -4,16 +4,32 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.config import Settings
+from app.config import DEFAULT_EMBEDDING_MODEL, Settings
 from app.deps import EmbedderDep
-from app.embeddings import Embedder, EmbeddingError, FakeEmbedder, GeminiEmbedder, make_embedder
+from app.embeddings import (
+    Embedder,
+    EmbeddingError,
+    FakeEmbedder,
+    GeminiEmbedder,
+    MediaInput,
+    make_embedder,
+)
 
 
 class FakeModels:
     """Stands in for ``genai.Client().models``."""
 
-    def __init__(self, dim: int, drop: int = 0, wrong_dim: bool = False, fail: bool = False):
+    def __init__(
+        self,
+        dim: int,
+        drop: int = 0,
+        wrong_dim: bool = False,
+        fail: bool = False,
+        *,
+        collapse: bool = False,
+    ):
         self.dim, self.drop, self.wrong_dim, self.fail = dim, drop, wrong_dim, fail
+        self.collapse = collapse
         self.requests: list[dict] = []
 
     def embed_content(self, *, model, contents, config):
@@ -21,14 +37,26 @@ class FakeModels:
         if self.fail:
             raise RuntimeError("429 RESOURCE_EXHAUSTED")
         size = self.dim + (1 if self.wrong_dim else 0)
-        items = contents[: len(contents) - self.drop]
-        return SimpleNamespace(embeddings=[SimpleNamespace(values=[0.5] * size) for _ in items])
+        n = 1 if self.collapse else max(0, len(contents) - self.drop)
+        return SimpleNamespace(embeddings=[SimpleNamespace(values=[0.5] * size) for _ in range(n)])
 
 
 def gemini(models: FakeModels, **kwargs) -> GeminiEmbedder:
     return GeminiEmbedder(
-        None, "gemini-embedding-001", models.dim, client=SimpleNamespace(models=models), **kwargs
+        None, "gemini-embedding-2", models.dim, client=SimpleNamespace(models=models), **kwargs
     )
+
+
+def _content_texts(contents) -> list[str]:
+    """Unwrap one-Content-per-text batches used for embedding-2."""
+    texts: list[str] = []
+    for item in contents:
+        parts = getattr(item, "parts", None)
+        if parts is not None:
+            texts.append(parts[0].text)
+        else:
+            texts.append(item)
+    return texts
 
 
 def test_gemini_batches_and_sets_task_types() -> None:
@@ -36,15 +64,46 @@ def test_gemini_batches_and_sets_task_types() -> None:
     embedder = gemini(models, batch_size=2)
     vectors = embedder.embed_documents(["a", "b", "c", "d", "e"])
     assert len(vectors) == 5 and all(len(v) == 8 for v in vectors)
-    assert [r["contents"] for r in models.requests] == [["a", "b"], ["c", "d"], ["e"]]
+    assert [_content_texts(r["contents"]) for r in models.requests] == [
+        ["a", "b"],
+        ["c", "d"],
+        ["e"],
+    ]
     config = models.requests[0]["config"]
     assert config.task_type == "RETRIEVAL_DOCUMENT"
     assert config.output_dimensionality == 8
-    assert models.requests[0]["model"] == "gemini-embedding-001"
+    assert models.requests[0]["model"] == "gemini-embedding-2"
 
     assert len(embedder.embed_query("q")) == 8
     assert models.requests[-1]["config"].task_type == "RETRIEVAL_QUERY"
     assert embedder.embed_documents([]) == []
+
+
+def test_gemini_media_is_one_call_per_item() -> None:
+    models = FakeModels(dim=4)
+    embedder = gemini(models)
+    png = b"\x89PNG\r\n\x1a\n"
+    pdf = b"%PDF-1.4\n"
+    vectors = embedder.embed_media(
+        [
+            MediaInput(data=png, mime_type="image/png"),
+            MediaInput(data=pdf, mime_type="application/pdf"),
+        ]
+    )
+    assert len(vectors) == 2 and all(len(v) == 4 for v in vectors)
+    assert len(models.requests) == 2
+    first = models.requests[0]["contents"][0]
+    assert first.inline_data.mime_type == "image/png"
+    assert first.inline_data.data == png
+    assert models.requests[0]["config"].output_dimensionality == 4
+    assert models.requests[0]["config"].task_type == "RETRIEVAL_DOCUMENT"
+    assert embedder.embed_media([]) == []
+
+
+def test_gemini_collapsed_batch_raises() -> None:
+    """embedding-2 may return one vector for a bare contents list; we must detect that."""
+    with pytest.raises(EmbeddingError, match="aggregat"):
+        gemini(FakeModels(4, collapse=True)).embed_documents(["a", "b"])
 
 
 @pytest.mark.parametrize(
@@ -84,6 +143,10 @@ def test_fake_embedder_is_deterministic_unit_vectors() -> None:
     assert abs(sum(x * y for x, y in zip(v1, v2, strict=True))) < 0.5
     assert fake.embedded_texts == ["same", "other"]
     assert fake.embed_documents([]) == [] and len(fake.calls) == 1
+    media = MediaInput(data=b"abc", mime_type="image/png")
+    assert fake.embed_media([media]) == FakeEmbedder(dim=64).embed_media([media])
+    assert fake.embedded_media == [media]
+    assert fake.embed_media([]) == [] and len(fake.media_calls) == 1
 
 
 def test_embedder_dependency(app: FastAPI) -> None:
@@ -92,6 +155,9 @@ def test_embedder_dependency(app: FastAPI) -> None:
         return {"model": embedder.model, "dim": embedder.dim}
 
     with TestClient(app) as client:
-        assert client.get("/_embedder").json() == {"model": "gemini-embedding-001", "dim": 768}
+        assert client.get("/_embedder").json() == {
+            "model": DEFAULT_EMBEDDING_MODEL,
+            "dim": 768,
+        }
         app.state.embedder = FakeEmbedder(dim=768)
         assert client.get("/_embedder").json()["model"] == "fake-embedding"
