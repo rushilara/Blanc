@@ -15,6 +15,16 @@ Case isolation: virtual tables cannot carry foreign keys, so each row stores its
   ``UNINDEXED`` columns; searches filter ``case_id = ?`` in the same statement as ``MATCH``,
   before ``ORDER BY`` / ``LIMIT``.
 
+Record exclusion (BLA-14): both searches take ``excluded_record_ids`` and drop every chunk
+of those records inside the query, so the ``k`` results are all permitted chunks whenever
+the case has that many. FTS5 takes ``record_id NOT IN (...)`` before ``LIMIT``. vec0 is
+pickier (sqlite-vec 0.1.9, checked in tests): ANDed ``record_id != ?`` constraints are
+applied inside the KNN, but ``NOT IN (...)`` is applied *after* the ``k`` nearest are picked
+(excluded chunks use up slots), and a KNN with more than ``VEC_MAX_EXCLUSION_CONSTRAINTS``
+``!=`` constraints fails to plan. Larger exclusion sets over-fetch instead: ask for ``k``
+plus the number of excluded vectors in the case, then filter. Exclusion only filters reads;
+index rows are never deleted or changed.
+
 Consistency: ``AFTER DELETE`` triggers on ``evidence_chunks`` delete the matching vector and
 FTS rows, so deleting a chunk, a record (FK cascade) or a case (FK cascade) never leaves
 orphans. Because of those triggers every connection must have sqlite-vec loaded
@@ -31,18 +41,23 @@ from __future__ import annotations
 import logging
 import re
 import unicodedata
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 import sqlite_vec
-from sqlalchemy import Connection, text
+from sqlalchemy import Connection, bindparam, text
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
 VEC_TABLE = "evidence_chunk_vectors"
 FTS_TABLE = "evidence_chunks_fts"
+
+# sqlite-vec 0.1.9 limits: a KNN with MATCH, k, case_id and 14+ ``record_id != ?``
+# constraints fails with "unable to use function MATCH"; k may be at most 4096.
+VEC_MAX_EXCLUSION_CONSTRAINTS = 13
+VEC_MAX_K = 4096
 
 _EXTENSION_HELP = (
     "This Python's sqlite3 module cannot load SQLite extensions, which Blanc needs for "
@@ -247,35 +262,84 @@ class KeywordHit:
     score: float  # FTS5 bm25(): lower (more negative) is a better match
 
 
+def _excluded_vector_count(session: Session, case_id: str, excluded: Sequence[str]) -> int:
+    return session.execute(
+        text(
+            f"SELECT count(*) FROM {VEC_TABLE} "
+            "WHERE case_id = :case_id AND record_id IN :excluded"
+        ).bindparams(bindparam("excluded", expanding=True)),
+        {"case_id": case_id, "excluded": list(excluded)},
+    ).scalar_one()
+
+
 def vector_search(
-    session: Session, case_id: str, query_vector: Sequence[float], k: int = 10
+    session: Session,
+    case_id: str,
+    query_vector: Sequence[float],
+    k: int = 10,
+    excluded_record_ids: Iterable[str] = (),
 ) -> list[VectorHit]:
-    """The ``k`` nearest chunks of ``case_id`` (filtered inside the KNN by partition key)."""
+    """The ``k`` nearest chunks of ``case_id`` (filtered inside the KNN by partition key),
+    leaving out every chunk of ``excluded_record_ids`` (see the module docstring).
+
+    With more than ``VEC_MAX_EXCLUSION_CONSTRAINTS`` exclusions the KNN over-fetches, capped
+    at ``VEC_MAX_K``; only if the excluded records have nearly that many vectors can it
+    return fewer than ``k`` permitted chunks.
+    """
+    excluded = sorted(set(excluded_record_ids))
+    params: dict[str, Any] = {
+        "query": sqlite_vec.serialize_float32(list(query_vector)),
+        "k": k,
+        "case_id": case_id,
+    }
+    filters = ""
+    if len(excluded) <= VEC_MAX_EXCLUSION_CONSTRAINTS:
+        filters = "".join(f" AND record_id != :ex{i}" for i in range(len(excluded)))
+        params.update({f"ex{i}": rid for i, rid in enumerate(excluded)})
+    else:
+        params["k"] = min(k + _excluded_vector_count(session, case_id, excluded), VEC_MAX_K)
     rows = session.execute(
         text(
             f"SELECT chunk_id, record_id, distance FROM {VEC_TABLE} "
-            "WHERE embedding MATCH :query AND k = :k AND case_id = :case_id "
+            f"WHERE embedding MATCH :query AND k = :k AND case_id = :case_id{filters} "
             "ORDER BY distance"
         ),
-        {"query": sqlite_vec.serialize_float32(list(query_vector)), "k": k, "case_id": case_id},
+        params,
     )
-    return [VectorHit(chunk_id=r[0], record_id=r[1], distance=float(r[2])) for r in rows]
+    skip = set(excluded)
+    hits = [
+        VectorHit(chunk_id=r[0], record_id=r[1], distance=float(r[2]))
+        for r in rows
+        if r[1] not in skip
+    ]
+    return hits[:k]
 
 
-def keyword_search(session: Session, case_id: str, match: str, k: int = 10) -> list[KeywordHit]:
-    """Best ``k`` FTS5 matches within ``case_id``.
+def keyword_search(
+    session: Session,
+    case_id: str,
+    match: str,
+    k: int = 10,
+    excluded_record_ids: Iterable[str] = (),
+) -> list[KeywordHit]:
+    """Best ``k`` FTS5 matches within ``case_id``, leaving out every chunk of
+    ``excluded_record_ids`` (filtered before ``LIMIT``).
 
     ``match`` is raw FTS5 query syntax (e.g. ``'"delivering" OR "meeting"'``); quote user
     input before passing it, since bare punctuation is an FTS5 syntax error.
     """
-    rows = session.execute(
-        text(
-            f"SELECT chunk_id, record_id, bm25({FTS_TABLE}) AS score FROM {FTS_TABLE} "
-            f"WHERE {FTS_TABLE} MATCH :match AND case_id = :case_id "
-            "ORDER BY score LIMIT :k"
-        ),
-        {"match": match, "case_id": case_id, "k": k},
+    excluded = sorted(set(excluded_record_ids))
+    query = text(
+        f"SELECT chunk_id, record_id, bm25({FTS_TABLE}) AS score FROM {FTS_TABLE} "
+        f"WHERE {FTS_TABLE} MATCH :match AND case_id = :case_id"
+        + (" AND record_id NOT IN :excluded" if excluded else "")
+        + " ORDER BY score LIMIT :k"
     )
+    params: dict[str, Any] = {"match": match, "case_id": case_id, "k": k}
+    if excluded:
+        query = query.bindparams(bindparam("excluded", expanding=True))
+        params["excluded"] = excluded
+    rows = session.execute(query, params)
     return [KeywordHit(chunk_id=r[0], record_id=r[1], score=float(r[2])) for r in rows]
 
 

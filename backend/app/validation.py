@@ -41,6 +41,9 @@ __all__ = [
     "parse_datetime",
     "schema_errors",
     "format_validation_error",
+    "case_record_ids",
+    "permitted_evidence_ids",
+    "revision_integrity_errors",
     "validate_revision",
     "validate_board",
     "validate_comparison",
@@ -125,18 +128,23 @@ def _citation_errors(
 # --- AnalysisRevision -----------------------------------------------------------------
 
 
-def validate_revision(records: Sequence[EvidenceRecord], analysis: AnalysisRevision) -> list[str]:
-    """Cross-reference checks for one revision against its case corpus.
+def case_record_ids(records: Sequence[EvidenceRecord], case_id: str) -> set[str]:
+    """IDs of the records in ``records`` that belong to ``case_id``."""
+    return {r.record_id for r in records if r.case_id == case_id}
 
-    ``records`` is the case corpus the revision was built from. Enforces README invariants
-    1 to 5: records are unique and same-case, retrieved IDs are in the corpus and disjoint
-    from excluded IDs, every claim/edge/event cites at least one permitted record (and node
-    evidence, when present, is permitted too), edges reference existing nodes, and no event
-    claims an exact timestamp without one.
-    """
+
+def permitted_evidence_ids(
+    records: Sequence[EvidenceRecord], analysis: AnalysisRevision
+) -> set[str]:
+    """The record IDs a revision may cite: same-case, retrieved and not excluded."""
+    known = case_record_ids(records, analysis.case_id)
+    return (known & set(analysis.retrieved_record_ids)) - set(analysis.excluded_record_ids)
+
+
+def _corpus_errors(records: Sequence[EvidenceRecord], analysis: AnalysisRevision) -> list[str]:
+    """Records are unique and same-case; retrieved IDs are in the corpus and not excluded."""
     errors: list[str] = []
-    record_ids = [r.record_id for r in records]
-    dupes = _duplicates(record_ids)
+    dupes = _duplicates(r.record_id for r in records)
     if dupes:
         errors.append(f"duplicate source record IDs: {_fmt(dupes)}")
     case_id = analysis.case_id
@@ -145,7 +153,7 @@ def validate_revision(records: Sequence[EvidenceRecord], analysis: AnalysisRevis
             errors.append(
                 f"cross-case record {record.record_id}: case {record.case_id}, expected {case_id}"
             )
-    known = {r.record_id for r in records if r.case_id == case_id}
+    known = case_record_ids(records, case_id)
     excluded = set(analysis.excluded_record_ids)
     retrieved = set(analysis.retrieved_record_ids)
     missing = retrieved - known
@@ -154,7 +162,11 @@ def validate_revision(records: Sequence[EvidenceRecord], analysis: AnalysisRevis
     leaked = retrieved & excluded
     if leaked:
         errors.append(f"excluded source records appear in the retrieval set: {_fmt(leaked)}")
+    return errors
 
+
+def _duplicate_item_errors(analysis: AnalysisRevision) -> list[str]:
+    errors = []
     for kind, ids in (
         ("claim", [c.id for c in analysis.claims]),
         ("node", [n.id for n in analysis.graph.nodes]),
@@ -164,7 +176,48 @@ def validate_revision(records: Sequence[EvidenceRecord], analysis: AnalysisRevis
         dupes = _duplicates(ids)
         if dupes:
             errors.append(f"duplicate {kind} IDs: {_fmt(dupes)}")
+    return errors
 
+
+def _timestamp_errors(analysis: AnalysisRevision) -> list[str]:
+    return [
+        f"event {event.id} has exact timestamp_precision but no timestamp"
+        for event in analysis.timeline_events
+        if event.timestamp_precision == "exact" and event.timestamp is None
+    ]
+
+
+def revision_integrity_errors(
+    records: Sequence[EvidenceRecord], analysis: AnalysisRevision
+) -> list[str]:
+    """The ``validate_revision`` checks that do not depend on what items cite.
+
+    Covers the corpus and retrieval set, duplicate item IDs and invented exact timestamps.
+    Stripping citations cannot fix these, so ``app.citations.sanitize_citations`` reports
+    them as errors instead of repairing them.
+    """
+    return [
+        *_corpus_errors(records, analysis),
+        *_duplicate_item_errors(analysis),
+        *_timestamp_errors(analysis),
+    ]
+
+
+def validate_revision(records: Sequence[EvidenceRecord], analysis: AnalysisRevision) -> list[str]:
+    """Cross-reference checks for one revision against its case corpus.
+
+    ``records`` is the case corpus the revision was built from. Enforces README invariants
+    1 to 5: records are unique and same-case, retrieved IDs are in the corpus and disjoint
+    from excluded IDs, every claim/edge/event cites at least one permitted record (and node
+    evidence, when present, is permitted too), edges reference existing nodes, and no event
+    claims an exact timestamp without one.
+    """
+    errors = _corpus_errors(records, analysis)
+    errors.extend(_duplicate_item_errors(analysis))
+
+    known = case_record_ids(records, analysis.case_id)
+    excluded = set(analysis.excluded_record_ids)
+    retrieved = set(analysis.retrieved_record_ids)
     cite = {"known": known, "retrieved": retrieved, "excluded": excluded}
     supported: list[tuple[str, Claim | GraphEdge | TimelineEvent]] = [
         *(("claim", c) for c in analysis.claims),
@@ -186,9 +239,7 @@ def validate_revision(records: Sequence[EvidenceRecord], analysis: AnalysisRevis
             if ref not in node_ids:
                 errors.append(f"edge {edge.id} {end} references unknown graph node {ref}")
 
-    for event in analysis.timeline_events:
-        if event.timestamp_precision == "exact" and event.timestamp is None:
-            errors.append(f"event {event.id} has exact timestamp_precision but no timestamp")
+    errors.extend(_timestamp_errors(analysis))
     return errors
 
 
