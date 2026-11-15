@@ -1,6 +1,6 @@
 // Hosted app path (BLA-61). A public deploy of the frontend serves the landing page
-// only: the investigation routes read case evidence from a backend, and until real
-// auth exists (BLA-60) they must not be reachable on the public internet.
+// only: the investigation routes read case evidence from a backend, and the sign-in
+// session (BLA-60) only reaches a backend on the same site, so they stay closed there.
 
 /** Routes that open case evidence. */
 export const APP_ROUTES = ["/workspace", "/live", "/sample"] as const;

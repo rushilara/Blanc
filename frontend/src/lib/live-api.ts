@@ -16,6 +16,9 @@ const comparisonAjv = new Ajv2020({ allErrors: true, strict: false });
 addFormats(comparisonAjv);
 const validComparison = comparisonAjv.compile<RevisionComparison>(comparisonSchema);
 
+/** Shown when the backend refuses a request without a valid sign-in (BLA-60). */
+export const SIGNED_OUT = "Your sign-in has expired. Sign in again to continue.";
+
 export class ApiError extends Error {
   constructor(message: string, public status?: number) { super(message); }
 }
@@ -36,12 +39,13 @@ const path = (caseId: string) => `/cases/${encodeURIComponent(caseId)}`;
 
 async function request(url: string, signal?: AbortSignal, body?: unknown): Promise<unknown> {
   const response = await fetch(`${API_BASE_URL}${url}`, {
-    method: body === undefined ? "GET" : "POST", cache: "no-store", signal,
+    method: body === undefined ? "GET" : "POST", cache: "no-store", signal, credentials: "include",
     ...(body === undefined ? {} : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
   });
   if (!response.ok) {
     // Do not display raw provider errors, which may contain credentials or internals.
-    throw new ApiError(response.status === 503 ? "The analysis service is not ready. Please try again later." : `The request failed (HTTP ${response.status}).`, response.status);
+    throw new ApiError(response.status === 503 ? "The analysis service is not ready. Please try again later."
+      : response.status === 401 ? SIGNED_OUT : `The request failed (HTTP ${response.status}).`, response.status);
   }
   try { return await response.json(); }
   catch { throw new ApiError("The backend returned invalid JSON."); }
@@ -167,6 +171,7 @@ export async function getRevision(caseId: string, analysisId: string, signal?: A
 
 function revisionError(status: number): ApiError {
   if (status === 503) return new ApiError("The analysis service is not ready. Please try again later.", 503);
+  if (status === 401) return new ApiError(SIGNED_OUT, 401);
   if (status === 409) return new ApiError("There is no earlier revision that already had this record restored. This revision is unchanged.", 409);
   if (status === 422) return new ApiError("This record cannot be changed from here. It may already be excluded, or it is not part of this case.", 422);
   return new ApiError(`The request failed (HTTP ${status}).`, status);
@@ -177,6 +182,7 @@ async function postRevision(url: string, body: unknown, signal?: AbortSignal): P
     method: "POST",
     cache: "no-store",
     signal,
+    credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
