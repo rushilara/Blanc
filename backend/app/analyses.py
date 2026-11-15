@@ -24,6 +24,10 @@ and saves a copy of that ancestor's findings as a new child of the current revis
 restore is recorded in ``revision_restores`` and shown in the history. If no ancestor ever
 had that evidence state, there is nothing to reuse, and it raises ``NoPriorStateError``
 (the analysis must be rerun instead).
+
+Analyzing (BLA-20). ``run_case_analysis`` retrieves evidence, runs ``analyze_with_retry``,
+and saves through ``save_revision``. A follow-up that names a prior revision inherits that
+revision's exclusions so excluded evidence cannot silently return.
 """
 
 from __future__ import annotations
@@ -37,10 +41,15 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.analysis_llm import AnalysisLLM
+from app.analysis_retry import RevisionMetadata, analyze_with_retry
 from app.contracts import AnalysisRevision
 from app.db import utcnow
+from app.embeddings import Embedder
+from app.evidence_store import list_records
 from app.ids import new_id
 from app.models import AnalysisRevisionRow, Case, EvidenceRecordRow, RevisionRestoreRow
+from app.retrieval import RetrievalConfig, permitted_records, retrieve
 from app.validation import validate_revision
 
 
@@ -322,3 +331,85 @@ def _summary(row: AnalysisRevisionRow, restored_from: str | None = None) -> Revi
         excluded_record_ids=list(row.revision.get("excluded_record_ids", [])),
         restored_from_analysis_id=restored_from,
     )
+
+
+# --- Analyze pipeline (BLA-20) -----------------------------------------------------------
+
+
+MAX_PRIOR_SUMMARY_CHARS = 4_000
+
+
+def prior_analysis_summary(revision: AnalysisRevision) -> str:
+    """Short investigator context from a prior revision (answer + a few claims)."""
+    lines: list[str] = []
+    answer = revision.answer.strip()
+    if answer:
+        lines.append(answer)
+    for claim in revision.claims[:5]:
+        lines.append(f"- {claim.text}")
+    unresolved = [q for q in revision.unresolved_questions if q.strip()][:3]
+    if unresolved:
+        lines.append("Unresolved: " + "; ".join(unresolved))
+    text = "\n".join(lines).strip() or revision.question
+    return text[:MAX_PRIOR_SUMMARY_CHARS]
+
+
+def run_case_analysis(
+    session: Session,
+    case_id: str,
+    question: str,
+    llm: AnalysisLLM,
+    embedder: Embedder,
+    *,
+    retrieval_config: RetrievalConfig | None = None,
+    prior_analysis_id: str | None = None,
+    now: datetime | None = None,
+) -> AnalysisRevision:
+    """Retrieve, analyze with retry, save and return a new immutable revision (BLA-20).
+
+    Optional ``prior_analysis_id`` loads a saved revision of this case: it becomes
+    ``parent_analysis_id``, supplies prompt context tagged as prior analysis (not evidence),
+    and its ``excluded_record_ids`` are inherited so a follow-up cannot silently reintroduce
+    excluded evidence (restoring exclusions is an explicit action, BLA-35).
+
+    Raises ``RevisionNotFoundError`` if the prior is missing or belongs to another case,
+    ``ExcludedRecordLeakError`` if retrieval leaked an exclusion (a server bug), and
+    ``AnalysisLLMError`` on provider failure. Persistence goes through ``save_revision``.
+    """
+    parent_id: str | None = None
+    prior_text: str | None = None
+    excluded: list[str] = []
+    if prior_analysis_id is not None:
+        prior = get_revision(session, case_id, prior_analysis_id)
+        parent_id = prior.analysis_id
+        prior_text = prior_analysis_summary(prior)
+        excluded = list(prior.excluded_record_ids)
+
+    retrieval = retrieve(
+        session,
+        case_id,
+        question,
+        embedder,
+        excluded_record_ids=excluded,
+        config=retrieval_config,
+    )
+    # Defense in depth before the LLM prompt; a leak is a bug upstream.
+    permitted_records(retrieval, excluded)
+
+    moment = now or utcnow()
+    metadata = RevisionMetadata(
+        analysis_id=new_id("analysis"),
+        created_at=moment,
+        parent_analysis_id=parent_id,
+    )
+    records = list_records(session, case_id)
+    result = analyze_with_retry(
+        llm,
+        retrieval,
+        records,
+        metadata,
+        session=session,
+        excluded_record_ids=excluded,
+        prior_analysis=prior_text,
+    )
+    return save_revision(session, result.revision)
