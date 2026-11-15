@@ -18,9 +18,12 @@ stdout; if the import or embedding fails, nothing is written, not even the case.
 
 Text source files are read where they are and are not copied: each record keeps the
 file's path relative to the source root and the file's SHA-256. Image and PDF bytes
-are written under ``{CASES_DIR}/{case_id}/media/`` (see BLA-68). Re-running is safe:
-records already stored are skipped and nothing is embedded twice; unchanged media
-files are not rewritten.
+are copied under ``{CASES_DIR}/{case_id}/media/`` (see BLA-68). Media records have
+empty ``content`` and no chunks until multimodal embedding (BLA-69), so they are not
+searchable yet. Re-running is safe: records already stored are skipped and nothing is
+embedded twice; unchanged media files are not rewritten. If parsing or embedding
+fails, the DB transaction is rolled back and any media files this run newly wrote are
+deleted.
 
 Exits nonzero if any file failed to import or any record was rejected, so a bad import
 is never silent.
@@ -31,6 +34,7 @@ import json
 import sys
 from pathlib import Path
 
+from app.case_media import remove_media_files
 from app.embeddings import Embedder
 from app.evidence.importer import EvidenceImportError, ImportResult, import_path
 
@@ -65,6 +69,8 @@ def _import(args: argparse.Namespace, case_id: str) -> ImportResult | None:
     print(f"Imported {len(result.records)} records from {len(files)} files.", file=sys.stderr)
     for item in result.skipped:
         print(f"skipped: {item.source_file} ({item.reason})", file=sys.stderr)
+    for item in result.warnings:
+        print(f"warning: {item.source_file}: {item.reason}", file=sys.stderr)
     for item in result.errors:
         print(f"error: {item.source_file}: {item.reason}", file=sys.stderr)
     return result
@@ -79,7 +85,8 @@ def _write_out(args: argparse.Namespace, result: ImportResult) -> None:
 
 def _import_and_store(args: argparse.Namespace, embedder: Embedder | None) -> int:
     """Import into the local case DB in one transaction: create the case (``--title``),
-    parse, embed and store, then commit. Any failure rolls everything back."""
+    parse, embed and store, then commit. Any failure rolls everything back and removes
+    media files this run newly wrote."""
     from app.config import get_settings
     from app.db import init_db, make_engine, make_session_factory
     from app.embeddings import EmbeddingError, make_embedder
@@ -89,6 +96,7 @@ def _import_and_store(args: argparse.Namespace, embedder: Embedder | None) -> in
     settings = get_settings()
     url = args.database_url or settings.DATABASE_URL
     engine = make_engine(url)
+    written_media: dict[str, Path] = {}
     try:
         init_db(engine, settings.EMBEDDING_DIM)
         with make_session_factory(engine)() as session:
@@ -110,7 +118,9 @@ def _import_and_store(args: argparse.Namespace, embedder: Embedder | None) -> in
             result = _import(args, case_id)
             if result is None:
                 return 1
+            written_media = result.written_media
             if not result.records:
+                remove_media_files(written_media)
                 print("error: no records to store; nothing was written.", file=sys.stderr)
                 return 1
             try:
@@ -118,8 +128,17 @@ def _import_and_store(args: argparse.Namespace, embedder: Embedder | None) -> in
                     session, case_id, result.records, embedder or make_embedder(settings)
                 )
             except EmbeddingError as error:
+                remove_media_files(written_media)
                 print(f"error: embedding failed; nothing was written: {error}", file=sys.stderr)
                 return 1
+            # Rejected records never landed in SQLite; drop any media this run created for them.
+            remove_media_files(
+                {
+                    record_id: path
+                    for record_id, path in written_media.items()
+                    if any(rejected.record_id == record_id for rejected in stored.rejected)
+                }
+            )
             session.commit()
             total = session.query(EvidenceRecordRow).filter_by(case_id=case_id).count()
             status = session.get(Case, case_id).import_status
@@ -176,7 +195,8 @@ def main(argv: list[str] | None = None, *, embedder: Embedder | None = None) -> 
         "--media-dir",
         type=Path,
         help="Directory for image/PDF bytes (written as {record_id}.ext). With --store, "
-        "defaults to {CASES_DIR}/{case_id}/media.",
+        "defaults to {CASES_DIR}/{case_id}/media. Without --store, omit this to skip "
+        "loose media files (folder import) the way unsupported formats are skipped.",
     )
     parser.add_argument(
         "--txt-mode",

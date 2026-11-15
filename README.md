@@ -69,14 +69,14 @@ Check the backend at http://localhost:8000/health (also shown in the workspace h
 
 ### Load a case
 
-A fresh database has no cases. Import extracted evidence (TXT, JSON, CSV, EML) into the local case database:
+A fresh database has no cases. Import extracted evidence (TXT, JSON, CSV, EML, plus PNG/JPEG/PDF) into the local case database:
 
 ```bash
 make import EVIDENCE=path/to/exports TITLE="Owl case"      # new case; prints its case_id
 make import EVIDENCE=path/to/more CASE=case_01...          # add to an existing case
 ```
 
-This parses the files, embeds the chunks with Gemini and stores everything in the local SQLite file at `DATABASE_URL`; the case shows up as `ready` in the workspace. Original files are read where they are and not copied: each record keeps the file's path (relative to the export folder) and its SHA-256. Re-running is safe; already-stored records are skipped and not re-embedded. If parsing or embedding fails, nothing is written. Options such as `--txt-mode line` go in `IMPORT_ARGS="..."`; see `python -m app.evidence --help` in `backend/`.
+This parses the files, embeds text chunks with Gemini and stores everything in the local SQLite file at `DATABASE_URL`; the case shows up as `ready` in the workspace. Text originals are read where they are and not copied: each record keeps the file's path (relative to the export folder) and its SHA-256. Image and PDF bytes are copied under `CASES_DIR/{case_id}/media/` (default `./data/cases`); those media records have empty `content` and no chunks yet, so they are not searchable until multimodal embedding (BLA-69). Re-running is safe; already-stored records are skipped and not re-embedded. If parsing or embedding fails, the DB write is rolled back and any media files that run newly wrote are deleted. Options such as `--txt-mode line` or `--media-dir` go in `IMPORT_ARGS="..."`; see `python -m app.evidence --help` in `backend/`.
 
 Then open http://localhost:3000, sign in (placeholder until BLA-60), pick the case and ask a question.
 

@@ -47,6 +47,10 @@ RecordTimestampKind = Literal[
     "sent", "received", "created", "modified", "observed", "stated", "unknown"
 ]
 RecordModality = Literal["text", "image", "pdf"]
+MediaContentType = Literal["image/png", "image/jpeg", "application/pdf"]
+MediaPath = Annotated[
+    str, StringConstraints(pattern=r"^media/rec_[0-9a-f]{16}\.(png|jpg|pdf)$")
+]
 TimestampPrecision = Literal["exact", "day", "month", "approximate", "unknown"]
 EventTimestampKind = Literal["observed", "source_stated", "inferred", "unknown"]
 BoardItemKind = Literal["claim", "edge", "node", "event"]
@@ -179,9 +183,19 @@ class EvidenceRecord(ContractModel):
     # Media records (BLA-68): bytes live on disk under the case; these fields describe them.
     # Text records omit them. ``content`` for media is empty until multimodal embedding.
     modality: Omittable[RecordModality] = None
-    media_path: Omittable[NonEmptyStr] = None
-    content_type: Omittable[NonEmptyStr] = None
+    media_path: Omittable[MediaPath] = None
+    content_type: Omittable[MediaContentType] = None
     metadata: Omittable[dict[str, Any]] = None
+
+    @model_validator(mode="after")
+    def _media_fields_required_together(self) -> EvidenceRecord:
+        if self.modality in ("image", "pdf") and (
+            self.media_path is None or self.content_type is None
+        ):
+            raise ValueError(
+                "media_path and content_type are required when modality is image or pdf"
+            )
+        return self
 
 
 # --- AnalysisRevision -----------------------------------------------------------------

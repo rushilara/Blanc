@@ -42,7 +42,7 @@ If it prints `x86_64`, install a native arm64 Python 3.12 (the python.org instal
 
 ## Config
 
-`app/config.py` defines `Settings` (pydantic-settings), loaded from the repo-root `.env`; real environment variables override it. Fields: `GEMINI_API_KEY` (LLM and embeddings), `GEMINI_MODEL`, `EMBEDDING_MODEL` (default `gemini-embedding-001`), `EMBEDDING_DIM` (default 768; the Gemini `output_dimensionality` and the vector index size), `DATABASE_URL`, `CORS_ORIGINS` (comma-separated), and the `RETRIEVAL_*` tuning settings (see "Retrieval" below). Keys are optional, so the app starts without them. Use `get_settings()` to access config.
+`app/config.py` defines `Settings` (pydantic-settings), loaded from the repo-root `.env`; real environment variables override it. Fields: `GEMINI_API_KEY` (LLM and embeddings), `GEMINI_MODEL`, `EMBEDDING_MODEL` (default `gemini-embedding-001`), `EMBEDDING_DIM` (default 768; the Gemini `output_dimensionality` and the vector index size), `DATABASE_URL`, `CASES_DIR` (default `./data/cases`; case-local image/PDF bytes under `{CASES_DIR}/{case_id}/media/`), `CORS_ORIGINS` (comma-separated), and the `RETRIEVAL_*` tuning settings (see "Retrieval" below). Keys are optional, so the app starts without them. Use `get_settings()` to access config.
 
 ## Layout
 
@@ -73,7 +73,7 @@ The DB is opened in the lifespan, not at import. In tests, enter the client (`wi
 
 ## Evidence storage (BLA-12)
 
-From the command line, `python -m app.evidence PATH --store --title "Case title"` (or `--case-id case_...`) imports and stores in one transaction; `make import` wraps it (see the root README). With `--title` the case is created in the same transaction and its `case_id` is printed on stdout, so a failed parse or embedding leaves no empty case behind. `--database-url` overrides `DATABASE_URL`. Without `--store`, the command only parses (`--out records.json`).
+From the command line, `python -m app.evidence PATH --store --title "Case title"` (or `--case-id case_...`) imports and stores in one transaction; `make import` wraps it (see the root README). With `--title` the case is created in the same transaction and its `case_id` is printed on stdout, so a failed parse or embedding leaves no empty case behind (and removes media files that run newly wrote). `--database-url` overrides `DATABASE_URL`. With `--store`, image/PDF bytes go under `{CASES_DIR}/{case_id}/media/` unless you pass `--media-dir`. Without `--store`, the command only parses (`--out records.json`); loose PNG/JPEG/PDF files are skipped unless you pass `--media-dir`. Media records store empty `content` and no chunks until multimodal embedding (BLA-69), so they are not retrieved yet.
 
 The importer (BLA-9) turns files into `EvidenceRecord` objects and calls:
 
