@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import type { AnalysisRevision } from "@/lib/analysis";
+import { TimelineView } from "@/components/TimelineView";
 
 function Pane({ id, title, count, children }: {
   id: string; title: string; count: number; children: ReactNode;
@@ -89,19 +90,7 @@ export function AnalysisWorkspace({ revision }: { revision: AnalysisRevision }) 
           {!revision.graph.edges.length && <p className="text-sm text-zinc-500">No supported relationships.</p>}
         </Pane>
         <Pane id="timeline" title="Timeline" count={revision.timeline_events.length}>
-          <ol className="space-y-5">
-            {revision.timeline_events.map((event) => (
-              <li key={event.id} className="space-y-2 border-l-2 border-zinc-200 pl-3 dark:border-zinc-700">
-                {/* Raw source dates may be approximate. BLA-39 owns normalization. */}
-                <p className="break-words font-mono text-xs">{event.timestamp ?? "Undated"}</p>
-                <p className="text-xs text-zinc-500">{event.timestamp_precision ?? "unknown"} precision · {(event.timestamp_kind ?? "unknown").replaceAll("_", " ")}</p>
-                <p className="text-sm leading-6">{event.description}</p>
-                <Status value={event.status} />
-                <Sources ids={event.evidence_ids} />
-              </li>
-            ))}
-          </ol>
-          {!revision.timeline_events.length && <p className="text-sm text-zinc-500">No supported events.</p>}
+          <TimelineView events={revision.timeline_events} />
         </Pane>
       </div>
       {!!revision.excluded_record_ids.length && (
