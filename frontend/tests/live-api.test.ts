@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import revision from "../../fixtures/synthetic_analysis_revision.json";
 import records from "../../fixtures/synthetic_records.json";
 import comparison from "../../fixtures/synthetic_revision_comparison.json";
-import { analyzeCase, ApiError, excludeRecords, getComparison, getSource, listCases, parseRevision, restoreRecords, searchCase } from "../src/lib/live-api";
+import { analyzeCase, ApiError, askFollowUp, excludeRecords, getComparison, getSource, listCases, parseRevision, restoreRecords, searchCase } from "../src/lib/live-api";
 import type { AnalysisRevision } from "../src/lib/analysis";
 
 const originalFetch = globalThis.fetch;
@@ -115,6 +115,28 @@ test("exclude and restore return the new revision and keep provider text out of 
   await assert.rejects(restoreRecords(revision.case_id, "analysis-1", ["rec-02"]), (error: unknown) => {
     assert.ok(error instanceof ApiError);
     assert.match(error.message, /earlier revision/);
+    assert.doesNotMatch(error.message, /provider secret/);
+    return true;
+  });
+});
+
+test("follow-up posts the question and hides provider text", async () => {
+  let url = "";
+  let body = "";
+  globalThis.fetch = async (input, init) => {
+    url = String(input);
+    body = String(init?.body ?? "");
+    return Response.json({ ...revision, analysis_id: "analysis-2", parent_analysis_id: "analysis-1", question: "What happened next?" });
+  };
+  const child = await askFollowUp(revision.case_id, "analysis-1", "What happened next?", "board-1");
+  assert.equal(child.analysis_id, "analysis-2");
+  assert.equal(child.question, "What happened next?");
+  assert.match(url, /\/analyses\/analysis-1\/follow-up$/);
+  assert.equal(body, JSON.stringify({ question: "What happened next?", board_id: "board-1" }));
+  globalThis.fetch = async () => Response.json({ detail: "provider secret" }, { status: 422 });
+  await assert.rejects(askFollowUp(revision.case_id, "analysis-1", "???"), (error: unknown) => {
+    assert.ok(error instanceof ApiError);
+    assert.match(error.message, /letters or numbers/);
     assert.doesNotMatch(error.message, /provider secret/);
     return true;
   });

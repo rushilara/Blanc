@@ -159,7 +159,7 @@
   position: relative;
   z-index: 3;
   min-width: 0;
-  width: min(calc(100% - 24px), 170px);
+  width: min(calc(100% - 24px), 240px);
   margin-left: min(24px, 12%);
   padding: 0 18px 12px 0;
   border-right: 1px solid #b8ac97;
@@ -167,6 +167,40 @@
 }
 .blanc-case-rail small { display: block; font: 11px/1.5 system-ui, sans-serif; color: #665548; }
 .blanc-case-rail h2 { margin: 4px 0 18px; font-size: 17px; line-height: 1.25; }
+.blanc-case-picker select {
+  width: 100%;
+  margin: 4px 0 14px;
+  padding: 0 0 4px;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid #b8ac97;
+  font: 17px/1.25 Georgia, serif;
+}
+.blanc-history { list-style: none; margin: 0 0 8px; padding: 0; }
+.blanc-history li { margin-bottom: 8px; }
+.blanc-history button {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #822b33;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+  font: 12px/1.35 Georgia, serif;
+}
+.blanc-history button span { text-decoration: underline; text-underline-offset: 2px; }
+.blanc-history button small { display: block; margin-top: 2px; color: #665548; font: 10px/1.3 system-ui, sans-serif; text-decoration: none; }
+.blanc-history button[aria-current="true"] span { font-weight: 700; text-decoration-thickness: 2px; }
+.blanc-history button:disabled { cursor: default; }
+.blanc-entry .blanc-saved { margin: 28px 0 8px; }
+.blanc-entry .blanc-history button { font-size: 15px; }
+.blanc-followup { display: grid; justify-items: start; gap: 8px; }
+.blanc-followup button, .blanc-revision-switch button {
+  width: fit-content;
+}
 .blanc-rail-sources { border-top: 1px solid #b8ac97; padding-top: 10px; }
 .blanc-rail-sources h3 { margin-bottom: 6px; font-size: 12px; }
 .blanc-rail-sources li { margin-bottom: 8px; font-size: 12px; }
@@ -434,8 +468,8 @@
 .blanc-reading p.is-changed, .blanc-comparison li.is-changed, .blanc-map-link.is-changed { margin-left: -10px; padding-left: 8px; border-left: 3px solid #8a5a12; }
 .blanc-possible { display: block; margin-top: 4px; color: #5c4a3a; font: italic 13px/1.4 Georgia, serif; }
 .blanc-revision-switch { margin: 0 0 18px; }
-.blanc-revision-switch button, .blanc-source-actions button { color: #822b33; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; font: 600 13px/1.3 system-ui, sans-serif; }
-.blanc-revision-switch button:disabled, .blanc-source-actions button:disabled { opacity: .45; cursor: default; }
+.blanc-revision-switch button, .blanc-source-actions button, .blanc-followup button { border: 0; background: transparent; padding: 0; color: #822b33; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; font: 600 13px/1.3 system-ui, sans-serif; }
+.blanc-revision-switch button:disabled, .blanc-source-actions button:disabled, .blanc-followup button:disabled { opacity: .45; cursor: default; }
 .blanc-source-actions { margin-top: 18px; padding-top: 14px; border-top: 1px solid #d3c7b2; }
 .blanc-source-actions small { display: block; margin-top: 6px; color: #7a6a5a; font: 12px/1.4 system-ui, sans-serif; }
 .blanc-case-rail li.is-excluded .blanc-rail-toggle > span:nth-child(2) { color: #8a5a12; }
@@ -454,3 +488,54 @@
 .blanc-spatial-list button { display: block; color: #822b33; text-decoration: underline; cursor: pointer; overflow-wrap: anywhere; }
 @media (max-width: 1100px) { .blanc-investigation.has-connections.has-source { grid-template-columns: 150px minmax(0, 1fr); } .has-connections .blanc-source-panel { position: fixed; top: 12px; right: 12px; bottom: 12px; width: min(400px, calc(100vw - 24px)); z-index: 20; max-height: none; } }
 @media (max-width: 700px) { .blanc-investigation.has-connections, .blanc-investigation.has-connections.has-source { grid-template-columns: minmax(0, 1fr); } .blanc-spatial-frame { height: 690px; } }
+
+/* Compact investigations: short display titles, preserved questions in history. */
+.blanc-investigations { min-width: 0; margin-top: 24px; }
+.blanc-investigations-heading { display: flex; gap: 10px; align-items: baseline; margin-bottom: 12px; }
+.blanc-investigations-heading h2 { font: 400 15px Georgia, serif; margin: 0; }
+.blanc-investigations-heading > span { color: #8a7a68; font: 10px Arial, sans-serif; }
+.blanc-investigations-heading > button { margin-left: auto; background: none; border: 0; color: #822b33; cursor: pointer; font: 11px Arial, sans-serif; }
+.blanc-investigations > input { width: 100%; padding: 7px 0; border: 0; border-bottom: 1px solid #b8ac9766; background: none; font: 11px Arial, sans-serif; margin-bottom: 8px; }
+.blanc-investigation-items { list-style: none; margin: 0; padding: 0; }
+.blanc-investigation-items > li { display: flex; align-items: center; gap: 10px; padding: 12px 0; border-bottom: 1px solid #b8ac9755; }
+.blanc-investigation-open { flex: 1; min-width: 0; background: none; border: 0; padding: 0; text-align: left; cursor: pointer; }
+.blanc-investigation-open strong { display: block; font: 400 16px/1.45 Georgia, serif; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.blanc-investigation-open small { display: block; font: 10px/1.6 Arial, sans-serif; color: #8a7a68; margin-top: 4px; }
+.blanc-investigation-history { font: 10px Arial, sans-serif; color: #8a7a68; border: 0; background: none; padding: 6px 0; cursor: pointer; }
+.blanc-investigation-history:hover { color: #822b33; }
+.blanc-investigations-rail .blanc-investigation-items > li { flex-wrap: wrap; gap: 4px; padding: 10px 0 10px 9px; border-left: 2px solid transparent; border-bottom: 0; }
+.blanc-investigations-rail .blanc-investigation-items > li.is-current { border-left-color: #822b33; }
+.blanc-investigations-rail .blanc-investigation-open { flex-basis: 100%; }
+.blanc-investigations-rail .blanc-investigation-open strong { font-size: 14px; }
+.blanc-investigations-rail .is-current strong { color: #822b33; }
+.blanc-nav-empty { font: 11px/1.7 Arial, sans-serif; color: #8a7a68; }
+.blanc-source-disclosure { margin-top: 24px; }
+.blanc-source-disclosure > summary { font: 14px Georgia, serif; cursor: pointer; padding: 8px 0; }
+.blanc-source-disclosure > summary span { font: 10px Arial, sans-serif; color: #8a7a68; margin-left: 8px; }
+.blanc-history-drawer { position: fixed; inset: 0 0 0 auto; margin: 0; width: min(390px, 94vw); max-width: 94vw; height: 100dvh; max-height: 100dvh; padding: 30px 26px; background: #f1e9da; color: #372416; border: 0; border-left: 1px solid #b8ac97; overflow: auto; }
+.blanc-history-drawer::backdrop { background: rgb(55 36 22 / 12%); }
+.blanc-history-close { float: right; background: none; border: 0; cursor: pointer; font: 24px Georgia, serif; }
+.blanc-nav-kicker { font: 10px Arial, sans-serif; letter-spacing: 1px; text-transform: uppercase; color: #8a7a68; }
+.blanc-history-drawer > h2 { font: 400 25px Georgia, serif; margin: 12px 0 16px; }
+.blanc-history-session h3 { font: 12px Arial, sans-serif; margin: 26px 0 10px; }
+.blanc-history-session h3 span { display: block; font-size: 10px; color: #8a7a68; margin-top: 6px; }
+.blanc-history-version { border-top: 1px solid #b8ac9766; padding: 14px 0; }
+.blanc-history-version > button { display: block; width: 100%; background: none; border: 0; text-align: left; padding: 0; cursor: pointer; }
+.blanc-history-version > button span { font: 15px Georgia, serif; }
+.blanc-history-version > button[aria-current] { color: #822b33; }
+.blanc-history-version > button small { display: block; color: #8a7a68; font: 10px/1.7 Arial, sans-serif; margin-top: 5px; }
+.blanc-history-version details { font: 11px/1.7 Georgia, serif; margin-top: 10px; }
+.blanc-history-version summary { color: #8a7a68; cursor: pointer; }
+.blanc-history-version details p { overflow-wrap: anywhere; }
+.blanc-home-case { display: flex; align-items: baseline; gap: 14px; margin: 0 0 14px; }
+.blanc-home-case label { font: 11px Arial, sans-serif; color: #8a7a68; }
+.blanc-home-case select { max-width: calc(100% - 45px); font: 14px Georgia, serif; border: 0; border-bottom: 1px solid #b8ac9777; background: transparent; padding: 7px 24px 7px 0; text-overflow: ellipsis; }
+.blanc-entry .blanc-investigations-recent { margin-top: 32px; }
+.blanc-home-evidence { margin-top: 22px; font: 11px/1.8 Arial, sans-serif; color: #8a7a68; }
+.blanc-home-evidence > summary { cursor: pointer; }
+.blanc-investigation-heading h1 { font: 400 25px/1.25 Georgia, serif; letter-spacing: -.02em; margin: 10px 0; }
+.blanc-original-question { font: 13px/1.7 Georgia, serif; margin-bottom: 20px; }
+.blanc-original-question > summary { font: 10px Arial, sans-serif; color: #8a7a68; cursor: pointer; }
+.blanc-original-question p { margin: 12px 0 0; }
+.blanc-investigations button:disabled { opacity: .5; cursor: default; }
+@media(max-width:600px) { .blanc-entry .blanc-investigation-open strong { font-size: 15px; } .blanc-home-case { gap: 10px; } }

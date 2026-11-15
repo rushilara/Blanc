@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fixture from "../../fixtures/synthetic_analysis_revision.json";
 import sourceFixture from "../../fixtures/synthetic_records.json";
 import { ApiError, getRevision, listRevisions, loadRevisionSources, type RevisionSummary } from "../src/lib/live-api";
-import { investigationRoot } from "../src/lib/revision-history";
+import { investigationRoot, questionChain, questionThread, savedInvestigations } from "../src/lib/revision-history";
 import type { AnalysisRevision } from "../src/lib/analysis";
 const nativeFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = nativeFetch; });
@@ -25,6 +25,11 @@ test("history keeps backend order and separates unrelated roots from sibling ver
   assert.equal(investigationRoot(history, sibling.analysis_id), 'root');
   assert.equal(investigationRoot(history, other.analysis_id), 'other');
   assert.equal(investigationRoot(history, 'missing'), null);
+  assert.deepEqual(questionChain(history, child.analysis_id).map(item => item.analysis_id), ['root', 'child']);
+  assert.deepEqual(questionThread(history, root.analysis_id).map(item => item.analysis_id), ['root', 'sibling', 'child']);
+  assert.deepEqual(savedInvestigations(history).map(item => item.analysis_id), ['other', 'root']);
+  assert.deepEqual(questionChain(history, 'missing'), []);
+  assert.deepEqual(questionThread(history, 'missing'), []);
 });
 
 test("malformed history, missing parents, cycles and duplicate IDs are not displayed", async () => {
