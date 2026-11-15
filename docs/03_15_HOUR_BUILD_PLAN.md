@@ -21,7 +21,7 @@
 | 4–7 | End-to-end first question | Question → hybrid retrieval → structured JSON → cited answer/graph/timeline for one verified case. | Use one LLM pass; skip extra retrieval hops. |
 | 7–10 | Persistent workspace + follow-up | Save/reload a revision, ask follow-up, add new sourced elements to board; original saved version remains intact. | Save snapshots rather than complex automated graph merging. |
 | 10–12.5 | Exclusion and comparison | Exclude record; retrieval and LLM both respect exclusion; show changed/unresolved finding; restore or branch. | Use deterministic changed/unchanged/unsupported diff if LLM comparison is unreliable. |
-| 12.5–15 | QA, second-case check, presentation | Fresh-start **localhost** demo (`make backend` + `make import` + `make frontend` + local Gemini key), verify citations/locators, demonstrate saving and evidence sensitivity. If time permits, load second case unchanged. Do not spend MVP time on cloud-hosting the case DB. | Prefer one truly real, reliable case over two shallow or fabricated ones; optional static landing host only. |
+| 12.5–15 | QA, second-case check, presentation | Fresh-start **localhost** demo (`cp .env.example .env`, set `GEMINI_API_KEY`, `make backend` + `make import` + `make frontend`, open `http://localhost:3000`), verify citations/locators, demonstrate saving and evidence sensitivity. If time permits, load second case unchanged. Do not spend MVP time on cloud-hosting the case DB. | Prefer one truly real, reliable case over two shallow or fabricated ones; optional static landing host only. |
 
 ## Hard priorities under time pressure
 
@@ -31,19 +31,36 @@
 4. Evidence exclusion must rerun retrieval, not only filter an existing answer.
 5. If the case dataset is inaccessible, **switch data source early**, not late.
 
+## Fresh local machine setup (BLA-58)
+
+Runbook detail lives in the root `README.md`. On a clean checkout:
+
+1. `cp .env.example .env` and set `GEMINI_API_KEY` (leave `DATABASE_URL=sqlite:///./data/blanc.db`).
+2. `make backend` and `make frontend` in separate terminals (Python 3.12 + Node 20.12+).
+3. Open `http://localhost:3000` → sign-in landing → `/workspace`. Health: `http://localhost:8000/health`.
+4. `make import EVIDENCE=path/to/exports TITLE="Case name"` (embeds via Gemini into the local DB).
+
+**Accurate today vs still open:** setup, local DB defaults, import, ask-on-`/workspace`, citation open, and auto-persisted revisions (reopen via `/live` → Saved versions) are the demo path. Follow-up and exclude/restore UI on the demo pages are **not** wired yet (backend endpoints exist; exclude control shows “available in a later step”). Do not check those boxes until the UI path works. End-to-end rehearsal and citation audit of the full checklist is **BLA-46**.
+
 ## Demo acceptance checklist
 
+Setup / talk track (local-first + Gemini compute):
+
 - [ ] Demo runs locally (backend + frontend on localhost); case DB and evidence files are on the demo machine, not a hosted volume.
+- [ ] Fresh machine followed `cp .env.example .env` → set `GEMINI_API_KEY` → `make backend` → `make frontend` → open `http://localhost:3000`.
 - [ ] The case is loaded on the demo machine with `make import EVIDENCE=... TITLE=...` and shows as ready in the workspace.
 - [ ] Team can state clearly: Gemini is used for embeddings/LLM (evidence text leaves the machine for those calls); storage is local-first, not fully offline.
+
+Investigative demo (rehearse under BLA-46; leave unchecked until verified on the real case):
+
 - [ ] A case is opened and at least several unrelated records are also indexed.
 - [ ] Investigator asks a question whose answer requires at least two real records.
 - [ ] Retrieved source IDs and locators match actual artifacts.
 - [ ] Every answer claim, graph edge and timeline event opens valid evidence.
-- [ ] Investigator saves the reconstruction; it persists after refresh.
-- [ ] Follow-up question adds at least one sourced item to the saved investigation.
-- [ ] Excluding one pivotal record triggers a fresh retrieval/analysis and changes support appropriately.
-- [ ] The original reconstruction can be restored or compared without losing the work.
+- [ ] Asking on `/workspace` persists a revision in the local DB; after refresh it can be reopened from `/live` → Saved versions (there is no separate Save button).
+- [ ] Follow-up question adds at least one sourced item to the saved investigation. *(Backend: `POST .../follow-up`. Demo UI on `/workspace` still shows a disabled follow-up field.)*
+- [ ] Excluding one pivotal record triggers a fresh retrieval/analysis and changes support appropriately. *(Backend: `POST .../exclude`. Demo UI exclude control is not wired yet.)*
+- [ ] The original reconstruction can be restored or compared without losing the work. *(Backend restore/comparison endpoints exist; demo UI wiring still open.)*
 - [ ] Demo explains limits: simulated case, unsupported formats, imperfect retrieval and no trained forensic model.
 
 ## Two-minute demo narrative

@@ -1,4 +1,7 @@
 # Blanc local dev commands. Run from the repo root.
+# Demo path: cp .env.example .env → set GEMINI_API_KEY → make backend / make frontend
+# → open http://localhost:3000 (local SQLite case DB; Gemini for embed/analyze).
+#   make help      list common targets
 #   make backend   FastAPI on http://localhost:$(BACKEND_PORT) with reload
 #   make frontend  Next.js dev server on http://localhost:3000
 #   make import    store extracted evidence in the local case DB, e.g.
@@ -18,7 +21,16 @@ VENV := backend/.venv
 VENV_PY := $(VENV)/bin/python
 VENV_STAMP := $(VENV)/.installed
 
-.PHONY: backend frontend import test test-backend test-live test-frontend install-backend install-frontend coverage clean
+.PHONY: help backend frontend import test test-backend test-live test-frontend install-backend install-frontend coverage clean
+
+help:
+	@echo "Blanc local-first demo (case DB on this machine; Gemini for embed/analyze)"
+	@echo "  1. cp .env.example .env   # set GEMINI_API_KEY; keep DATABASE_URL local"
+	@echo "  2. make backend           # http://127.0.0.1:$(BACKEND_PORT)  (health: /health)"
+	@echo "  3. make frontend          # http://localhost:3000  (sign-in → /workspace)"
+	@echo "  4. make import EVIDENCE=path/to/exports TITLE=\"Case name\""
+	@echo "Other: make test | test-live | coverage | clean"
+	@echo "If the frontend origin is not http://localhost:3000, set CORS_ORIGINS in .env."
 
 $(VENV_PY):
 	$(PYTHON) -m venv $(VENV)
