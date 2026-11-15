@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.analysis_llm import make_analysis_llm
 from app.config import Settings, get_settings
 from app.db import init_db, make_engine, make_session_factory
 from app.embeddings import make_embedder
@@ -26,6 +27,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.session_factory = make_session_factory(engine)
         # Lazy: no network or key needed until something embeds.
         app.state.embedder = make_embedder(settings)
+        app.state.analysis_llm = make_analysis_llm(settings)
         app.state.retrieval_config = RetrievalConfig.from_settings(settings)
         try:
             yield
