@@ -134,6 +134,24 @@ result.budget_substituted      # a lower-ranked record was included after a budg
 - Retrieval is read-only. An unknown case raises `CaseNotFoundError`; an embedder whose dimension does not match the index raises `EmbeddingIndexMismatchError`.
 - **Debug endpoint.** `POST /cases/{case_id}/search` with `{"question": "...", "limit": 5}` (`limit` optional) returns the `RetrievalResult` as JSON (including `skipped` and `budget_substituted`), for inspecting and tuning retrieval. A question that is empty or has no letters or digits is a 422 (`question must contain at least one letter or digit`); library callers of `retrieve()` get an empty result instead.
 
+## Analysis with retry (BLA-18)
+
+`app/analysis_retry.py` turns retrieved evidence into a storable `AnalysisRevision`, with at most two LLM calls:
+
+```python
+from app.analysis_retry import RevisionMetadata, analyze_with_retry
+result = analyze_with_retry(llm, retrieval, case_records, RevisionMetadata(analysis_id, created_at, parent_analysis_id), session=session)
+result.revision      # always passes validate_revision; save this
+result.needs_review  # True when the revision is a partial result (revision.needs_review)
+result.attempts      # per-attempt detail: schema errors, citation warnings, structural errors
+```
+
+- **Validation.** Schema problems come from parsing the model's output. Source problems come from `sanitize_citations` (#25): citations outside the permitted evidence, dropped findings, and structural errors such as duplicate IDs.
+- **One retry.** If the first answer has any problem, the model is asked once more. The retry prompt is the original prompt, then the previous answer as the model's turn, then a user turn listing every validation error.
+- **Partial fallback.** If the retry also fails, the result is the most recent attempt that could be sanitized into a valid revision. If neither could be, it is an empty revision whose only unresolved question says no analysis could be produced. Either way the revision has `needs_review: true` and `validation_errors`.
+- **`validation_errors` are server-worded counts** (for example "Attempt 1: 2 citations to records outside the permitted evidence were removed."). They never quote IDs or field names the model chose, because the contract says they are never LLM-authored. The full detail is logged (logger `app.analysis_retry`) and kept in `result.attempts`.
+- **Not retried.** A provider failure on the first call is raised (`AnalysisLLMError`). One on the retry falls back to the first attempt's partial result, if it had one. An inconsistent corpus or retrieval set raises `ValueError` before any LLM call.
+
 ## Source records (BLA-59)
 
 The evidence drawer (BLA-40) resolves a citation to its source text with
