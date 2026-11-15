@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { EvidenceRecord } from "@/lib/analysis";
+import { SourceContent } from "@/components/SourceContent";
 
 export function SourceReferences({ ids, caseId, records, autoOpen = false, triggerLabel, hideTriggers = false }: {
   ids: string[];
@@ -50,12 +51,9 @@ export function SourceReferences({ ids, caseId, records, autoOpen = false, trigg
             <dl className="space-y-2 text-sm">
               <dt className="font-semibold">Original file</dt><dd className="break-all">{record.source_file}</dd>
               <dt className="font-semibold">Locator</dt><dd className="break-all">{record.source_locator}</dd>
-              <dt className="font-semibold">Source timestamp</dt><dd className="break-words">{record.timestamp ?? "Not recorded"} · {record.timestamp_kind ?? "unknown"}</dd>
+              <dt className="font-semibold">Source timestamp</dt><dd className="break-words">{record.timestamp ?? "No normalized timestamp"} · {record.timestamp_kind ?? "unknown"}</dd>
             </dl>
-            <div className="space-y-2">
-              <h3 className="text-sm font-semibold">Original excerpt</h3>
-              <blockquote className="whitespace-pre-wrap break-words rounded-lg bg-zinc-100 p-4 text-sm leading-7 dark:bg-zinc-900">{record.content}</blockquote>
-            </div>
+            <SourceContent key={record.record_id} record={record} />
           </div>
         ) : (
           <p role="status" className="text-sm leading-7">This source is unavailable for the current case. Its content cannot be verified here.</p>
