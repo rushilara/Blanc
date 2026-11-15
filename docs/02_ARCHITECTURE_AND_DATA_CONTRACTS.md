@@ -103,7 +103,7 @@ The board stores: user-pinned claim IDs, graph nodes/edges, timeline events, not
 - **Backend:** FastAPI + Pydantic on localhost; SQLite on disk; Gemini for embeddings and LLM analysis.
 - **Retrieval:** sqlite-vec + SQLite FTS5 in the same local DB file; simple weighted rank fusion.
 - **Frontend:** Next.js + React on localhost, talking to the local backend (`NEXT_PUBLIC_API_BASE_URL`); graph library (e.g., React Flow), custom timeline and evidence drawer.
-- **Storage:** Local SQLite for durable evidence metadata/versions; local directory for originals; vector + keyword indexes scoped to case. No cloud evidence store in MVP.
+- **Storage:** Local SQLite for durable evidence metadata/versions; originals stay where the investigator keeps them on disk (imported in place, not copied; each record stores the file's relative path and SHA-256); vector + keyword indexes scoped to case. No cloud evidence store in MVP.
 - **Cloud surface (MVP):** Gemini API for embeddings/LLM; optional static marketing/landing host (no case data). API keys live in the investigator’s local `.env`. Keep the login page; real cloud auth can gate the local app (post-MVP wiring is fine if the hackathon clock is tight).
 - **Deferred:** desktop packaging; optional full cloud deploy of the app; fully offline/local models; production org/RBAC.
 - **No new model training, Neo4j, or heavyweight agent framework required for the prototype.**

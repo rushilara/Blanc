@@ -74,6 +74,8 @@ The DB is opened in the lifespan, not at import. In tests, enter the client (`wi
 
 ## Evidence storage (BLA-12)
 
+From the command line, `python -m app.evidence PATH --store --title "Case title"` (or `--case-id case_...`) imports and stores in one transaction; `make import` wraps it (see the root README). With `--title` the case is created in the same transaction and its `case_id` is printed on stdout, so a failed parse or embedding leaves no empty case behind. `--database-url` overrides `DATABASE_URL`. Without `--store`, the command only parses (`--out records.json`).
+
 The importer (BLA-9) turns files into `EvidenceRecord` objects and calls:
 
 ```python

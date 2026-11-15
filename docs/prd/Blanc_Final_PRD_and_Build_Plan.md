@@ -237,7 +237,7 @@ The board stores: user-pinned claim IDs, graph nodes/edges, timeline events, not
 - **Backend:** FastAPI + Pydantic on localhost; local SQLite; Gemini for embeddings and LLM analysis.
 - **Retrieval:** sqlite-vec + SQLite FTS5; start with simple weighted rank fusion.
 - **Frontend:** Next.js + React, a graph library (e.g., React Flow), custom timeline and evidence drawer.
-- **Storage:** Local SQLite for durable evidence metadata/versions; local upload directory for originals; vector index scoped to case. No hosted case DB in MVP.
+- **Storage:** Local SQLite for durable evidence metadata/versions; originals stay on local disk where the investigator keeps them (imported in place, not copied; each record stores the file's relative path and SHA-256); vector index scoped to case. No hosted case DB in MVP.
 - **No new model training, Neo4j, or heavyweight agent framework required for the prototype.**
 
 ### 9. What can go wrong and the mitigation
