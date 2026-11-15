@@ -12,6 +12,11 @@ Batching note for embedding-2: a bare ``contents=[...]`` list of strings or Part
 collapse to **one** aggregated vector. Text batches are sent as one ``Content`` per item
 so each input still gets its own vector. Media is embedded one item per request (PDF
 limit is one file; multiple Parts also aggregate).
+
+``task_type`` note: embedding-2 ignores ``RETRIEVAL_DOCUMENT`` / ``RETRIEVAL_QUERY``, so
+query and document vectors are currently symmetric. Owl / keyword baseline / "want more
+evidence?" numbers measured on ``gemini-embedding-001`` (or any asymmetric setup) must be
+re-run after this switch before quoting them.
 """
 
 from __future__ import annotations
@@ -60,14 +65,17 @@ GEMINI_MAX_BATCH = 100
 class GeminiEmbedder:
     """Embeddings from the Gemini API via ``google-genai``.
 
-    Uses task type ``RETRIEVAL_DOCUMENT`` for chunks and ``RETRIEVAL_QUERY`` for queries,
-    and always requests ``output_dimensionality=dim`` (required for embedding-2, whose
-    native default is 3072). Text inputs are sent in batches of ``batch_size``, each
-    wrapped as its own ``Content`` so embedding-2 returns one vector per text. Media is
-    embedded one call at a time (PDFs truncated to Gemini's page limit first). Rate limits
-    (429) and transient server errors (408/5xx) are retried by the SDK with exponential
-    backoff (``max_attempts`` attempts per request). The client is created lazily, so
-    constructing this without an API key is fine until it is used.
+    Still passes ``RETRIEVAL_DOCUMENT`` / ``RETRIEVAL_QUERY`` in config, but
+    ``gemini-embedding-2`` does **not** honour ``task_type`` (Google docs): queries and
+    documents are embedded the same way today. A query-side task prefix for text is a
+    later option; do not invent one for multimodal Parts. Always requests
+    ``output_dimensionality=dim`` (embedding-2's native default is 3072). Text inputs are
+    sent in batches of ``batch_size``, each wrapped as its own ``Content`` so embedding-2
+    returns one vector per text. Media is embedded one call at a time (PDFs truncated to
+    Gemini's page limit first). Rate limits (429) and transient server errors (408/5xx)
+    are retried by the SDK with exponential backoff (``max_attempts`` attempts per
+    request). The client is created lazily, so constructing this without an API key is
+    fine until it is used.
     """
 
     def __init__(
