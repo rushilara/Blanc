@@ -36,15 +36,18 @@ type Remote =
  * provenance, and the raw record. A record that was not preloaded is fetched through
  * the case-scoped record endpoint, like the shared drawer does.
  */
-export function SourcePanel({ caseId, recordId, number, total, records, excluded, onClose, onStep }: {
+export function SourcePanel({ caseId, recordId, number, total, records, excluded, busy, onClose, onStep, onExclude, onRestore }: {
   caseId: string;
   recordId: string;
   number: number;
   total: number;
   records: EvidenceRecord[];
   excluded: boolean;
+  busy?: boolean;
   onClose: () => void;
   onStep: (direction: -1 | 1) => void;
+  onExclude?: () => void;
+  onRestore?: () => void;
 }) {
   const preloaded = records.find(item => item.case_id === caseId && item.record_id === recordId);
   const [remote, setRemote] = useState<Remote>({ status: "loading" });
@@ -152,6 +155,12 @@ export function SourcePanel({ caseId, recordId, number, total, records, excluded
       </details>}
       {view && <p className="blanc-source-note">Readable fields are extracted from the original record; the raw record is unchanged.</p>}
     </>}
+    {(onExclude || onRestore) && <div className="blanc-source-actions">
+      {excluded
+        ? <button type="button" onClick={onRestore} disabled={busy || !onRestore}>Restore this record</button>
+        : <button type="button" onClick={onExclude} disabled={busy || !onExclude}>Exclude from this analysis</button>}
+      <small>{busy ? "Saving a new revision…" : "The record stays in the case. This saves a new revision and leaves the current one in place."}</small>
+    </div>}
   </aside>;
 }
 

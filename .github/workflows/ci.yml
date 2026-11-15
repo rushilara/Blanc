@@ -154,3 +154,24 @@ jobs:
       - name: Tests
         if: steps.detect.outputs.present == 'true'
         run: npm test --if-present
+
+  # BLA-61: the optional hosted backend image builds, starts, and keeps evidence out.
+  backend-image:
+    name: Backend image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: docker build -t blanc-backend backend
+      - name: No evidence, databases or secrets in the image
+        run: |
+          docker run --rm --entrypoint sh blanc-backend -c \
+            'test ! -e /srv/blanc/data && test ! -e /srv/blanc/.env && test ! -e /srv/blanc/tests && ! find /srv/blanc -name "*.db" | grep -q .'
+      - name: Starts and answers /health with data on a mounted volume
+        run: |
+          docker run -d --name blanc -p 8000:8000 -v blanc-data:/data blanc-backend
+          for i in $(seq 30); do curl -fsS http://127.0.0.1:8000/health && break; sleep 2; done
+          curl -fsS http://127.0.0.1:8000/health
+          curl -fsS -X POST http://127.0.0.1:8000/cases -H 'Content-Type: application/json' -d '{"title":"Image check"}'
+          docker exec blanc test -f /data/blanc.db
+          docker logs blanc | tail -20
