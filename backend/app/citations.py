@@ -15,6 +15,10 @@ Policy: strip, don't reject.
 - A node that cited only invalid records is dropped when no surviving edge references it;
   a node still referenced by an edge is kept, with ``evidence_ids`` omitted. Nodes that
   never cited anything are left alone.
+- The free-text ``answer`` is never rewritten, but it may rest on findings that were just
+  dropped. Whenever a claim, edge or event is dropped, ``dropped_findings`` counts it
+  (``answer_needs_review`` is then true, for the caller to mark the revision for review)
+  and one note in ``unresolved_questions`` says the answer may overstate the evidence.
 - Problems stripping cannot fix (duplicate or cross-case corpus records, retrieved IDs
   outside the corpus or also excluded, duplicate item IDs, invented exact timestamps) are
   returned as errors, using the same messages as ``validate_revision``.
@@ -35,11 +39,15 @@ from dataclasses import dataclass, field
 from app.contracts import AnalysisRevision, Claim, EvidenceRecord, GraphEdge, TimelineEvent
 from app.validation import case_record_ids, permitted_evidence_ids, revision_integrity_errors
 
-__all__ = ["SanitizeResult", "sanitize_citations"]
+__all__ = ["ANSWER_REVIEW_NOTE", "SanitizeResult", "sanitize_citations"]
 
 _QUOTE_LIMIT = 80
 # How each kind is named in investigator-facing notes.
 _NOTE_NOUN = {"claim": "claim", "edge": "relationship", "event": "timeline event"}
+ANSWER_REVIEW_NOTE = (
+    "Some findings behind this answer were removed because no permitted evidence supports "
+    "them; the answer may overstate what the evidence shows."
+)
 
 
 @dataclass(frozen=True)
@@ -52,6 +60,13 @@ class SanitizeResult:
     warnings: list[str] = field(default_factory=list)
     # Problems stripping cannot repair. Non-empty means the revision needs review.
     errors: list[str] = field(default_factory=list)
+    # Claims, edges and events dropped for lack of permitted support or a missing node.
+    dropped_findings: int = 0
+
+    @property
+    def answer_needs_review(self) -> bool:
+        """The unchanged ``answer`` may assert something whose support was removed."""
+        return self.dropped_findings > 0
 
 
 def _fmt(ids: Sequence[str]) -> str:
@@ -74,6 +89,7 @@ class _Sanitizer:
         self.excluded = set(analysis.excluded_record_ids)
         self.warnings: list[str] = []
         self.notes: list[str] = []
+        self.dropped = 0
 
     def strip(self, label: str, cited: Sequence[str]) -> tuple[list[str], bool]:
         """Return the permitted IDs of ``cited`` and whether any cited ID was excluded."""
@@ -99,6 +115,9 @@ class _Sanitizer:
             text = f"A {what} was removed because no permitted evidence supports it."
         else:
             text = f"{what.capitalize()} {quoted} was removed: no permitted evidence supports it."
+        self.add_note(text)
+
+    def add_note(self, text: str) -> None:
         if text not in self.notes and text not in self.analysis.unresolved_questions:
             self.notes.append(text)
 
@@ -114,6 +133,7 @@ class _Sanitizer:
                 out.append(item.model_copy(update={"evidence_ids": kept}))
                 continue
             self.warnings.append(f"{label} dropped: no permitted evidence left")
+            self.dropped += 1
             self.note(kind, None if cited_excluded else describe.get(item.id))
         return out
 
@@ -138,6 +158,7 @@ class _Sanitizer:
                 self.warnings.append(
                     f"edge {edge.id} dropped: references unknown graph nodes {_fmt(missing)}"
                 )
+                self.dropped += 1
             else:
                 connected.append(edge)
         referenced = {end for edge in connected for end in (edge.source, edge.target)}
@@ -156,6 +177,13 @@ class _Sanitizer:
                 self.warnings.append(
                     f"node {node.id} dropped: no permitted evidence and no supported edges"
                 )
+
+        if self.dropped:
+            self.warnings.append(
+                f"answer needs review: {self.dropped} supporting finding(s) were dropped"
+            )
+            if ANSWER_REVIEW_NOTE not in analysis.unresolved_questions:
+                self.notes.insert(0, ANSWER_REVIEW_NOTE)  # summary before per-item notes
 
         graph = analysis.graph.model_copy(update={"nodes": nodes, "edges": connected})
         return analysis.model_copy(
@@ -189,4 +217,9 @@ def sanitize_citations(
     sanitizer = _Sanitizer(records, analysis)
     cleaned = sanitizer.run()
     errors = revision_integrity_errors(records, analysis)
-    return SanitizeResult(analysis=cleaned, warnings=sanitizer.warnings, errors=errors)
+    return SanitizeResult(
+        analysis=cleaned,
+        warnings=sanitizer.warnings,
+        errors=errors,
+        dropped_findings=sanitizer.dropped,
+    )

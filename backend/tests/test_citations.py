@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from app.citations import SanitizeResult, sanitize_citations
+from app.citations import ANSWER_REVIEW_NOTE, SanitizeResult, sanitize_citations
 from app.contracts import AnalysisRevision, EvidenceRecord
 from app.validation import schema_errors, validate_revision
 
@@ -93,7 +93,7 @@ class TestFabricatedIds:
         note = result.analysis.unresolved_questions[-1]
         assert "Alex communicated with Jordan" in note
         assert "rec-fabricated" not in note
-        assert len(result.analysis.unresolved_questions) == 2
+        assert result.analysis.unresolved_questions[1:] == [ANSWER_REVIEW_NOTE, note]
 
     def test_zero_support_drops_event_and_adds_note(self, raw: Raw) -> None:
         raw["revision"]["timeline_events"][1]["evidence_ids"] = ["rec-made-up"]
@@ -131,7 +131,7 @@ class TestFabricatedIds:
         for claim in raw["revision"]["claims"]:
             claim.update(text=long_text, evidence_ids=["rec-fabricated"])
         _, result = sanitize(raw)
-        notes = result.analysis.unresolved_questions[1:]
+        notes = result.analysis.unresolved_questions[2:]
         assert len(notes) == 1
         assert "…" in notes[0] and len(notes[0]) < 160
 
@@ -204,6 +204,7 @@ class TestExcluded:
         assert_warning(result.warnings, "claim claim-2", "excluded", "rec-02")
         new_notes = out.unresolved_questions[1:]
         assert new_notes == [
+            ANSWER_REVIEW_NOTE,
             "A claim was removed because no permitted evidence supports it.",
             "A relationship was removed because no permitted evidence supports it.",
         ]
@@ -225,7 +226,8 @@ class TestNotRetrieved:
         assert ids(out.graph.nodes) == ["alex", "jordan"]
         assert out.graph.nodes[1].evidence_ids == ["rec-01"]
         assert_warning(result.warnings, "claim claim-2", "not retrieved", "rec-02")
-        assert "Jordan discussed a possible meeting" in out.unresolved_questions[1]
+        assert out.unresolved_questions[1] == ANSWER_REVIEW_NOTE
+        assert "Jordan discussed a possible meeting" in out.unresolved_questions[2]
         assert result.errors == []
 
 
@@ -316,3 +318,53 @@ class TestUnrepairable:
         assert_warning(result.errors, "duplicate claim IDs", "claim-1")
         assert_warning(result.errors, "event event-1", "exact")
         assert result.warnings == []
+
+
+class TestAnswerReview:
+    def test_all_findings_dropped_flags_answer(self, raw: Raw) -> None:
+        rev = raw["revision"]
+        for item in [*rev["claims"], *rev["graph"]["edges"], *rev["timeline_events"]]:
+            item["evidence_ids"] = ["zzz"]
+        analysis, result = sanitize(raw)
+        out = result.analysis
+        assert out.claims == [] and out.graph.edges == [] and out.timeline_events == []
+        assert out.answer == analysis.answer  # flagged, never rewritten
+        assert result.dropped_findings == 6
+        assert result.answer_needs_review
+        assert out.unresolved_questions.count(ANSWER_REVIEW_NOTE) == 1
+        assert_warning(result.warnings, "answer needs review", "6")
+        assert result.errors == []
+
+    def test_kept_findings_do_not_flag_answer(self, raw: Raw) -> None:
+        raw["revision"]["claims"][0]["evidence_ids"] = ["rec-fabricated", "rec-01"]
+        _, result = sanitize(raw)
+        assert result.dropped_findings == 0
+        assert not result.answer_needs_review
+        assert ANSWER_REVIEW_NOTE not in result.analysis.unresolved_questions
+
+    @pytest.mark.parametrize("key", ["revision", "child"])
+    def test_valid_revision_is_not_flagged(self, raw: Raw, key: str) -> None:
+        _, result = sanitize(raw, key)
+        assert result.dropped_findings == 0
+        assert not result.answer_needs_review
+
+    def test_dangling_edge_counts_as_dropped_finding(self, raw: Raw) -> None:
+        raw["revision"]["graph"]["edges"][1]["target"] = "nobody"
+        _, result = sanitize(raw)
+        assert result.dropped_findings == 1
+        assert result.answer_needs_review
+        assert ANSWER_REVIEW_NOTE in result.analysis.unresolved_questions
+
+    def test_note_does_not_leak_exclusions(self, raw: Raw) -> None:
+        raw["child"]["claims"][0]["evidence_ids"] = ["rec-02"]
+        _, result = sanitize(raw, "child")
+        assert result.answer_needs_review
+        for word in ("rec-", "Casey", "meeting", EXCLUDED_CONTENT):
+            assert word not in ANSWER_REVIEW_NOTE
+
+    def test_note_not_repeated_on_resanitize(self, raw: Raw) -> None:
+        raw["revision"]["claims"][0]["evidence_ids"] = ["zzz"]
+        _, first = sanitize(raw)
+        second = sanitize_citations(records_of(raw), first.analysis)
+        assert second.dropped_findings == 0
+        assert second.analysis.unresolved_questions.count(ANSWER_REVIEW_NOTE) == 1
