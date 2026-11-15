@@ -248,13 +248,13 @@ def test_every_record_carries_the_source_file_hash(tmp_path: Path) -> None:
 
 
 def test_unsupported_format_is_a_clear_error_for_a_single_file(tmp_path: Path) -> None:
-    path = write(tmp_path, "scan.pdf", "%PDF-1.7")
-    with pytest.raises(UnsupportedFormatError, match=r"Unsupported format \.pdf"):
+    path = write(tmp_path, "notes.docx", "not a word doc")
+    with pytest.raises(UnsupportedFormatError, match=r"Unsupported format \.docx"):
         import_file(path, "case-a", source_root=tmp_path)
     # Passed directly to import_path it is still an error, never a silent skip.
     result = import_path(path, "case-a", source_root=tmp_path)
     assert result.records == [] and result.skipped == []
-    assert [p.source_file for p in result.errors] == ["scan.pdf"]
+    assert [p.source_file for p in result.errors] == ["notes.docx"]
 
 
 def test_empty_case_id_is_rejected(tmp_path: Path) -> None:
@@ -275,7 +275,7 @@ def test_folder_import_keeps_good_files_and_reports_the_rest(tmp_path: Path) -> 
     write(tmp_path, "chats/chat.json", json.dumps([{"text": "hello"}]))
     write(tmp_path, "notes.txt", "a note\n")
     write(tmp_path, "broken.json", '{"text": "unterminated')
-    write(tmp_path, "scan.pdf", "%PDF-1.7")
+    write(tmp_path, "notes.docx", "not supported")
     write(tmp_path, "photo", "no extension")
 
     result = import_path(tmp_path, "case-a")
@@ -285,8 +285,8 @@ def test_folder_import_keeps_good_files_and_reports_the_rest(tmp_path: Path) -> 
     assert "not valid JSON" in result.errors[0].reason
     # Formats the importer does not handle are skipped in a folder, not failures.
     assert {p.source_file: p.reason for p in result.skipped} == {
+        "notes.docx": "unsupported format .docx",
         "photo": "unsupported format (no extension)",
-        "scan.pdf": "unsupported format .pdf",
     }
 
 
@@ -427,7 +427,7 @@ def test_folder_import_strict_raises_on_first_failure(tmp_path: Path) -> None:
 def test_cli_writes_records_and_fails_loudly_on_bad_files(tmp_path: Path) -> None:
     source = tmp_path / "exports"
     write(source, "chat.json", json.dumps([{"text": "hello"}]))
-    write(source, "scan.pdf", "%PDF-1.7")
+    write(source, "notes.docx", "not supported")
     out = tmp_path / "out" / "records.json"
 
     # An unsupported file in a folder is skipped, so a real export folder still exits 0.

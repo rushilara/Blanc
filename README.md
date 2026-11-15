@@ -77,14 +77,14 @@ If `python3.12` is not on your PATH: `make backend PYTHON=/path/to/python3.12`. 
 
 ### Load a case
 
-A fresh database has no cases. Import **only the extracted evidence folder** (TXT, JSON, CSV, EML)—keep the case brief, teacher guides, solutions, and evaluation question sets elsewhere so they never enter the searchable corpus (needs `GEMINI_API_KEY` to embed):
+A fresh database has no cases. Import **only the extracted evidence folder** (TXT, JSON, CSV, EML, plus PNG/JPEG/PDF)—keep the case brief, teacher guides, solutions, and evaluation question sets elsewhere so they never enter the searchable corpus (needs `GEMINI_API_KEY` to embed):
 
 ```bash
 make import EVIDENCE=path/to/exports TITLE="Owl case"      # new case; prints its case_id
 make import EVIDENCE=path/to/more CASE=case_01...          # add to an existing case
 ```
 
-This parses the files, embeds text chunks with Gemini and stores everything in the local SQLite file at `DATABASE_URL`; the case shows up as `ready` in the workspace. Original files are read where they are and not copied: each record keeps the file's path (relative to the export folder) and its SHA-256. Re-running is safe; already-stored records are skipped and not re-embedded. If parsing or embedding fails, nothing is written. Options such as `--txt-mode line` go in `IMPORT_ARGS="..."`; see `python -m app.evidence --help` in `backend/`.
+This parses the files, embeds text chunks with Gemini and stores everything in the local SQLite file at `DATABASE_URL`; the case shows up as `ready` in the workspace. Text originals are read where they are and not copied: each record keeps the file's path (relative to the export folder) and its SHA-256. Image and PDF bytes are copied under `CASES_DIR/{case_id}/media/` (default `./data/cases`); those media records have empty `content` and no chunks yet, so they are not searchable until multimodal embedding (BLA-69). Re-running is safe; already-stored records are skipped and not re-embedded. If parsing or embedding fails, the DB write is rolled back and any media files that run newly wrote are deleted. Options such as `--txt-mode line` or `--media-dir` go in `IMPORT_ARGS="..."`; see `python -m app.evidence --help` in `backend/`.
 
 Then in `/workspace`, pick the case and ask a question. Each successful ask persists an analysis revision in the local DB (reopen saved versions from `/live` → **Saved versions**). Follow-up and evidence-exclusion controls in the demo UI are not wired yet; the backend endpoints exist (see `docs/03_15_HOUR_BUILD_PLAN.md` and BLA-46).
 

@@ -7,6 +7,9 @@ export type EvidenceRecord = {
   content: string;
   timestamp?: string | null;
   timestamp_kind?: string;
+  modality?: "text" | "image" | "pdf";
+  media_path?: string;
+  content_type?: string;
 };
 type SupportedStatus = "observed" | "reported" | "inferred";
 type ClaimStatus = SupportedStatus | "unresolved";

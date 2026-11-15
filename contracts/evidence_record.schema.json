@@ -54,8 +54,51 @@
         "null"
       ]
     },
+    "modality": {
+      "type": "string",
+      "enum": [
+        "text",
+        "image",
+        "pdf"
+      ]
+    },
+    "media_path": {
+      "type": "string",
+      "pattern": "^media/rec_[0-9a-f]{16}\\.(png|jpg|pdf)$"
+    },
+    "content_type": {
+      "type": "string",
+      "enum": [
+        "image/png",
+        "image/jpeg",
+        "application/pdf"
+      ]
+    },
     "metadata": {
       "type": "object"
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "modality": {
+            "enum": [
+              "image",
+              "pdf"
+            ]
+          }
+        },
+        "required": [
+          "modality"
+        ]
+      },
+      "then": {
+        "required": [
+          "media_path",
+          "content_type"
+        ]
+      }
+    }
+  ]
 }

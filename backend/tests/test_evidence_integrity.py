@@ -19,7 +19,9 @@ def make_corpus(tmp_path: Path) -> tuple[Path, list[dict]]:
     )
     (source / "notes.txt").write_text("a note\n", encoding="utf-8")
     result = import_path(source, "case-a", strict=True)
-    return source, [record.model_dump() for record in result.records]
+    # to_contract_json omits unset media fields; plain model_dump writes them as null
+    # and EvidenceRecord rejects null for omittable fields on reload.
+    return source, [record.to_contract_json() for record in result.records]
 
 
 def kinds(issues: list) -> list[str]:
