@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
+import sqlite_vec
 from sqlalchemy import Engine, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
@@ -21,17 +22,26 @@ from app.evidence_store import (
     store_records,
 )
 from app.models import Case
-from app.retrieval import RetrievalConfig, fuse, retrieve, rrf_term
+from app.retrieval import (
+    ExcludedRecordLeakError,
+    RetrievalConfig,
+    fuse,
+    permitted_records,
+    retrieve,
+    rrf_term,
+)
 from app.search_index import (
     FTS_TABLE,
     FTS_TOKENIZE,
     MAX_FTS_TERMS,
+    VEC_MAX_EXCLUSION_CONSTRAINTS,
     VEC_TABLE,
     KeywordHit,
     VectorHit,
     keyword_index_tokenizer,
     keyword_search,
     to_fts_query,
+    vector_search,
 )
 
 K = 60
@@ -526,6 +536,188 @@ def test_excluded_records_are_never_returned(session, cases, embedder):
     assert len(result.records) == 4
     # Nothing is removed from the corpus.
     assert "rec-chat" in ids(retrieve(session, a, question, embedder))
+
+
+# --- Record exclusion (BLA-14) ----------------------------------------------------------
+
+FERRY_BIG = long_text("bravo", inserts={i: "ferry" for i in range(0, 1200, 25)})
+
+
+@pytest.fixture
+def crowded(session: Session, embedder: MappedEmbedder) -> str:
+    """A case where one long record crowds both indexes: its many chunks are the best
+    "ferry" keyword hits, and ``centroid`` (below) puts them nearest in vector space."""
+    case = Case(title="Crowded")
+    session.add(case)
+    session.flush()
+    records = [record(case.case_id, "rec-big", FERRY_BIG)] + [
+        record(case.case_id, f"rec-{i:02d}", f"On day {i} the ferry was late. " + LONG_A[:400])
+        for i in range(20)
+    ]
+    store_records(session, case.case_id, records, embedder)
+    session.commit()
+    return case.case_id
+
+
+def centroid(embedder: FakeEmbedder, texts: list[str]) -> list[float]:
+    """A query vector closer to each of ``texts`` than to any unrelated (near-orthogonal)
+    fake vector."""
+    total = [sum(xs) for xs in zip(*(embedder.vector(t) for t in texts), strict=True)]
+    norm = sum(x * x for x in total) ** 0.5
+    return [x / norm for x in total]
+
+
+def test_vec0_applies_ne_inside_the_knn_but_not_in_after_it(session, crowded, embedder):
+    """Pins the sqlite-vec 0.1.9 behaviour ``vector_search`` relies on (see search_index)."""
+    big = list_chunks(session, crowded, "rec-big")
+    params = {
+        "query": sqlite_vec.serialize_float32(centroid(embedder, [c.text for c in big])),
+        "k": 5,
+        "case_id": crowded,
+    }
+    knn = (
+        f"SELECT record_id FROM {VEC_TABLE} WHERE embedding MATCH :query AND k = :k "
+        "AND case_id = :case_id"
+    )
+
+    def records(sql: str, **extra: str) -> list[str]:
+        return [r[0] for r in session.execute(text(sql), params | extra)]
+
+    assert records(knn) == ["rec-big"] * 5
+    ne = records(knn + " AND record_id != :ex", ex="rec-big")
+    assert len(ne) == 5 and "rec-big" not in ne  # inside the KNN: k filled
+    assert records(knn + " AND record_id NOT IN (:ex)", ex="rec-big") == []  # filtered after
+
+    n = VEC_MAX_EXCLUSION_CONSTRAINTS
+    chain = {f"ex{i}": f"rec-{i:02d}" for i in range(n + 1)}
+    assert len(records(knn + "".join(f" AND record_id != :{p}" for p in list(chain)[:n]),
+                       **chain)) == 5
+    with pytest.raises(OperationalError, match="unable to use function MATCH"):
+        records(knn + "".join(f" AND record_id != :{p}" for p in chain), **chain)
+
+
+def test_every_chunk_of_an_excluded_multi_chunk_record_is_gone(session, cases, embedder):
+    a, _ = cases
+    chunks = list_chunks(session, a, "rec-long")
+    assert len(chunks) > 3
+    query = centroid(embedder, [c.text for c in chunks])
+    total = len(list_chunks(session, a))
+
+    vector = vector_search(session, a, query, k=total, excluded_record_ids={"rec-long"})
+    assert len(vector) == total - len(chunks)
+    assert all(h.record_id != "rec-long" for h in vector)
+    assert keyword_search(session, a, '"harbour"', excluded_record_ids=["rec-long"]) == []
+
+    result = retrieve(session, a, "harbour", embedder, excluded_record_ids=["rec-long"])
+    assert "rec-long" not in ids(result)
+    assert "rec-long" not in {s.record_id for s in result.skipped}
+    assert result.keyword_candidates == 0
+    chunk_ids = {c.chunk_id for c in chunks}
+    assert not any(set(e.chunk_ids) & chunk_ids for r in result.records for e in r.excerpts)
+
+
+@pytest.mark.parametrize("extra_excluded", [0, VEC_MAX_EXCLUSION_CONSTRAINTS])
+def test_k_is_filled_with_permitted_chunks(session, crowded, embedder, extra_excluded):
+    """The excluded record holds the top candidates of both indexes; the ``k`` slots still go
+    to the best permitted chunks. ``extra_excluded`` pushes the vector search past the
+    ``!=`` constraint limit, onto its over-fetch path."""
+    excluded = {"rec-big"} | {f"rec-{i:02d}" for i in range(extra_excluded)}
+    big = list_chunks(session, crowded, "rec-big")
+    query = centroid(embedder, [c.text for c in big])
+    k = 5
+    all_vector = vector_search(session, crowded, query, k=len(list_chunks(session, crowded)))
+    all_keyword = keyword_search(session, crowded, '"ferry"', k=1000)
+    assert {h.record_id for h in all_vector[:k]} == {"rec-big"}  # old post-filter: 0 left
+    assert {h.record_id for h in all_keyword[:k]} == {"rec-big"}
+
+    vector = vector_search(session, crowded, query, k=k, excluded_record_ids=excluded)
+    keyword = keyword_search(session, crowded, '"ferry"', k=k, excluded_record_ids=excluded)
+    assert vector == [h for h in all_vector if h.record_id not in excluded][:k]
+    assert keyword == [h for h in all_keyword if h.record_id not in excluded][:k]
+    assert len(vector) == len(keyword) == k
+
+    question = "When was the ferry late?"
+    embedder.queries[question] = big[0].text
+    config = RetrievalConfig(vector_candidates=k, keyword_candidates=k)
+    result = retrieve(session, crowded, question, embedder, excluded_record_ids=excluded,
+                      config=config)
+    assert (result.vector_candidates, result.keyword_candidates) == (k, k)
+    assert result.records and not excluded & set(ids(result))
+    assert result.excluded_record_ids == sorted(excluded)
+
+
+def test_exclusion_never_crosses_cases(session, cases, embedder):
+    a, b = cases
+    # Excluding rec-email in A leaves B's record of the same ID alone, and vice versa.
+    b_result = retrieve(session, b, "zeppelin", embedder, excluded_record_ids=[])
+    assert ids(b_result) == ["rec-email"]
+    a_result = retrieve(session, a, "zeppelin warehouse document", embedder,
+                        excluded_record_ids=["rec-email"])
+    assert "rec-email" not in ids(a_result)
+    assert ids(retrieve(session, b, "zeppelin", embedder)) == ["rec-email"]
+    excluded_in_b = retrieve(session, b, "zeppelin", embedder, excluded_record_ids=["rec-email"])
+    assert excluded_in_b.records == []
+    # Exclusions do not widen the search: A never sees B's chunks.
+    a_chunks = {c.chunk_id for c in list_chunks(session, a)}
+    query = embedder.vector(EMAIL_B)
+    hits = vector_search(session, a, query, k=100, excluded_record_ids=["rec-email"])
+    assert hits and {h.chunk_id for h in hits} <= a_chunks
+    many = {f"rec-x{i}" for i in range(VEC_MAX_EXCLUSION_CONSTRAINTS + 1)} | {"rec-email"}
+    hits = vector_search(session, a, query, k=100, excluded_record_ids=many)
+    assert hits and {h.chunk_id for h in hits} <= a_chunks
+    assert all(h.record_id != "rec-email" for h in hits)
+
+
+def test_excluded_records_stay_in_the_corpus_and_indexes(session, cases, embedder):
+    a, _ = cases
+
+    def snapshot():
+        counts = tuple(
+            session.execute(text(f"SELECT count(*) FROM {t}")).scalar_one()
+            for t in ("evidence_records", "evidence_chunks", VEC_TABLE, FTS_TABLE)
+        )
+        return counts, [r.to_contract_json() for r in list_records(session, a)], [
+            (c.chunk_id, c.text) for c in list_chunks(session, a, "rec-long")
+        ]
+
+    before = snapshot()
+    many = {"rec-long"} | {f"rec-x{i}" for i in range(VEC_MAX_EXCLUSION_CONSTRAINTS + 1)}
+    for excluded in ({"rec-long"}, many):
+        retrieve(session, a, "harbour", embedder, excluded_record_ids=excluded)
+        session.commit()
+    assert snapshot() == before
+    # Still searchable once no longer excluded.
+    assert by_id(retrieve(session, a, "harbour", embedder), "rec-long").matched_by == "both"
+    assert {h.record_id for h in keyword_search(session, a, '"harbour"')} == {"rec-long"}
+
+
+def test_permitted_records_passes_a_clean_result_through(session, cases, embedder):
+    a, _ = cases
+    question = "Who mentioned a meeting?"
+    embedder.queries[question] = CHAT_A
+    result = retrieve(session, a, question, embedder, excluded_record_ids=["rec-chat"])
+    assert permitted_records(result, ["rec-chat"]) == result.records
+    assert permitted_records(result, []) == result.records  # a narrower set is fine
+    assert permitted_records(result.records, {"rec-chat"}) == result.records
+    assert permitted_records([], ["rec-chat"]) == []
+
+
+def test_permitted_records_catches_a_leaked_record(session, cases, embedder):
+    a, _ = cases
+    question = "Who mentioned a meeting?"
+    embedder.queries[question] = CHAT_A
+    unfiltered = retrieve(session, a, question, embedder)
+    assert "rec-chat" in ids(unfiltered)
+
+    # Retrieval ran without the revision's exclusion.
+    with pytest.raises(ExcludedRecordLeakError, match=r"did not exclude \['rec-chat'\]"):
+        permitted_records(unfiltered, ["rec-chat"])
+    # The result claims the exclusion, but the record is there anyway.
+    leaked = unfiltered.model_copy(update={"excluded_record_ids": ["rec-chat"]})
+    with pytest.raises(ExcludedRecordLeakError, match=r"reached prompt building: \['rec-chat'\]"):
+        permitted_records(leaked, ["rec-chat"])
+    with pytest.raises(ExcludedRecordLeakError, match="rec-chat"):
+        permitted_records(unfiltered.records, ["rec-chat", "rec-unrelated"])
 
 
 def test_unknown_case_and_wrong_embedder(session, cases, embedder):
