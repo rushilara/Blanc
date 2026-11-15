@@ -442,8 +442,12 @@ def test_pdf_truncated_at_embed_time(tmp_path: Path) -> None:
     long_pdf = buf.getvalue()
 
     truncated = truncate_pdf_for_embedding(long_pdf)
-    assert len(PdfReader(BytesIO(truncated)).pages) == GEMINI_PDF_MAX_PAGES
-    assert truncate_pdf_for_embedding(PDF_BYTES) == PDF_BYTES
+    assert truncated.truncated is True
+    assert truncated.embedding_pages == GEMINI_PDF_MAX_PAGES
+    assert truncated.page_count == GEMINI_PDF_MAX_PAGES + 3
+    assert len(PdfReader(BytesIO(truncated.data)).pages) == GEMINI_PDF_MAX_PAGES
+    short = truncate_pdf_for_embedding(PDF_BYTES)
+    assert short.data == PDF_BYTES and short.truncated is False
 
     models_requests: list = []
 
@@ -1183,9 +1187,9 @@ def test_media_backfill_creates_chunk_and_fts(tmp_path: Path) -> None:
 
 
 def test_media_indexed_but_excluded_from_retrieve(tmp_path: Path) -> None:
-    """Media stays in vec/FTS indexes but retrieve() filters image/pdf out for now."""
+    """Media stays in vec/FTS indexes but retrieve() excludes image/pdf at query time."""
     from app.evidence_store import list_chunks, store_records
-    from app.retrieval import retrieve
+    from app.retrieval import RetrievalConfig, retrieve
     from app.search_index import keyword_search, to_fts_query, vector_search
 
     media_dir = tmp_path / "media"
@@ -1220,35 +1224,121 @@ def test_media_indexed_but_excluded_from_retrieve(tmp_path: Path) -> None:
         store_records(session, "case-a", [text_record, media], query_embedder, media_dir=media_dir)
         session.commit()
         assert list_chunks(session, "case-a", media.record_id)
-        assert keyword_search(session, "case-a", to_fts_query("uniquezebra"))
-        assert vector_search(session, "case-a", media_vec, k=5)
-        # Indexed, but not returned by retrieve (sidecar is not record content).
+        # Raw indexes still hold media (for a later retrieval ticket).
+        assert media.record_id in {
+            h.record_id for h in keyword_search(session, "case-a", to_fts_query("uniquezebra"))
+        }
+        assert media.record_id in {
+            h.record_id for h in vector_search(session, "case-a", media_vec, k=5)
+        }
+        # retrieve() excludes media inside the index queries (same path as exclusions).
         result = retrieve(session, "case-a", "uniquezebra", query_embedder)
         assert media.record_id not in {r.record_id for r in result.records}
-        # Exclusion path: even if media were otherwise a candidate, excluded ids stay out.
-        excluded = retrieve(
-            session,
-            "case-a",
-            "uniquezebra warehouse",
-            query_embedder,
-            excluded_record_ids={media.record_id},
-        )
-        assert media.record_id not in {r.record_id for r in excluded.records}
+        assert result.records and result.records[0].record_id == "rec-text"
+        search_excluded = {media.record_id}
         assert media.record_id not in {
             h.record_id
             for h in keyword_search(
                 session,
                 "case-a",
                 to_fts_query("uniquezebra"),
-                excluded_record_ids={media.record_id},
+                excluded_record_ids=search_excluded,
             )
         }
         assert media.record_id not in {
             h.record_id
             for h in vector_search(
-                session, "case-a", media_vec, k=5, excluded_record_ids={media.record_id}
+                session, "case-a", media_vec, k=5, excluded_record_ids=search_excluded
             )
         }
+        # Small candidate budgets still fill with text when media would otherwise dominate.
+        crowded = retrieve(
+            session,
+            "case-a",
+            "uniquezebra warehouse",
+            query_embedder,
+            config=RetrievalConfig(vector_candidates=1, keyword_candidates=1),
+        )
+        assert {r.record_id for r in crowded.records} == {"rec-text"}
+        assert media.record_id not in {r.record_id for r in crowded.records}
+    engine.dispose()
+
+
+def test_many_media_neighbors_do_not_starve_text_recall(tmp_path: Path) -> None:
+    """Photo-heavy cases must not fill k candidate slots then discard them post-search."""
+    from app.evidence_store import store_records
+    from app.retrieval import RetrievalConfig, retrieve
+    from app.search_index import keyword_search, to_fts_query, vector_search
+
+    media_dir = tmp_path / "media"
+    media_records = []
+    for i in range(8):
+        # Underscore separates tokens (unicode61), so "uniquezebra" matches the sidecar.
+        path = write_bytes(tmp_path, f"photos/uniquezebra_{i}.png", PNG_BYTES)
+        media_records.extend(import_file(path, "case-a", source_root=tmp_path, media_dir=media_dir))
+    text_record = EvidenceRecord.model_validate(
+        {
+            "record_id": "rec-text",
+            "case_id": "case-a",
+            "source_file": "notes.txt",
+            "source_locator": "line 1",
+            "content": "uniquezebra ferry schedule for the harbour.",
+        }
+    )
+    embedder = FakeEmbedder()
+    media_vec = embedder.embed_media([MediaInput(PNG_BYTES, "image/png")])[0]
+    embedder.media_calls.clear()
+
+    class QueryEmbedder(FakeEmbedder):
+        def embed_query(self, text: str) -> list[float]:  # noqa: ANN001
+            return media_vec
+
+    query_embedder = QueryEmbedder()
+    engine = make_engine(f"sqlite:///{tmp_path / 'starve-media.db'}")
+    init_db(engine, query_embedder.dim)
+    with make_session_factory(engine)() as session:
+        session.add(Case(case_id="case-a", title="Starve"))
+        session.flush()
+        store_records(
+            session, "case-a", [*media_records, text_record], query_embedder, media_dir=media_dir
+        )
+        session.commit()
+        media_ids = {r.record_id for r in media_records}
+        k = 5
+        raw_vector = vector_search(session, "case-a", media_vec, k=k)
+        assert {h.record_id for h in raw_vector} <= media_ids
+        raw_keyword = keyword_search(session, "case-a", to_fts_query("uniquezebra"), k=k)
+        # Filename sidecars match uniquezebra*; text also matches — without exclusion media
+        # can dominate the top-k. retrieve must still surface the text record.
+        result = retrieve(
+            session,
+            "case-a",
+            "uniquezebra",
+            query_embedder,
+            config=RetrievalConfig(vector_candidates=k, keyword_candidates=k),
+        )
+        assert "rec-text" in {r.record_id for r in result.records}
+        assert not media_ids & {r.record_id for r in result.records}
+        # Same exclusion set retrieve() uses: media IDs never appear in those candidate lists.
+        search_excluded = media_ids
+        assert not media_ids & {
+            h.record_id
+            for h in vector_search(
+                session, "case-a", media_vec, k=k, excluded_record_ids=search_excluded
+            )
+        }
+        assert not media_ids & {
+            h.record_id
+            for h in keyword_search(
+                session,
+                "case-a",
+                to_fts_query("uniquezebra"),
+                k=k,
+                excluded_record_ids=search_excluded,
+            )
+        }
+        # Without exclusion, raw keyword can still hit media sidecars (index kept warm).
+        assert media_ids & {h.record_id for h in raw_keyword}
     engine.dispose()
 
 
@@ -1274,16 +1364,71 @@ def test_pdf_six_vs_seven_pages_and_truncation_warning(
     six = pdf_with_pages(GEMINI_PDF_MAX_PAGES)
     seven = pdf_with_pages(GEMINI_PDF_MAX_PAGES + 1)
     with caplog.at_level("WARNING", logger="app.case_media"):
-        assert truncate_pdf_for_embedding(six) == six
+        short = truncate_pdf_for_embedding(six)
+        assert short.data == six and short.truncated is False
         assert not any("truncated" in m.message.lower() for m in caplog.records)
         truncated = truncate_pdf_for_embedding(seven)
-    assert len(PdfReader(BytesIO(truncated)).pages) == GEMINI_PDF_MAX_PAGES
+    assert truncated.truncated is True
+    assert truncated.coverage_metadata() == {
+        "embedding_truncated": True,
+        "embedding_pages": GEMINI_PDF_MAX_PAGES,
+        "embedding_page_count": GEMINI_PDF_MAX_PAGES + 1,
+    }
+    assert len(PdfReader(BytesIO(truncated.data)).pages) == GEMINI_PDF_MAX_PAGES
     assert any("truncated" in m.message.lower() for m in caplog.records)
 
     with caplog.at_level("WARNING", logger="app.case_media"):
         caplog.clear()
-        assert truncate_pdf_for_embedding(b"%PDF-not-a-real-pdf") == b"%PDF-not-a-real-pdf"
+        failed = truncate_pdf_for_embedding(b"%PDF-not-a-real-pdf")
+    assert failed.data == b"%PDF-not-a-real-pdf" and failed.truncated is False
     assert any("truncation failed" in m.message.lower() for m in caplog.records)
+
+
+def test_seven_page_pdf_store_and_reembed_sets_truncation_flag(tmp_path: Path) -> None:
+    """Truncation must be visible on the stored record, not only in logs."""
+    from io import BytesIO
+
+    from pypdf import PdfWriter
+
+    from app.case_media import GEMINI_PDF_MAX_PAGES
+    from app.evidence_store import get_record, reembed_stale_chunks, store_records
+
+    writer = PdfWriter()
+    for _ in range(GEMINI_PDF_MAX_PAGES + 1):
+        writer.add_blank_page(width=72, height=72)
+    buf = BytesIO()
+    writer.write(buf)
+    seven_pdf = buf.getvalue()
+    path = write_bytes(tmp_path, "long.pdf", seven_pdf)
+    media_dir = tmp_path / "media"
+    (record,) = import_file(path, "case-a", source_root=tmp_path, media_dir=media_dir)
+    assert "embedding_truncated" not in (record.metadata or {})
+
+    embedder = FakeEmbedder()
+    engine = make_engine(f"sqlite:///{tmp_path / 'pdf-flag.db'}")
+    init_db(engine, embedder.dim)
+    with make_session_factory(engine)() as session:
+        session.add(Case(case_id="case-a", title="PDF flag"))
+        session.flush()
+        store_records(session, "case-a", [record], embedder, media_dir=media_dir)
+        session.commit()
+        stored = get_record(session, "case-a", record.record_id)
+        assert stored is not None
+        assert stored.metadata["embedding_truncated"] is True
+        assert stored.metadata["embedding_pages"] == GEMINI_PDF_MAX_PAGES
+        assert stored.metadata["embedding_page_count"] == GEMINI_PDF_MAX_PAGES + 1
+        # Re-import still matches (coverage keys are not part of content_hash).
+        again = store_records(session, "case-a", [record], embedder, media_dir=media_dir)
+        assert again.unchanged == 1 and again.inserted == 0
+        # Re-embed keeps the flag.
+        new = FakeEmbedder(model="fake-embedding-v2")
+        assert reembed_stale_chunks(session, "case-a", new, media_dir=media_dir) == 1
+        session.commit()
+        reembedded = get_record(session, "case-a", record.record_id)
+        assert reembedded is not None
+        assert reembedded.metadata["embedding_truncated"] is True
+        assert reembedded.metadata["embedding_page_count"] == GEMINI_PDF_MAX_PAGES + 1
+    engine.dispose()
 
 
 def test_stale_chunk_count_includes_media(tmp_path: Path) -> None:
