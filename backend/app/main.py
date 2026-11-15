@@ -10,7 +10,7 @@ from app.config import Settings, get_settings
 from app.db import init_db, make_engine, make_session_factory
 from app.embeddings import make_embedder
 from app.retrieval import RetrievalConfig
-from app.routers import cases, search
+from app.routers import cases, records, search
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -48,6 +48,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"status": "ok", "config": settings.summary()}
 
     app.include_router(cases.router)
+    app.include_router(records.router)
     app.include_router(search.router)
 
     return app
