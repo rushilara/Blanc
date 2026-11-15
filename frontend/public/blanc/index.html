@@ -109,5 +109,10 @@ logo.style.setProperty('--initial-width', `${initial.getBoundingClientRect().wid
 const offset = (logo.offsetWidth - initial.offsetWidth - 11) / 2;
 logo.style.setProperty('--center-offset', `${offset}px`);
 
+form.addEventListener("submit", () => {
+  try {
+    sessionStorage.setItem("blanc.username", document.querySelector("#username").value.trim());
+  } catch {}
+});
 </script>
 </html>

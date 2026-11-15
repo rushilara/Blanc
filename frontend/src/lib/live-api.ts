@@ -61,6 +61,24 @@ export async function searchCase(caseId: string, question: string, signal?: Abor
   return data as SearchResult;
 }
 
+export async function listCaseRecords(caseId: string, signal?: AbortSignal): Promise<EvidenceRecord[]> {
+  const records: EvidenceRecord[] = [];
+  while (true) {
+    const page = await request(`${path(caseId)}/records?limit=100&offset=${records.length}`, signal);
+    if (!object(page) || !nonnegative(page.total) || !Array.isArray(page.items)) {
+      throw new ApiError("The case evidence list is invalid.");
+    }
+    for (const item of page.items) {
+      if (!validRecord(item) || item.case_id !== caseId) {
+        throw new ApiError("The evidence list contains an invalid record.");
+      }
+      records.push(item);
+    }
+    if (records.length >= page.total) return records;
+    if (page.items.length === 0) throw new ApiError("The case evidence list is incomplete.");
+  }
+}
+
 export async function getSource(caseId: string, recordId: string, signal?: AbortSignal): Promise<EvidenceRecord> {
   const data = await request(`${path(caseId)}/records/${encodeURIComponent(recordId)}`, signal);
   if (!object(data) || !validRecord(data.record) || data.record.case_id !== caseId || data.record.record_id !== recordId) {
