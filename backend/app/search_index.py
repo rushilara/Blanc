@@ -10,7 +10,7 @@ Case isolation: virtual tables cannot carry foreign keys, so each row stores its
 - ``evidence_chunk_vectors`` (vec0): ``case_id`` is a **partition key**. A KNN query with
   ``case_id = ?`` only scans that case's partition, so the ``k`` nearest neighbours are all
   from the case, however close another case's vectors are. ``record_id`` is a metadata
-  column, so a KNN query can also filter by record (for exclusions, BLA-13).
+  column, so a KNN query can also filter by record (for exclusions, BLA-14).
 - ``evidence_chunks_fts`` (FTS5): ``case_id`` / ``record_id`` / ``chunk_id`` are
   ``UNINDEXED`` columns; searches filter ``case_id = ?`` in the same statement as ``MATCH``,
   before ``ORDER BY`` / ``LIMIT``.
@@ -20,14 +20,17 @@ FTS rows, so deleting a chunk, a record (FK cascade) or a case (FK cascade) neve
 orphans. Because of those triggers every connection must have sqlite-vec loaded
 (``app.db.make_engine`` does this).
 
-Ranking and fusion of the two result lists is BLA-13's job; ``vector_search`` and
-``keyword_search`` are the case-scoped primitives it builds on.
+Ranking and fusion of the two result lists live in ``app.retrieval`` (BLA-13);
+``vector_search`` and ``keyword_search`` are the case-scoped primitives it builds on.
+``keyword_search`` takes raw FTS5 syntax (for internal callers); turn user text into a safe
+query with ``to_fts_query`` first.
 """
 
 from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -230,3 +233,68 @@ def keyword_search(session: Session, case_id: str, match: str, k: int = 10) -> l
         {"match": match, "case_id": case_id, "k": k},
     )
     return [KeywordHit(chunk_id=r[0], record_id=r[1], score=float(r[2])) for r in rows]
+
+
+# --- Free text -> safe FTS5 query ------------------------------------------------------
+
+# Words as the unicode61 tokenizer sees them: runs of letters/digits. This is ``\w`` minus
+# ``_``, because unicode61 treats underscore (like all other punctuation) as a separator.
+_WORD_RE = re.compile(r"[^\W_]+")
+
+# Very common English words that only add noise to an OR query. They are dropped unless the
+# question has nothing else (so "who is it?" still searches).
+FTS_STOPWORDS = frozenset(
+    """a an and are as at be been but by can could did do does for from had has have he her
+    him his how i if in into is it its me my no not of on or our she so than that the their
+    them then there these they this to us was we were what when where which who whom why
+    will with would you your""".split()
+)
+
+# Upper bound on OR'd terms, so a pasted essay does not become a huge FTS query.
+MAX_FTS_TERMS = 32
+
+
+def _fts_string(term: str) -> str:
+    """An FTS5 string literal: double quotes, with embedded quotes doubled."""
+    return '"' + term.replace('"', '""') + '"'
+
+
+def to_fts_query(question: str) -> str | None:
+    """Turn free text (an investigator's question) into a safe FTS5 ``MATCH`` expression.
+
+    ``keyword_search`` takes raw FTS5 syntax, where punctuation (``?``, ``'``, ``-``, ``:``,
+    ``*``, ``(``, ``"``) and bare ``AND`` / ``OR`` / ``NOT`` / ``NEAR`` are operators, so
+    passing a question straight through raises ``fts5: syntax error``. This never emits an
+    operator taken from user text:
+
+    - The text is NFKC-normalized, lower-cased and split on whitespace into words; each word
+      is split into letter/digit runs the same way ``unicode61`` splits indexed text.
+    - A word with several runs (``it's``, ``a-b``, ``rec-0042``, ``10:30``) becomes a quoted
+      phrase (``"it s"``) that matches those tokens adjacent, as they appear in the source;
+      its non-stopword runs of 2+ characters are also added as single terms for recall.
+    - Every term is a quoted string, so ``AND``/``OR``/``NEAR`` in the question are words.
+    - Terms are de-duplicated and joined with ``OR`` (AND would drop any chunk missing one
+      word of the question); BM25 still ranks chunks matching more and rarer terms first.
+      Stopwords are dropped unless nothing else is left. At most ``MAX_FTS_TERMS`` terms.
+
+    Returns None when the text has no searchable words (empty, whitespace or punctuation
+    only); callers should then skip the keyword search.
+    """
+    normalized = unicodedata.normalize("NFKC", question or "").lower()
+    terms: list[str] = []
+    fallback: list[str] = []  # stopwords, used only if nothing else is left
+    for word in normalized.split():
+        parts = _WORD_RE.findall(word)
+        if not parts:
+            continue
+        if len(parts) > 1:
+            terms.append(" ".join(parts))
+            terms.extend(p for p in parts if len(p) > 1 and p not in FTS_STOPWORDS)
+        elif parts[0] in FTS_STOPWORDS:
+            fallback.append(parts[0])
+        else:
+            terms.append(parts[0])
+    chosen = list(dict.fromkeys(terms or fallback))[:MAX_FTS_TERMS]
+    if not chosen:
+        return None
+    return " OR ".join(_fts_string(t) for t in chosen)

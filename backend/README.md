@@ -32,7 +32,7 @@ Every DB connection loads the sqlite-vec extension (`app/db.py`). If startup fai
 
 ## Config
 
-`app/config.py` defines `Settings` (pydantic-settings), loaded from the repo-root `.env`; real environment variables override it. Fields: `GEMINI_API_KEY` (LLM and embeddings), `GEMINI_MODEL`, `EMBEDDING_MODEL` (default `gemini-embedding-001`), `EMBEDDING_DIM` (default 768; the Gemini `output_dimensionality` and the vector index size), `DATABASE_URL`, `CORS_ORIGINS` (comma-separated). Keys are optional, so the app starts without them. Use `get_settings()` to access config.
+`app/config.py` defines `Settings` (pydantic-settings), loaded from the repo-root `.env`; real environment variables override it. Fields: `GEMINI_API_KEY` (LLM and embeddings), `GEMINI_MODEL`, `EMBEDDING_MODEL` (default `gemini-embedding-001`), `EMBEDDING_DIM` (default 768; the Gemini `output_dimensionality` and the vector index size), `DATABASE_URL`, `CORS_ORIGINS` (comma-separated), and the `RETRIEVAL_*` tuning settings (see "Retrieval" below). Keys are optional, so the app starts without them. Use `get_settings()` to access config.
 
 ## Layout
 
@@ -41,7 +41,8 @@ Every DB connection loads the sqlite-vec extension (`app/db.py`). If startup fai
 - `app/db.py`: SQLAlchemy 2.0 engine/session factory, `Base`, `UTCDateTime`, `get_session` dependency. SQLite foreign keys are enabled on every connection, and the DB file's parent directory is created on startup.
 - `app/models.py`: ORM tables: `Case`, `EvidenceRecordRow` (`evidence_records`), `EvidenceChunk` (`evidence_chunks`).
 - `app/evidence_store.py`: `store_records` (persist records + chunks + vectors + keyword index), `reembed_stale_chunks`, case-scoped reads. See "Evidence storage" below.
-- `app/search_index.py`: sqlite-vec and FTS5 virtual tables, their cleanup trigger, and case-scoped `vector_search` / `keyword_search` primitives (ranking/fusion is BLA-13).
+- `app/search_index.py`: sqlite-vec and FTS5 virtual tables, their cleanup trigger, and case-scoped `vector_search` / `keyword_search` primitives, and `to_fts_query` (free text to a safe FTS5 query).
+- `app/retrieval.py`: `retrieve`, hybrid vector + keyword retrieval with RRF fusion and the capped evidence window. See "Retrieval" below.
 - `app/chunking.py`: `chunk_spans`, the ~400-token / ~50-token-overlap splitter.
 - `app/embeddings.py`: `Embedder` protocol, `GeminiEmbedder`, `FakeEmbedder` (tests), `make_embedder(settings)`.
 - `app/schemas/`: Pydantic request/response models. Kept separate from ORM tables.
@@ -49,7 +50,7 @@ Every DB connection loads the sqlite-vec extension (`app/db.py`). If startup fai
 - `app/ids.py`: `new_id(prefix)` returns prefixed ULIDs (`case_01J...`). Use it for every server-generated ID (`analysis_`, `board_`, `rec_`, ...).
 - `app/contracts.py`: Pydantic models for the shared contracts in `../contracts/` (`EvidenceRecord`, `AnalysisRevision`, `InvestigationBoard`, `RevisionComparison`). Kept in sync with the JSON Schemas by `tests/test_contracts.py`.
 - `app/validation.py`: cross-reference checks (`validate_revision`, `validate_board`, `validate_comparison`) plus `schema_errors` for parsing untrusted JSON. Each returns readable error strings; an empty list means valid.
-- `app/routers/`: HTTP routers (`cases.py`: `POST /cases`, `GET /cases`, `GET /cases/{case_id}`).
+- `app/routers/`: HTTP routers (`cases.py`: `POST /cases`, `GET /cases`, `GET /cases/{case_id}`; `search.py`: `POST /cases/{case_id}/search`).
 - `tests/`: pytest suite (`TestClient`). `conftest.py` gives each test its own temp SQLite file.
 
 ## Persistence
@@ -90,3 +91,27 @@ Every piece of evidence belongs to exactly one case. Search for one case must ne
 Serialize contract models with `to_contract_json(model)` (or `model.to_contract_json()`) from `app.contracts`. If a route returns the model directly, set `response_model_exclude_unset=True`.
 
 Plain `model_dump()` / `model_dump_json()` is **not** schema-valid. Some fields may be left out but must not be `null` (edge `description`, a node board item's `status`, `needs_review`, ...). These default to `None` internally, so a plain dump writes them as `null`, which `../contracts/*.schema.json` rejects. `to_contract_json` drops them and keeps the fields the schema allows to be `null` (`parent_analysis_id`, `base_ref_id`, ...).
+
+## Retrieval (BLA-13)
+
+`app/retrieval.py` turns a question into the evidence window for analysis (BLA-15):
+
+```python
+from app.retrieval import RetrievalConfig, retrieve
+result = retrieve(session, case_id, question, embedder, config=RetrievalConfig.from_settings(settings))
+# optional per call: limit=..., max_excerpt_chars=..., excluded_record_ids={...}
+for rec in result.records:  # best first
+    rec.record_id, rec.source_file, rec.source_locator, rec.timestamp, rec.timestamp_kind
+    rec.score, rec.matched_by  # fused RRF score; "vector" | "keyword" | "both"
+    rec.vector, rec.keyword    # per-retriever rank, best chunk_id and raw score (or None)
+    rec.excerpts               # [Excerpt(text, char_start, char_end, chunk_ids, score, truncated)]
+```
+
+- **Pipeline.** The question is embedded with `embed_query` (Gemini `RETRIEVAL_QUERY`) and the `RETRIEVAL_VECTOR_CANDIDATES` (50) nearest chunks of the case are taken from sqlite-vec; the question is converted with `to_fts_query` and the best `RETRIEVAL_KEYWORD_CANDIDATES` (50) BM25 chunks are taken from FTS5. Both searches filter by `case_id` inside the query.
+- **Fusion.** Reciprocal rank fusion per record: each list is reduced to records (a record's rank is its best chunk's rank in that list), and `score = sum(weight / (RRF_K + rank))` over the lists the record appears in (`RETRIEVAL_RRF_K` 60, `RETRIEVAL_VECTOR_WEIGHT` / `RETRIEVAL_KEYWORD_WEIGHT` 1.0). Best chunk per list, not a sum over all chunks, so long records are not favoured just for having many chunks; summing across the two lists means a record found by both outranks one found by only one. Ties break by `record_id`.
+- **Excerpts.** Each record carries up to `RETRIEVAL_MAX_EXCERPTS_PER_RECORD` (2) excerpts: its best chunks by chunk-level RRF, with overlapping chunks merged. Every excerpt is the exact slice `record.content[char_start:char_end]`.
+- **Evidence window.** At most `RETRIEVAL_MAX_RECORDS` (16) records and `RETRIEVAL_MAX_EXCERPT_CHARS` (32000, ~8000 tokens) characters of excerpt text in total. Excerpts that do not fit the remaining budget are skipped (a record with none left is dropped); only the window's first excerpt is truncated, and only if the budget is smaller than it. `dropped_by_limit`, `dropped_by_budget` and `excerpt_chars` report what happened.
+- **Free text to FTS5.** `keyword_search` takes raw FTS5 syntax (internal callers only). `search_index.to_fts_query(text)` makes user text safe: words are split into letter/digit runs like the `unicode61` tokenizer, every term is quoted (so `AND`/`OR`/`NEAR`/`*`/`:`/`(`/`"` are plain text), words like `it's` or `rec-0042` become phrases (`"it s"`), common English stopwords are dropped unless nothing else is left, and terms are OR'd (at most 32). It returns `None` for empty or punctuation-only text; `retrieve` then returns no records without calling the embedder.
+- **Exclusions.** `excluded_record_ids` drops every chunk of those records from both candidate lists before fusion, so they never appear. Pushing the filter into the index queries (so excluded chunks do not use up candidates) and the revision-level exclusion semantics are BLA-14.
+- Retrieval is read-only. An unknown case raises `CaseNotFoundError`; an embedder whose dimension does not match the index raises `EmbeddingIndexMismatchError`.
+- **Debug endpoint.** `POST /cases/{case_id}/search` with `{"question": "...", "limit": 5}` (`limit` optional) returns the `RetrievalResult` as JSON, for inspecting and tuning retrieval.
