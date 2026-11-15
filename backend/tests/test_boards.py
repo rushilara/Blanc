@@ -15,7 +15,8 @@ from sqlalchemy.exc import DatabaseError
 from sqlalchemy.orm import Session
 
 from app import boards as boards_module
-from app.boards import item_id_for, no_saved_revisions
+from app.analyses import save_revision, saved_revision_lookup
+from app.boards import item_id_for
 from app.contracts import AnalysisRevision, EvidenceRecord, InvestigationBoard
 from app.embeddings import FakeEmbedder
 from app.evidence_store import store_records
@@ -245,19 +246,51 @@ def test_a_node_without_evidence_cannot_be_pinned(app, client, seeded) -> None:
     assert "it cites no evidence" in body["detail"][0]
 
 
-def test_without_saved_revisions_nothing_can_be_pinned_yet(app, client, seeded) -> None:
-    # The app default until BLA-28 persists revisions.
+def test_the_app_pins_only_from_saved_revisions(app, client, seeded) -> None:
+    # The app's own lookup (no override): saved revisions only.
     app.dependency_overrides.pop(get_revision_lookup)
-    assert get_revision_lookup() is no_saved_revisions
+    assert get_revision_lookup() is saved_revision_lookup
     board_id = create(client, seeded.case_id)["board_id"]
     body = patch(client, seeded.case_id, board_id, 422, pin=[pin("claim", "claim-1")])
     assert "no saved revision analysis-synthetic-1 in this case" in body["detail"][0]
-    # Nor can the active revision be set yet.
     body = patch(client, seeded.case_id, board_id, 422, active_analysis_id=BASE_ID)
     assert "active_analysis_id analysis-synthetic-1 is not a revision" in body["detail"][0]
-    response = client.post(url(seeded.case_id), json={"title": "x", "active_analysis_id": BASE_ID})
-    assert response.status_code == 422
-    # Notes still work.
+
+    # Once the revision is saved, the same pin and selection work end to end.
+    with app.state.session_factory() as session:
+        save_revision(session, revision_in(seeded.case_id, "revision"))
+    board = valid(
+        patch(
+            client,
+            seeded.case_id,
+            board_id,
+            active_analysis_id=BASE_ID,
+            pin=[pin("claim", "claim-1"), pin("edge", "edge-2"), pin("node", "jordan")],
+        )
+    )
+    assert board["active_analysis_id"] == BASE_ID
+    assert [(i["ref_id"], i["evidence_ids"]) for i in board["items"]] == [
+        ("claim-1", ["rec-01"]),
+        ("edge-2", ["rec-02"]),
+        ("jordan", ["rec-01", "rec-02"]),
+    ]
+    # A revision saved in another case is still not this case's revision.
+    with app.state.session_factory() as session:
+        save_revision(
+            session,
+            revision_in(seeded.other_case_id, "revision").model_copy(
+                update={"analysis_id": "analysis-other-saved"}
+            ),
+        )
+    body = patch(
+        client,
+        seeded.case_id,
+        board_id,
+        422,
+        pin=[pin("claim", "claim-1", "analysis-other-saved")],
+    )
+    assert "no saved revision analysis-other-saved in this case" in body["detail"][0]
+    # Notes work either way.
     noted = patch(client, seeded.case_id, board_id, notes=[{"text": "Check rec-02."}])
     assert noted["notes"][0]["text"] == "Check rec-02."
 
@@ -605,3 +638,32 @@ def test_a_long_but_valid_analysis_id_can_be_added_and_selected(app, client, see
     )
     assert [i["source_analysis_id"] for i in added["items"]] == [long_analysis] * 2
     assert added["active_analysis_id"] == long_analysis
+
+
+def test_a_saved_reconstruction_is_added_through_the_apps_own_lookup(app, client, seeded) -> None:
+    # No injected lookup: the reconstruction comes from a revision saved in the database.
+    app.dependency_overrides.pop(get_revision_lookup)
+    board_id = create(client, seeded.case_id)["board_id"]
+    body = patch(
+        client, seeded.case_id, board_id, 422, add_reconstruction={"analysis_id": BASE_ID}
+    )
+    assert body["detail"] == [
+        f"cannot add reconstruction {BASE_ID}: no saved revision with that ID in this case"
+    ]
+    with app.state.session_factory() as session:
+        save_revision(session, revision_in(seeded.case_id, "revision"))
+        save_revision(session, revision_in(seeded.case_id, "child"))
+    board = valid(
+        patch(client, seeded.case_id, board_id, add_reconstruction={"analysis_id": BASE_ID})
+    )
+    assert len(board["items"]) == 9
+    board = valid(
+        patch(client, seeded.case_id, board_id, add_reconstruction={"analysis_id": CHILD_ID})
+    )
+    # The child (rec-02 excluded) adds its own findings next to the base's.
+    assert sorted({i["source_analysis_id"] for i in board["items"]}) == [BASE_ID, CHILD_ID]
+    assert all(
+        "rec-02" not in i["evidence_ids"]
+        for i in board["items"]
+        if i["source_analysis_id"] == CHILD_ID
+    )

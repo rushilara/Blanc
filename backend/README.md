@@ -49,7 +49,7 @@ If it prints `x86_64`, install a native arm64 Python 3.12 (the python.org instal
 - `app/main.py`: app factory (`create_app`), CORS, lifespan (opens the DB and creates tables), `GET /health` (status plus a non-secret config summary).
 - `app/config.py`: settings.
 - `app/db.py`: SQLAlchemy 2.0 engine/session factory, `Base`, `UTCDateTime`, `get_session` dependency. SQLite foreign keys are enabled on every connection, and the DB file's parent directory is created on startup.
-- `app/models.py`: ORM tables: `Case`, `EvidenceRecordRow` (`evidence_records`), `EvidenceChunk` (`evidence_chunks`), `BoardSnapshotRow` (`board_snapshots`, append-only).
+- `app/models.py`: ORM tables: `Case`, `EvidenceRecordRow` (`evidence_records`), `EvidenceChunk` (`evidence_chunks`), `BoardSnapshotRow` (`board_snapshots`, append-only), `AnalysisRevisionRow` (`analysis_revisions`, immutable).
 - `app/evidence_store.py`: `store_records` (persist records + chunks + vectors + keyword index), `reembed_stale_chunks`, case-scoped reads. See "Evidence storage" below.
 - `app/search_index.py`: sqlite-vec and FTS5 virtual tables, their cleanup trigger, and case-scoped `vector_search` / `keyword_search` primitives, and `to_fts_query` (free text to a safe FTS5 query).
 - `app/retrieval.py`: `retrieve`, hybrid vector + keyword retrieval with RRF fusion and the capped evidence window. See "Retrieval" below.
@@ -178,6 +178,30 @@ Errors: unknown case, a record not in this case (even if another case has that `
 
 The logic lives in `app/records.py` (`get_record_with_excerpt`, `chunk_excerpt`, `span_excerpt`, `page_records`) for reuse by reconstruction and citation checks; it raises `RecordNotFoundError` / `ChunkNotFoundError` / `InvalidExcerptError`. Stored content is untrusted evidence and is returned verbatim; the UI must render it as text, never as HTML.
 
+## Saved revisions (BLA-28)
+
+`app/analyses.py` stores every `AnalysisRevision` in `analysis_revisions` and loads it back exactly as saved:
+
+```python
+from app.analyses import save_revision, get_revision, list_revisions, revision_lineage
+save_revision(session, revision)   # validates, then commits; returns the stored revision
+get_revision(session, case_id, analysis_id)
+list_revisions(session, case_id)   # summaries, newest first
+revision_lineage(session, case_id, analysis_id)  # root ... this revision
+```
+
+- **Immutable, append-only.** A saved row is never updated (a SQLite trigger rejects `UPDATE`). A follow-up, exclusion or restore saves a new revision whose `parent_analysis_id` points at the one it came from. Saving the identical revision again is a no-op, so a retried request is safe. Saving different content under a used `analysis_id` raises `RevisionConflictError`, and so does a concurrent save of the same ID.
+- **Validated before saving.** `validate_revision` runs against the case's stored records: every citation must be a retrieved, permitted record of this case. The parent must be a saved revision of the same case, enforced by a `(case_id, parent_analysis_id)` foreign key as well as a check. The case must exist. Otherwise it raises `InvalidRevisionError` / `RevisionNotFoundError` and nothing is saved.
+- **Case-scoped.** The primary key is `(case_id, analysis_id)`, and every read filters by `case_id`.
+
+| Endpoint | Returns |
+|---|---|
+| `GET /cases/{case_id}/analyses` | History, newest first: `analysis_id`, `parent_analysis_id`, `question`, `needs_review`, `created_at`. |
+| `GET /cases/{case_id}/analyses/{analysis_id}` | The revision, as `AnalysisRevision` contract JSON exactly as saved (404 if it is not in this case). |
+| `GET /cases/{case_id}/analyses/{analysis_id}/lineage` | The revision and its ancestors, oldest first. |
+
+Creating revisions is the analyze, follow-up, exclude and restore endpoints' job (BLA-20, BLA-29, BLA-33, BLA-35); they call `save_revision`. Everything is in SQLite, so revisions and boards (with their notes) reload after a browser refresh or a server restart.
+
 ## Boards (BLA-31)
 
 Every response is `InvestigationBoard` contract JSON. A board is a series of append-only snapshots: creating one writes revision 1, and every change writes `revision + 1` with `parent_revision` set. Rows are never updated (a SQLite trigger rejects `UPDATE` on `board_snapshots`).
@@ -212,4 +236,4 @@ Every response is `InvestigationBoard` contract JSON. A board is a series of app
 - **Notes are investigator-only text**, kept in `notes`, never in items. The server sets every note's `author` to `"investigator"`; the request has no author field, so a client cannot label a note as model output. Notes are never removed, so an item with notes cannot be unpinned (422).
 - **Validated before saving.** The new snapshot goes through `validate_board`. Any error is a 422 listing every problem, and nothing is saved.
 - **Errors:** 404 for an unknown case or board, or a board of another case; 409 when `expected_revision` is stale or another save took that revision number; 422 for an invalid change. A change that alters nothing returns the current snapshot and writes nothing.
-- **Revision lookup.** Boards find saved revisions through the `get_revision_lookup` dependency in `app/routers/boards.py`. Saved revisions are BLA-28, so for now it knows none: boards can be created, renamed and annotated, but every pin is a 422 (`no saved revision ... in this case`), and so is setting `active_analysis_id`, on `POST` or `PATCH` (`active_analysis_id ... is not a revision of case ...`). BLA-28 should return its lookup there.
+- **Revision lookup.** Boards find revisions through the `get_revision_lookup` dependency in `app/routers/boards.py`, which returns `app.analyses.saved_revision_lookup`: only findings of saved revisions of the same case can be pinned, and only a saved revision can be `active_analysis_id` (otherwise a 422: `no saved revision ... in this case` / `active_analysis_id ... is not a revision of case ...`). Tests override the dependency to inject revisions.
