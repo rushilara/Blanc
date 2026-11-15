@@ -103,9 +103,7 @@ class EvidenceRecordRow(Base):
     media_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     content_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
     # None means the record had no ``metadata`` key (distinct from ``{}``).
-    record_metadata: Mapped[dict[str, Any] | None] = mapped_column(
-        "metadata", JSON, nullable=True
-    )
+    record_metadata: Mapped[dict[str, Any] | None] = mapped_column("metadata", JSON, nullable=True)
     # SHA-256 of the record's canonical contract JSON; detects changed re-imports.
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, default=utcnow)
@@ -134,14 +132,15 @@ class EvidenceRecordRow(Base):
 
 
 class EvidenceChunk(Base):
-    """A chunk of one record, with its embedding metadata.
+    """A slice ``content[char_start:char_end]`` of one record, with its embedding metadata.
 
-    For text records, ``text == content[char_start:char_end]``. For image/PDF records
-    (empty ``content``), ``text`` is the lexical FTS sidecar (filename / parent email
-    headers); offsets span that sidecar string, not the binary. The source of truth for
-    the vec0 / FTS5 indexes (``app/search_index.py``), keyed by ``chunk_id`` and cleaned
-    up by a delete trigger on this table. The unique ``(case_id, record_id, chunk_index)``
-    index doubles as the ``case_id`` index.
+    The source of truth for the vec0 / FTS5 indexes (``app/search_index.py``), which are
+    keyed by ``chunk_id`` and cleaned up by a delete trigger on this table. The unique
+    ``(case_id, record_id, chunk_index)`` index doubles as the ``case_id`` index.
+
+    Media records may store a lexical FTS sidecar in ``text`` for indexing; how those
+    offsets relate to excerpts / the evidence window is decided when media enters
+    retrieval (later ticket)—do not treat sidecar offsets as record-content slices yet.
     """
 
     __tablename__ = "evidence_chunks"

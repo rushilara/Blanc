@@ -378,6 +378,26 @@ def retrieve(
         if h.record_id not in excluded
     ]
 
+    # Media chunks stay indexed (vectors + FTS sidecar) on import/re-embed, but must not
+    # enter the evidence window yet: sidecar text is not record content, so putting it in
+    # Excerpt.text breaks content[char_start:char_end] and GET /records offsets. Evidence-
+    # window / vision for image/PDF is a later ticket—filter them out of retrieve() now.
+    hit_ids = {h.record_id for h in vector_hits} | {h.record_id for h in keyword_hits}
+    media_ids: set[str] = set()
+    if hit_ids:
+        media_ids = set(
+            session.scalars(
+                select(EvidenceRecordRow.record_id).where(
+                    EvidenceRecordRow.case_id == case_id,
+                    EvidenceRecordRow.record_id.in_(list(hit_ids)),
+                    EvidenceRecordRow.modality.in_(("image", "pdf")),
+                )
+            )
+        )
+        if media_ids:
+            vector_hits = [h for h in vector_hits if h.record_id not in media_ids]
+            keyword_hits = [h for h in keyword_hits if h.record_id not in media_ids]
+
     fused = fuse(
         vector_hits,
         keyword_hits,
@@ -388,10 +408,9 @@ def retrieve(
     window = fused[:max_records]
     rows = _load_rows(session, case_id, (f.record_id for f in window))
     chunk_ids = [cid for f in window for cid in f.chunk_scores]
-    chunk_rows = get_chunks(session, case_id, chunk_ids)
-    spans = {c.chunk_id: (c.char_start, c.char_end) for c in chunk_rows}
-    # Media chunks store an FTS sidecar in ``text`` (content is empty); use it for excerpts.
-    chunk_text = {c.chunk_id: c.text for c in chunk_rows}
+    spans = {
+        c.chunk_id: (c.char_start, c.char_end) for c in get_chunks(session, case_id, chunk_ids)
+    }
 
     records: list[RetrievedRecord] = []
     skipped: list[SkippedRecord] = []
@@ -414,15 +433,9 @@ def retrieve(
                     continue
                 length, truncated = remaining, True
             end = span.start + length
-            if row.modality in ("image", "pdf") and not row.content:
-                # Sidecar text lives on the chunk, not in empty media content.
-                primary = span.chunk_ids[0] if span.chunk_ids else None
-                text = (chunk_text.get(primary) or "")[span.start : end] if primary else ""
-            else:
-                text = row.content[span.start : end]
             excerpts.append(
                 Excerpt(
-                    text=text,
+                    text=row.content[span.start : end],
                     char_start=span.start,
                     char_end=end,
                     chunk_ids=span.chunk_ids,
