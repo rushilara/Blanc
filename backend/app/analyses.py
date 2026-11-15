@@ -33,10 +33,15 @@ Excluding (BLA-33). ``exclude_records`` reruns the same question with more recor
 retrieval filters every chunk of them, the new revision is generated from permitted evidence
 only and saved as a child of the base, and the excluded records stay in the corpus. So that
 unchanged findings keep their identity for the support diff (``app.comparison``), the rerun
-sees the base revision's findings that do not rely on any excluded record (never its answer,
-and never a finding that cites an excluded record, since those were built from the excluded
-evidence), and the system prompt asks it to reuse their IDs and wording when the remaining
-evidence still supports them. ``compare_to_parent`` returns that diff.
+sees the base revision's findings that cite no excluded record (never its answer, and never
+a finding that cites an excluded record), and the system prompt asks it to reuse their IDs
+and wording only when the remaining evidence still supports them. This filter is by
+citation: a finding that cites only permitted records was still written by a model that saw
+the excluded record, so its wording can paraphrase excluded content. The system prompt
+requires every kept finding to be re-supported by the current records, and validation
+strips any citation to an excluded record, but the prompt is not guaranteed free of excluded
+information. ``compare_to_parent`` returns the diff for exclusion and restore children
+(same question as the parent).
 """
 
 from __future__ import annotations
@@ -85,6 +90,11 @@ class NoPriorStateError(RevisionStoreError):
 
 class InvalidExclusionError(RevisionStoreError):
     """The records to exclude are missing, unknown in the case or already excluded."""
+
+
+class ComparisonNotApplicableError(RevisionStoreError):
+    """The revision's question differs from its parent's (a follow-up), so a support diff
+    would not describe the effect of an exclusion."""
 
 
 class InvalidRevisionError(RevisionStoreError):
@@ -479,7 +489,10 @@ def prior_findings_context(base: AnalysisRevision, excluded: Collection[str]) ->
     Left out: the answer and unresolved questions (written with the excluded evidence in
     view), every claim, edge and event citing an excluded record, every node whose cited
     records are all excluded, and edges whose endpoints were left out. What remains cites
-    only permitted records, so no excluded content reaches the prompt this way.
+    only permitted records, so excluded content is never sent verbatim or by citation. It
+    can still be paraphrased: the remaining findings were written by a model that saw the
+    excluded record. The system prompt therefore requires every kept finding to be
+    re-supported by the current source records.
     """
     out = set(excluded)
 
@@ -522,13 +535,21 @@ def compare_to_parent(session: Session, case_id: str, analysis_id: str) -> Revis
     """The support diff between a saved revision and its parent (``app.comparison``).
 
     Deterministic: ``created_at`` is the child's own creation time, so the same two
-    revisions always give the identical comparison. Raises ``RevisionNotFoundError`` if
-    the revision is unknown or has no parent.
+    revisions always give the identical comparison. Only for children that ask the same
+    question as their parent (exclusions and restores): a follow-up asks something else, so
+    its "not supported" findings would just be ones the new question did not cover. Raises
+    ``RevisionNotFoundError`` if the revision is unknown or has no parent, and
+    ``ComparisonNotApplicableError`` if the questions differ.
     """
     child = get_revision(session, case_id, analysis_id)
     if child.parent_analysis_id is None:
         raise RevisionNotFoundError(f"analysis {analysis_id} has no parent to compare with")
     parent = get_revision(session, case_id, child.parent_analysis_id)
+    if child.question != parent.question:
+        raise ComparisonNotApplicableError(
+            f"analysis {analysis_id} asks a different question than its parent (a follow-up), "
+            "so a support comparison would not show the effect of an exclusion"
+        )
     return compare_revisions(parent, child, created_at=child.created_at)
 
 
