@@ -1,6 +1,7 @@
 """BLA-49: structured case report export (Markdown + JSON) for boards and revisions."""
 
 import copy
+import json
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -786,3 +787,38 @@ def test_needs_review_revision_is_flagged(app, client, seeded) -> None:
     markdown = export(client, seeded.case_id, "analyses", "analysis-partial", "md").text
     assert "> **Needs review.**" in markdown
     assert "No answer was saved." in markdown
+
+
+def test_board_review_status_and_corrections_are_exported_apart(client, seeded) -> None:
+    """BLA-48: review status sits next to each pinned finding; corrections are notes."""
+    board = client.get(f"/cases/{seeded.case_id}/boards/{seeded.board_id}").json()
+    claim_item = next(i for i in board["items"] if i["kind"] == "claim")
+    correction = "Investigator correction: wrong person."
+    response = client.patch(
+        f"/cases/{seeded.case_id}/boards/{seeded.board_id}",
+        json={
+            "review": [{"item_id": claim_item["item_id"], "review_status": "disputed"}],
+            "notes": [
+                {"text": correction, "kind": "correction", "target_item_id": claim_item["item_id"]}
+            ],
+        },
+    )
+    assert response.status_code == 200, response.text
+
+    report = export(client, seeded.case_id, "boards", seeded.board_id, "json").json()
+    claims = {c["board_item_id"]: c for c in report["claims"]}
+    assert claims[claim_item["item_id"]]["review_status"] == "disputed"
+    assert claims[claim_item["item_id"]]["status"] == claim_item["status"]  # model label kept
+    others = [c for c in report["claims"] if c["board_item_id"] != claim_item["item_id"]]
+    assert others and all(c["review_status"] == "unreviewed" for c in others)
+    flagged = [n for n in report["investigator_notes"] if n["kind"] == "correction"]
+    assert [n["text"] for n in flagged] == [correction]
+    assert correction not in json.dumps([report["claims"], report["analyses"]])
+
+    md = export(client, seeded.case_id, "boards", seeded.board_id, "md").text
+    assert "Investigator review: disputed (the investigator disputes this finding)" in md
+    assert "### Correction" in md
+    assert "Flags the attached finding as wrong" in md
+    # A single-analysis export has no board, so no review status.
+    single = export(client, seeded.case_id, "analyses", claim_item["source_analysis_id"], "json")
+    assert all(c["review_status"] is None for c in single.json()["claims"])

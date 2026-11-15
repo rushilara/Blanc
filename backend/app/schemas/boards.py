@@ -2,12 +2,15 @@
 
 Responses are the ``InvestigationBoard`` contract JSON itself. Nothing in a request
 can set a pinned item's evidence or status: the server copies both from the source
-revision, so investigator input only ever reaches the board as notes.
+revision. Investigator input reaches the board only as notes (including corrections) and
+as each item's ``review_status`` (BLA-48), which are kept apart from the model's output.
 """
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+
+from app.contracts import BoardNoteKind, ReviewStatus
 
 Title = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 Id = Annotated[str, StringConstraints(min_length=1, max_length=200)]
@@ -62,13 +65,31 @@ class NoteCreate(BaseModel):
     # An item on the board after this change (including one pinned in the same request);
     # null or absent for a board-level note.
     target_item_id: Id | None = None
+    # "correction" flags the targeted finding as wrong and says why (BLA-48).
+    kind: BoardNoteKind = "note"
     # No author field: the server sets it (see app.boards.NOTE_AUTHOR), so a client cannot
     # label a note as coming from the model.
+
+    @model_validator(mode="after")
+    def _correction_needs_target(self) -> "NoteCreate":
+        if self.kind == "correction" and self.target_item_id is None:
+            raise ValueError("a correction must target a board item (target_item_id)")
+        return self
+
+
+class ReviewChange(BaseModel):
+    """Set the investigator's review of one pinned finding (BLA-48)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    item_id: Id
+    review_status: ReviewStatus
 
 
 class BoardChange(BaseModel):
     """Body of ``PATCH /cases/{case_id}/boards/{board_id}``. Applied in order: unpin,
-    add_reconstruction, pin, then notes. Every successful change appends one snapshot.
+    add_reconstruction, pin, review, then notes. Every successful change appends one
+    snapshot, so each review decision stays in the board's history.
 
     ``expected_revision``: the revision the client last saw; a 409 if the board has
     moved on since, so two tabs cannot silently drop each other's changes.
@@ -83,4 +104,5 @@ class BoardChange(BaseModel):
     add_reconstruction: AddReconstruction | None = None
     pin: Annotated[list[PinRequest], Field(max_length=MAX_CHANGES)] = []
     unpin: Annotated[list[Id], Field(max_length=MAX_CHANGES)] = []
+    review: Annotated[list[ReviewChange], Field(max_length=MAX_CHANGES)] = []
     notes: Annotated[list[NoteCreate], Field(max_length=MAX_CHANGES)] = []

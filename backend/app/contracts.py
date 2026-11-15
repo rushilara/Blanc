@@ -49,6 +49,9 @@ RecordTimestampKind = Literal[
 TimestampPrecision = Literal["exact", "day", "month", "approximate", "unknown"]
 EventTimestampKind = Literal["observed", "source_stated", "inferred", "unknown"]
 BoardItemKind = Literal["claim", "edge", "node", "event"]
+# Investigator judgement on a pinned finding (BLA-48); never changes the finding's status.
+ReviewStatus = Literal["unreviewed", "reviewed", "disputed"]
+BoardNoteKind = Literal["note", "correction"]
 ComparisonItemKind = Literal["claim", "edge", "event"]
 EvidenceWindow = Literal["standard", "expanded"]
 SkipReason = Literal["budget", "record_limit"]
@@ -278,6 +281,9 @@ class BoardItem(ContractModel):
     ref_id: NonEmptyStr
     evidence_ids: UniqueEvidenceIds
     status: Omittable[BoardItemStatus] = None
+    # Investigator review (BLA-48). Absent means unreviewed. Separate from ``status``,
+    # which is the model's label copied from the source revision.
+    review_status: Omittable[ReviewStatus] = None
     added_at: OffsetDateTime
 
     @model_validator(mode="after")
@@ -293,8 +299,16 @@ class BoardNote(ContractModel):
     note_id: NonEmptyStr
     text: NonEmptyStr
     target_item_id: str | None = None
+    # "correction" flags a pinned finding as wrong and says why (BLA-48); absent = "note".
+    kind: Omittable[BoardNoteKind] = None
     author: NonEmptyStr
     created_at: OffsetDateTime
+
+    @model_validator(mode="after")
+    def _correction_targets_an_item(self) -> BoardNote:
+        if self.kind == "correction" and self.target_item_id is None:
+            raise ValueError("a correction must target a board item")
+        return self
 
 
 class InvestigationBoard(ContractModel):

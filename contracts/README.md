@@ -46,6 +46,7 @@ Optional, server-assigned, never produced by the LLM. Absent on revisions saved 
 - **Saving to the board does not mean verified.** There is no verified flag. `status` (`observed`, `reported`, `inferred` or `unresolved`) is copied from the originating item and pinning never changes it (e.g. `reported` stays `reported`).
 - `status` is required for `claim`, `edge` and `event` items. It is optional for `node` items, because graph nodes carry no status. If the source item has a status, the pinned item's status must match it.
 - `notes[]` are investigator-authored, kept separate from LLM output, and never passed to the model as evidence. `target_item_id` attaches a note to a board item; null or absent means a board-level note.
+- **Investigator review (BLA-48).** An item may carry `review_status`: `unreviewed`, `reviewed` or `disputed`; absent means `unreviewed`. It records the investigator's judgement and never changes `status`, which stays the model's label. A note with `kind: "correction"` flags the item it targets as wrong and says why; a correction must have a `target_item_id` (also enforced in the schema), and `kind` absent means `"note"`. Review status and corrections, like notes, are never sent to the model. Each change is a new snapshot, so the history of review decisions is kept.
 
 ## RevisionComparison
 
