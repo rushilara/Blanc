@@ -6,7 +6,7 @@ import { SourceReferences } from "@/components/SourceReferences";
 import { TimelineView } from "@/components/TimelineView";
 import { useEffect, useRef, useSyncExternalStore, useState } from "react";
 import type { AnalysisRevision, EvidenceRecord } from "@/lib/analysis";
-import { analyzeCase, getSource, listCaseRecords, listCases, type CaseSummary } from "@/lib/live-api";
+import { analyzeCase, getSource, listCaseRecordsPage, listCases, type CaseSummary } from "@/lib/live-api";
 
 const views = ["Findings", "Connections", "Timeline", "Revisions"] as const;
 
@@ -146,10 +146,10 @@ export function Findings() {
         <h2>Finding</h2>
         <p>{revision.answer || "No answer in this revision."}</p>
         <h2>Why</h2>
-        {revision.claims.map(claim => <p key={claim.id}><StatusLabel value={claim.status} />{claim.text} <sup>{claim.evidence_ids.map(id => citation(id))}</sup></p>)}
-        {revision.unresolved_questions.length > 0 && <><h2>What remains unresolved</h2>{revision.unresolved_questions.map(question => <p key={question}>{question}</p>)}</>}
+        {revision.claims.map(claim => <p key={claim.id}><StatusLabel value={claim.status} />{claim.text} <sup>{[...new Set(claim.evidence_ids)].map(id => citation(id))}</sup></p>)}
+        {revision.unresolved_questions.length > 0 && <><h2>What remains unresolved</h2>{revision.unresolved_questions.map((question, index) => <p key={`${index}-${question}`}>{question}</p>)}</>}
       </>}
-      {view === "Connections" && <><h2>Connections</h2>{revision.graph.edges.map(edge => <p key={edge.id}><StatusLabel value={edge.status} />{nodes.get(edge.source) ?? edge.source} → {nodes.get(edge.target) ?? edge.target}<br />{edge.description ?? edge.type.replaceAll("_", " ")} <sup>{edge.evidence_ids.map(id => citation(id))}</sup></p>)}</>}
+      {view === "Connections" && <><h2>Connections</h2>{revision.graph.edges.map(edge => <p key={edge.id}><StatusLabel value={edge.status} />{nodes.get(edge.source) ?? edge.source} → {nodes.get(edge.target) ?? edge.target}<br />{edge.description ?? edge.type.replaceAll("_", " ")} <sup>{[...new Set(edge.evidence_ids)].map(id => citation(id))}</sup></p>)}</>}
       {view === "Timeline" && <><h2>Timeline</h2><TimelineView key={revision.analysis_id} events={revision.timeline_events} caseId={revision.case_id} records={sources} excludedRecordIds={revision.excluded_record_ids} /></>}
       {view === "Revisions" && <><h2>Current revision</h2><p>{revision.analysis_id}</p><p>Excluded records: {revision.excluded_record_ids.join(", ") || "None"}</p></>}
       {open && <SourceReferences key={open} ids={[open]} caseId={revision.case_id} records={sources} excludedRecordIds={revision.excluded_record_ids} autoOpen hideTriggers onClose={() => setOpen(undefined)} />}
@@ -190,18 +190,45 @@ export function Findings() {
   </div>;
 }
 
+const RECORDS_PER_PAGE = 50;
+
 function CaseFiles({ caseId }: { caseId: string }) {
   const [records, setRecords] = useState<EvidenceRecord[]>();
+  const [total, setTotal] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
+  const request = useRef<AbortController | null>(null);
+
   useEffect(() => {
     const controller = new AbortController();
-    listCaseRecords(caseId, controller.signal).then(setRecords).catch(() => {
+    request.current = controller;
+    listCaseRecordsPage(caseId, 0, RECORDS_PER_PAGE, controller.signal).then(page => {
+      setRecords(page.items);
+      setTotal(page.total);
+    }).catch(() => {
       if (!controller.signal.aborted) setError("Could not load sources. Reopen the case to retry.");
     });
     return () => controller.abort();
   }, [caseId]);
-  if (error) return <p role="status">{error}</p>;
-  if (!records) return <p role="status">Loading sources…</p>;
+
+  async function showMore() {
+    if (!records || loadingMore) return;
+    const controller = request.current ?? new AbortController();
+    setLoadingMore(true);
+    setError("");
+    try {
+      const page = await listCaseRecordsPage(caseId, records.length, RECORDS_PER_PAGE, controller.signal);
+      if (controller.signal.aborted) return;
+      setRecords(current => [...(current ?? []), ...page.items]);
+      setTotal(page.total);
+    } catch {
+      if (!controller.signal.aborted) setError("Could not load more sources. Try again.");
+    } finally {
+      if (!controller.signal.aborted) setLoadingMore(false);
+    }
+  }
+
+  if (!records) return error ? <p role="status">{error}</p> : <p role="status">Loading sources…</p>;
   if (!records.length) return <p>No evidence files in this case.</p>;
 
   const files = new Map<string, EvidenceRecord[]>();
@@ -210,19 +237,35 @@ function CaseFiles({ caseId }: { caseId: string }) {
     entries.push(record);
     files.set(record.source_file, entries);
   }
-  return <ul className="blanc-case-files" tabIndex={0} aria-label="Case evidence files">
-    {Array.from(files, ([file, entries]) => <li key={file}>
-      <details>
-        <summary>{file.split(/[\\/]/).filter(Boolean).at(-1) ?? file}</summary>
-        <small className="blanc-file-path">{file}</small>
-        {entries.map(record => <details className="blanc-case-file-record" key={record.record_id}>
-          <summary>View record · {record.record_id}</summary>
-          <small>{record.source_locator}</small>
-          <pre>{record.content}</pre>
-        </details>)}
-      </details>
-    </li>)}
-  </ul>;
+  const remaining = Math.max(0, total - records.length);
+  return <div className="blanc-case-files-wrap">
+    <ul className="blanc-case-files" tabIndex={0} aria-label="Case evidence files">
+      {Array.from(files, ([file, entries]) => <li key={file}>
+        <details>
+          <summary>{file.split(/[\\/]/).filter(Boolean).at(-1) ?? file}</summary>
+          <small className="blanc-file-path">{file}</small>
+          {entries.map(record => <CaseFileRecord key={record.record_id} record={record} />)}
+        </details>
+      </li>)}
+    </ul>
+    <p className="blanc-case-files-count">Showing {records.length} of {total} records</p>
+    {error && <p role="status">{error}</p>}
+    {remaining > 0 && <button type="button" className="blanc-show-more" onClick={() => void showMore()} disabled={loadingMore}>
+      {loadingMore ? "Loading…" : `Show ${Math.min(RECORDS_PER_PAGE, remaining)} more records`}
+    </button>}
+  </div>;
+}
+
+/** Renders a record's full text only once it is opened, to keep large cases light. */
+function CaseFileRecord({ record }: { record: EvidenceRecord }) {
+  const [open, setOpen] = useState(false);
+  return <details className="blanc-case-file-record" onToggle={event => setOpen(event.currentTarget.open)}>
+    <summary>View record · {record.record_id}</summary>
+    {open && <>
+      <small>{record.source_locator}</small>
+      <pre>{record.content}</pre>
+    </>}
+  </details>;
 }
 
 function TypedGreeting({ text }: { text: string }) {

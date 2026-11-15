@@ -135,7 +135,7 @@
   transform: rotate(-45deg);
 }
 .blanc-case-option[aria-expanded="true"] .blanc-case-chevron { transform: rotate(45deg); }
-.blanc-case-list > div > .blanc-case-files {
+.blanc-case-files-wrap > .blanc-case-files {
   margin: 10px 0 14px 7px;
   max-height: min(270px, 36vh);
   overflow-y: auto;
@@ -227,3 +227,11 @@
 .blanc-status-reported { color: #3b4f7a; }
 .blanc-status-inferred { color: #8a5a12; }
 .blanc-status-unresolved { color: #822b33; }
+
+/* Case files load a page at a time; the count and button sit under the list. */
+.blanc-case-files-wrap { margin: 0 0 14px 7px; }
+.blanc-case-files-wrap > .blanc-case-files { margin: 10px 0 6px; }
+.blanc-case-files-count { margin: 0; color: #665548; font: 11px/1.6 ui-monospace, monospace; }
+.blanc-show-more { margin-top: 4px; padding: 0; border: 0; background: transparent; color: #822b33; font: 600 12px Georgia, serif; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.blanc-show-more:disabled { opacity: .55; cursor: default; }
+.blanc-show-more:focus-visible { outline: 2px solid #822b33; outline-offset: 3px; }
