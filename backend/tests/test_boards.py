@@ -451,3 +451,219 @@ def test_boards_are_listed_newest_first(client, seeded) -> None:
     listed = client.get(url(seeded.case_id)).json()
     assert [b["board_id"] for b in listed] == [older, newer]
     assert listed[0]["revision"] == 2  # the latest snapshot only
+
+
+# --- Adding a whole reconstruction (BLA-30) -----------------------------------------------
+
+
+def test_adding_a_reconstruction_pins_every_finding_with_its_sources(client, seeded) -> None:
+    board_id = create(client, seeded.case_id)["board_id"]
+    board = valid(
+        patch(client, seeded.case_id, board_id, add_reconstruction={"analysis_id": BASE_ID})
+    )
+    pinned = [(i["kind"], i["ref_id"]) for i in board["items"]]
+    assert pinned == [
+        ("claim", "claim-1"),
+        ("claim", "claim-2"),
+        ("node", "alex"),
+        ("node", "jordan"),
+        ("node", "casey"),
+        ("edge", "edge-1"),
+        ("edge", "edge-2"),
+        ("event", "event-1"),
+        ("event", "event-2"),
+    ]
+    source = revision_in(seeded.case_id, "revision")
+    statuses = {c.id: c.status for c in [*source.claims, *source.graph.edges]}
+    for item in board["items"]:
+        assert item["source_analysis_id"] == BASE_ID  # originating revision kept
+        assert item["evidence_ids"]  # source references kept
+        if item["kind"] in ("claim", "edge"):
+            assert item["status"] == statuses[item["ref_id"]]  # not marked verified
+    assert board["revision"] == 2  # one change, one snapshot
+
+
+def test_adding_the_same_reconstruction_again_changes_nothing(client, seeded) -> None:
+    board_id = create(client, seeded.case_id)["board_id"]
+    first = patch(client, seeded.case_id, board_id, add_reconstruction={"analysis_id": BASE_ID})
+    again = patch(client, seeded.case_id, board_id, add_reconstruction={"analysis_id": BASE_ID})
+    assert again == first
+    # A single pin that is already part of it is deduplicated too.
+    assert patch(client, seeded.case_id, board_id, pin=[pin("edge", "edge-1")]) == first
+
+
+def test_findings_from_two_revisions_are_appended_and_nodes_never_merged(
+    client, seeded
+) -> None:
+    board_id = create(client, seeded.case_id)["board_id"]
+    patch(client, seeded.case_id, board_id, add_reconstruction={"analysis_id": BASE_ID})
+    board = valid(
+        patch(client, seeded.case_id, board_id, add_reconstruction={"analysis_id": CHILD_ID})
+    )
+    nodes = [(i["source_analysis_id"], i["ref_id"]) for i in board["items"] if i["kind"] == "node"]
+    # "alex" and "jordan" appear in both revisions with the same labels; both copies stay.
+    assert nodes == [
+        (BASE_ID, "alex"),
+        (BASE_ID, "jordan"),
+        (BASE_ID, "casey"),
+        (CHILD_ID, "alex"),
+        (CHILD_ID, "jordan"),
+    ]
+    child_jordan = next(
+        i for i in board["items"] if i["source_analysis_id"] == CHILD_ID and i["ref_id"] == "jordan"
+    )
+    assert child_jordan["evidence_ids"] == ["rec-01"]  # rec-02 is excluded in the child
+    assert len({i["item_id"] for i in board["items"]}) == len(board["items"])
+
+
+def test_similar_node_names_in_one_revision_stay_separate(app, client, seeded) -> None:
+    revision = revision_in(seeded.case_id, "revision")
+    alias = revision.graph.nodes[0].model_copy(update={"id": "alex-2", "label": "Alex "})
+    revision.graph.nodes.append(alias)
+    app.dependency_overrides[get_revision_lookup] = lambda: (
+        lambda session, case, ids: [revision] if BASE_ID in ids else []
+    )
+    board_id = create(client, seeded.case_id)["board_id"]
+    board = patch(
+        client,
+        seeded.case_id,
+        board_id,
+        add_reconstruction={"analysis_id": BASE_ID, "kinds": ["node"]},
+    )
+    assert [i["ref_id"] for i in board["items"]] == ["alex", "jordan", "casey", "alex-2"]
+
+
+def test_kinds_limit_what_is_added_and_bare_nodes_are_skipped(app, client, seeded) -> None:
+    revision = revision_in(seeded.case_id, "revision")
+    bare = revision.graph.nodes[0].model_copy(update={"id": "bare", "evidence_ids": None})
+    revision.graph.nodes.append(bare)
+    app.dependency_overrides[get_revision_lookup] = lambda: (
+        lambda session, case, ids: [revision] if BASE_ID in ids else []
+    )
+    board_id = create(client, seeded.case_id)["board_id"]
+    board = patch(
+        client,
+        seeded.case_id,
+        board_id,
+        add_reconstruction={"analysis_id": BASE_ID, "kinds": ["event", "node"]},
+    )
+    assert [(i["kind"], i["ref_id"]) for i in board["items"]] == [
+        ("node", "alex"),
+        ("node", "jordan"),
+        ("node", "casey"),
+        ("event", "event-1"),
+        ("event", "event-2"),
+    ]
+    patch(
+        client,
+        seeded.case_id,
+        board_id,
+        422,
+        add_reconstruction={"analysis_id": BASE_ID, "kinds": []},
+    )
+
+
+@pytest.mark.parametrize("analysis_id", ["analysis-missing", "analysis-other"])
+def test_an_unknown_reconstruction_adds_nothing(client, seeded, analysis_id) -> None:
+    board_id = create(client, seeded.case_id)["board_id"]
+    body = patch(
+        client,
+        seeded.case_id,
+        board_id,
+        422,
+        add_reconstruction={"analysis_id": analysis_id},
+        notes=[{"text": "kept only if everything is valid"}],
+    )
+    assert body["detail"] == [
+        f"cannot add reconstruction {analysis_id}: no saved revision with that ID in this case"
+    ]
+    assert client.get(url(seeded.case_id, board_id)).json()["revision"] == 1
+
+
+def test_citations_are_validated_before_a_reconstruction_is_added(app, client, seeded) -> None:
+    # A revision whose claim cites a record the case does not have.
+    revision = revision_in(seeded.case_id, "revision")
+    revision.claims[0] = revision.claims[0].model_copy(update={"evidence_ids": ["rec-99"]})
+    app.dependency_overrides[get_revision_lookup] = lambda: (
+        lambda session, case, ids: [revision] if BASE_ID in ids else []
+    )
+    board_id = create(client, seeded.case_id)["board_id"]
+    body = patch(client, seeded.case_id, board_id, 422, add_reconstruction={"analysis_id": BASE_ID})
+    assert any("cites evidence not in case" in error for error in body["detail"])
+    assert client.get(url(seeded.case_id, board_id)).json()["items"] == []
+
+
+def test_a_long_but_valid_finding_id_can_be_pinned(app, client, seeded) -> None:
+    # Revision IDs have no length limit, so pinning must not apply a request-size limit
+    # to them (it used to crash bulk-add with a 500).
+    long_id = "claim-" + "x" * 201
+    revision = revision_in(seeded.case_id, "revision")
+    revision.claims[0] = revision.claims[0].model_copy(update={"id": long_id})
+    app.dependency_overrides[get_revision_lookup] = lambda: (
+        lambda session, case, ids: [revision] if BASE_ID in ids else []
+    )
+    board_id = create(client, seeded.case_id)["board_id"]
+    board = valid(
+        patch(
+            client,
+            seeded.case_id,
+            board_id,
+            add_reconstruction={"analysis_id": BASE_ID, "kinds": ["claim"]},
+        )
+    )
+    assert [i["ref_id"] for i in board["items"]] == [long_id, "claim-2"]
+    assert board["items"][0]["item_id"] == item_id_for(BASE_ID, "claim", long_id)
+
+    # A single pin of the same finding is the same item (deduplicated), not an error.
+    again = patch(client, seeded.case_id, board_id, pin=[pin("claim", long_id)])
+    assert again == board
+
+
+def test_a_long_but_valid_analysis_id_can_be_added_and_selected(app, client, seeded) -> None:
+    long_analysis = "analysis-" + "y" * 250
+    revision = revision_in(seeded.case_id, "revision").model_copy(
+        update={"analysis_id": long_analysis}
+    )
+    app.dependency_overrides[get_revision_lookup] = lambda: (
+        lambda session, case, ids: [revision] if long_analysis in ids else []
+    )
+    board = create(client, seeded.case_id, active_analysis_id=long_analysis)
+    added = valid(
+        patch(
+            client,
+            seeded.case_id,
+            board["board_id"],
+            add_reconstruction={"analysis_id": long_analysis, "kinds": ["event"]},
+        )
+    )
+    assert [i["source_analysis_id"] for i in added["items"]] == [long_analysis] * 2
+    assert added["active_analysis_id"] == long_analysis
+
+
+def test_a_saved_reconstruction_is_added_through_the_apps_own_lookup(app, client, seeded) -> None:
+    # No injected lookup: the reconstruction comes from a revision saved in the database.
+    app.dependency_overrides.pop(get_revision_lookup)
+    board_id = create(client, seeded.case_id)["board_id"]
+    body = patch(
+        client, seeded.case_id, board_id, 422, add_reconstruction={"analysis_id": BASE_ID}
+    )
+    assert body["detail"] == [
+        f"cannot add reconstruction {BASE_ID}: no saved revision with that ID in this case"
+    ]
+    with app.state.session_factory() as session:
+        save_revision(session, revision_in(seeded.case_id, "revision"))
+        save_revision(session, revision_in(seeded.case_id, "child"))
+    board = valid(
+        patch(client, seeded.case_id, board_id, add_reconstruction={"analysis_id": BASE_ID})
+    )
+    assert len(board["items"]) == 9
+    board = valid(
+        patch(client, seeded.case_id, board_id, add_reconstruction={"analysis_id": CHILD_ID})
+    )
+    # The child (rec-02 excluded) adds its own findings next to the base's.
+    assert sorted({i["source_analysis_id"] for i in board["items"]}) == [BASE_ID, CHILD_ID]
+    assert all(
+        "rec-02" not in i["evidence_ids"]
+        for i in board["items"]
+        if i["source_analysis_id"] == CHILD_ID
+    )

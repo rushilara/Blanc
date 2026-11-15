@@ -20,6 +20,9 @@ Rules this module enforces:
   (citations exist in the case, are cited by the source item and are not excluded there;
   statuses match; notes target items on the board). An invalid change saves nothing.
 - A change that leaves the board as it was writes no snapshot.
+- **"Add this reconstruction to board"** (``add_reconstruction``) pins every claim, node,
+  edge and event of one revision in one change, through the same checks as single pins.
+  Nodes are never merged across revisions or by similar names: each stays its own item.
 
 Revisions are looked up through a ``RevisionLookup``; the app uses the saved revisions
 (``app.analyses.saved_revision_lookup``), so only findings of saved revisions can be
@@ -42,7 +45,7 @@ from app.contracts import AnalysisRevision, BoardItem, BoardNote, InvestigationB
 from app.db import utcnow
 from app.ids import new_id
 from app.models import BoardSnapshotRow, EvidenceRecordRow
-from app.schemas.boards import BoardChange, NoteCreate, PinRequest
+from app.schemas.boards import ALL_KINDS, BoardChange, NoteCreate
 from app.validation import validate_board
 
 # Every note's author. Set by the server, never by the request: there are no user
@@ -70,6 +73,16 @@ class InvalidBoardChangeError(BoardError):
     def __init__(self, errors: list[str]) -> None:
         super().__init__("; ".join(errors))
         self.errors = errors
+
+
+@dataclass(frozen=True)
+class PinTarget:
+    """One finding to pin, by revision, kind and ID. Internal: built from a request pin or
+    from a saved revision's own findings, so no request-size limits apply to it."""
+
+    kind: str
+    source_analysis_id: str
+    ref_id: str
 
 
 @dataclass(frozen=True)
@@ -196,7 +209,10 @@ def update_board(
     errors: list[str] = []
 
     items = _unpin(current, change, errors)
-    items = items + _pins(session, case_id, items, change.pin, lookup, moment, errors)
+    pins = _reconstruction_pins(session, case_id, change, lookup, errors) + [
+        PinTarget(pin.kind, pin.source_analysis_id, pin.ref_id) for pin in change.pin
+    ]
+    items = items + _pins(session, case_id, items, pins, lookup, moment, errors)
     notes = current.notes + _new_notes(change.notes, moment)
     if errors:
         raise InvalidBoardChangeError(errors)
@@ -246,11 +262,54 @@ def _unpin(current: InvestigationBoard, change: BoardChange, errors: list[str]) 
     return [item for item in current.items if item.item_id not in unpin]
 
 
+def _reconstruction_pins(
+    session: Session,
+    case_id: str,
+    change: BoardChange,
+    lookup: RevisionLookup,
+    errors: list[str],
+) -> list[PinTarget]:
+    """One pin per finding of the requested revision, in kind order (claims, nodes, edges,
+    events), skipping nodes that cite no evidence.
+
+    Nodes are never merged: a node is identified by its revision and ID, so "Alex" from
+    one revision and "Alex" (or "A. Smith") from another stay separate items, and it is
+    left to the investigator to decide they are the same person.
+    """
+    request = change.add_reconstruction
+    if request is None:
+        return []
+    found = [
+        revision
+        for revision in lookup(session, case_id, {request.analysis_id})
+        if revision.case_id == case_id and revision.analysis_id == request.analysis_id
+    ]
+    if not found:
+        errors.append(
+            f"cannot add reconstruction {request.analysis_id}: no saved revision with that ID "
+            "in this case"
+        )
+        return []
+    revision = found[0]
+    findings: dict[str, Iterable[Any]] = {
+        "claim": revision.claims,
+        "node": [node for node in revision.graph.nodes if node.evidence_ids],
+        "edge": revision.graph.edges,
+        "event": revision.timeline_events,
+    }
+    return [
+        PinTarget(kind, revision.analysis_id, finding.id)
+        for kind in ALL_KINDS
+        if kind in request.kinds
+        for finding in findings[kind]
+    ]
+
+
 def _pins(
     session: Session,
     case_id: str,
     items: list[BoardItem],
-    pins: list[PinRequest],
+    pins: list[PinTarget],
     lookup: RevisionLookup,
     moment: datetime,
     errors: list[str],
