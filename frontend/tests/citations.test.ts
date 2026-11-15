@@ -54,14 +54,25 @@ test("a node-only citation is requested and its drawer shows the original", asyn
   assert.doesNotMatch(html, /source is unavailable/);
 });
 
-test("a failed lookup is left out so the drawer reports it unavailable", async () => {
+test("a failed lookup is left out, never replaced with other text", async () => {
   const loaded = await loadCitedSources(revision, async (id) => {
     if (id === "rec-03") throw new Error("not found");
     return store.get(id)!;
   });
   assert.deepEqual(loaded.map((item) => item.record_id).sort(), ["rec-01", "rec-02"]);
+  // The drawer then fetches it itself (BLA-40) rather than showing anything unverified.
   const html = renderToStaticMarkup(
     createElement(SourceReferences, { ids: ["rec-03"], caseId: "synthetic-demo", records: loaded, autoOpen: true, hideTriggers: true }),
   );
-  assert.match(html, /source is unavailable/);
+  assert.doesNotMatch(html, /Synthetic content of rec-03/);
+  assert.match(html, /Loading source record/);
+});
+
+test("hideTriggers renders only the drawer, with no citation chips", () => {
+  const props = { ids: ["rec-01"], caseId: "synthetic-demo", records: [record("rec-01")], autoOpen: true };
+  const hidden = renderToStaticMarkup(createElement(SourceReferences, { ...props, hideTriggers: true }));
+  const shown = renderToStaticMarkup(createElement(SourceReferences, props));
+  assert.doesNotMatch(hidden, /Source record references/);
+  assert.match(shown, /Source record references/);
+  assert.match(hidden, /Synthetic content of rec-01/);
 });

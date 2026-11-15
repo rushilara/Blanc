@@ -10,7 +10,7 @@ import {
   routeParallelEdge,
   withoutRemovals,
 } from "../src/lib/graphEdges";
-import { buildElements } from "../src/lib/graphElements";
+import { buildElements, edgeActionLabel, partitionEdges, sourceCountLabel } from "../src/lib/graphElements";
 
 type Graph = AnalysisRevision["graph"];
 
@@ -89,4 +89,35 @@ test("graph elements cannot be deleted: nondeletable, and remove changes are ign
   assert.deepEqual(nextNodes.find((node) => node.id === "jordan")!.position, { x: 999, y: 5 });
   // Sanity: unfiltered, React Flow would have removed them.
   assert.equal(applyNodeChanges(nodeChanges, flowNodes).length, flowNodes.length - 1);
+});
+
+test("source counts use de-duplicated IDs, matching what the drawer shows", () => {
+  const dupes = [{ ...edges[2], evidence_ids: ["rec-03", "rec-03", "rec-01", "rec-01"] }];
+  assert.equal(sourceCountLabel(dupes[0].evidence_ids), "2 sources");
+  assert.equal(sourceCountLabel(["rec-01", "rec-01"]), "1 source");
+  const { flowNodes, flowEdges } = buildElements(
+    [nodes[1], { ...nodes[2], evidence_ids: ["rec-03", "rec-03"] }],
+    dupes,
+  );
+  assert.deepEqual(flowEdges[0].data!.evidenceIds, ["rec-03", "rec-01"]);
+  assert.match(flowEdges[0].data!.actionLabel, /^Open 2 sources for /);
+  assert.deepEqual(flowNodes[1].data.evidenceIds, ["rec-03"]);
+  assert.match(flowNodes[1].ariaLabel!, /open 1 source\./);
+});
+
+test("an edge label's accessible name says what activating it does", () => {
+  const name = (id: string) => nodes.find((node) => node.id === id)?.label ?? id;
+  const choose = "Choose among 2 relationships between Alex and Jordan";
+  const open = "Open 1 source for Jordan chatted with Casey (inferred)";
+  assert.equal(edgeActionLabel(edges[0], edges, name), choose);
+  assert.equal(edgeActionLabel(edges[2], edges, name), open);
+  const { flowEdges } = buildElements(nodes, edges);
+  assert.deepEqual(flowEdges.map((edge) => edge.data!.actionLabel), [choose, choose, open]);
+});
+
+test("edges referencing unknown entities are kept out of the canvas", () => {
+  const orphan = { ...edges[2], id: "edge-orphan", target: "ghost" };
+  const { drawable, dangling } = partitionEdges(nodes, [...edges, orphan]);
+  assert.deepEqual(drawable.map((edge) => edge.id), ["edge-email", "edge-paid", "edge-chat"]);
+  assert.deepEqual(dangling.map((edge) => edge.id), ["edge-orphan"]);
 });

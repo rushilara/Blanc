@@ -9,48 +9,77 @@ const ROW_GAP = 110;
 const ORIGIN_X = 40;
 const ORIGIN_Y = 40;
 
-export function layoutGraph(nodes: LayoutNode[], edges: LayoutEdge[]): LaidOutNode[] {
-  if (!nodes.length) return [];
-
+/**
+ * Column for each node: the length of the longest path reaching it.
+ *
+ * Cycles are broken deterministically by dropping back edges found with a DFS
+ * that visits nodes and edges in input order; self-loops and edges to unknown
+ * nodes are ignored. Longest-path layering then runs over a topological order of
+ * the remaining DAG, so a node's column only ever settles after every
+ * predecessor's has, and its descendants move with it.
+ */
+export function assignLayers(nodes: LayoutNode[], edges: LayoutEdge[]): Map<string, number> {
   const ids = nodes.map((node) => node.id);
   const idSet = new Set(ids);
-  const incoming = new Map<string, number>(ids.map((id) => [id, 0]));
   const outgoing = new Map<string, string[]>(ids.map((id) => [id, []]));
-
   for (const edge of edges) {
     if (!idSet.has(edge.source) || !idSet.has(edge.target) || edge.source === edge.target) continue;
-    incoming.set(edge.target, (incoming.get(edge.target) ?? 0) + 1);
-    outgoing.get(edge.source)?.push(edge.target);
+    outgoing.get(edge.source)!.push(edge.target);
   }
 
-  const layerOf = new Map<string, number>();
-  const queue = ids.filter((id) => (incoming.get(id) ?? 0) === 0);
-  if (!queue.length) queue.push(ids[0]);
-
-  for (const id of queue) layerOf.set(id, 0);
-
-  for (let i = 0; i < queue.length; i++) {
-    const id = queue[i];
-    const layer = layerOf.get(id) ?? 0;
-    for (const next of outgoing.get(id) ?? []) {
-      const proposed = layer + 1;
-      if (!layerOf.has(next) || (layerOf.get(next) ?? 0) < proposed) {
-        layerOf.set(next, proposed);
+  // Iterative DFS: mark back edges (to a node still on the stack) as removed.
+  const state = new Map<string, "active" | "done">();
+  const forward = new Map<string, string[]>(ids.map((id) => [id, []]));
+  for (const root of ids) {
+    if (state.has(root)) continue;
+    state.set(root, "active");
+    const stack: { id: string; next: number }[] = [{ id: root, next: 0 }];
+    while (stack.length) {
+      const frame = stack[stack.length - 1];
+      const targets = outgoing.get(frame.id)!;
+      if (frame.next >= targets.length) {
+        state.set(frame.id, "done");
+        stack.pop();
+        continue;
       }
-      if (!queue.includes(next)) queue.push(next);
+      const target = targets[frame.next++];
+      const seen = state.get(target);
+      if (seen === "active") continue; // back edge: closes a cycle
+      forward.get(frame.id)!.push(target);
+      if (!seen) {
+        state.set(target, "active");
+        stack.push({ id: target, next: 0 });
+      }
     }
   }
 
-  for (const id of ids) {
-    if (!layerOf.has(id)) layerOf.set(id, 0);
+  // Kahn's algorithm over the acyclic edges, seeded in input order.
+  const indegree = new Map<string, number>(ids.map((id) => [id, 0]));
+  for (const targets of forward.values()) {
+    for (const target of targets) indegree.set(target, indegree.get(target)! + 1);
   }
+  const layer = new Map<string, number>(ids.map((id) => [id, 0]));
+  const queue = ids.filter((id) => indegree.get(id) === 0);
+  for (let i = 0; i < queue.length; i++) {
+    const id = queue[i];
+    for (const target of forward.get(id)!) {
+      layer.set(target, Math.max(layer.get(target)!, layer.get(id)! + 1));
+      const remaining = indegree.get(target)! - 1;
+      indegree.set(target, remaining);
+      if (remaining === 0) queue.push(target);
+    }
+  }
+  return layer;
+}
+
+export function layoutGraph(nodes: LayoutNode[], edges: LayoutEdge[]): LaidOutNode[] {
+  if (!nodes.length) return [];
+  const layers = assignLayers(nodes, edges);
 
   const columns = new Map<number, string[]>();
-  for (const id of ids) {
-    const layer = layerOf.get(id) ?? 0;
-    const column = columns.get(layer) ?? [];
-    column.push(id);
-    columns.set(layer, column);
+  for (const { id } of nodes) {
+    const layer = layers.get(id) ?? 0;
+    columns.set(layer, [...(columns.get(layer) ?? []), id]);
   }
 
   const positions: LaidOutNode[] = [];

@@ -128,6 +128,9 @@ try {
   await wait(`!!document.querySelector('dialog[open]')`);
   assert.match(await evaluate(dialogText), new RegExp(records[1].content));
   await closeDialog();
+  // Accessible names describe the action each label performs.
+  assert.equal(await evaluate(`document.querySelector('[data-edge-label=edge-1]').getAttribute('aria-label')`), 'Choose among 2 relationships between Alex and Jordan');
+  assert.equal(await evaluate(`document.querySelector('[data-edge-label=edge-2]').getAttribute('aria-label')`), 'Open 1 source for Jordan communicated with Casey (reported)');
   // Status is shown as text, and every relationship is listed with source buttons.
   assert.equal(await evaluate(`document.querySelectorAll('[aria-label=Relationships] li[data-edge-id]').length`), 3);
   assert.match(await evaluate(`document.querySelector('[data-edge-label=edge-1b]').textContent`), /observed/);

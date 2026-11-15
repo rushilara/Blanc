@@ -1,12 +1,20 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import type { AnalysisRevision, EvidenceRecord } from "@/lib/analysis";
 import { SourceReferences } from "@/components/SourceReferences";
+import { Status } from "@/components/StatusBadge";
 import { resolveEdgeSelection } from "@/lib/graphEdges";
-import { STATUS_EDGE, relationLabel, type GraphEdge } from "@/lib/graphElements";
+import {
+  STATUS_EDGE,
+  partitionEdges,
+  relationLabel,
+  sourceCountLabel,
+  uniqueIds,
+  type GraphEdge,
+} from "@/lib/graphElements";
 
 const RelationshipGraphCanvas = dynamic(() => import("./RelationshipGraphCanvas"), {
   ssr: false,
@@ -23,25 +31,35 @@ export function RelationshipGraph({
   graph,
   caseId,
   records,
+  excludedRecordIds,
+  onExclude,
+  onAnnotate,
 }: {
   graph: Graph;
   caseId: string;
   records: EvidenceRecord[];
+  excludedRecordIds?: string[];
+  onExclude?: (recordId: string) => void;
+  onAnnotate?: (recordId: string) => void;
 }) {
   const [drawerIds, setDrawerIds] = useState<string[]>([]);
   const [openToken, setOpenToken] = useState(0);
   const [status, setStatus] = useState<string | null>(null);
   const [pair, setPair] = useState<GraphEdge[] | null>(null);
   const pairHeading = useRef<HTMLHeadingElement>(null);
+  const pairTitleId = useId();
+  const { drawable, dangling } = useMemo(() => partitionEdges(graph.nodes, graph.edges), [graph]);
+  const danglingIds = new Set(dangling.map((edge) => edge.id));
   const names = new Map(graph.nodes.map((node) => [node.id, node.label]));
   const name = (id: string) => names.get(id) ?? id;
+  const sourceProps = { records, caseId, excludedRecordIds, onExclude, onAnnotate };
 
   useEffect(() => {
     if (pair) pairHeading.current?.focus();
   }, [pair]);
 
   const inspect = useCallback((evidenceIds: string[], label: string) => {
-    const ids = [...new Set(evidenceIds)];
+    const ids = uniqueIds(evidenceIds);
     if (!ids.length) {
       setStatus(`No cited sources for ${label}.`);
       return;
@@ -61,7 +79,7 @@ export function RelationshipGraph({
 
   const onSelectEdge = useCallback(
     (edgeId: string) => {
-      const selection = resolveEdgeSelection(graph.edges, edgeId);
+      const selection = resolveEdgeSelection(drawable, edgeId);
       if (selection.kind === "sources") {
         setPair(null);
         inspect(selection.edge.evidence_ids, relationLabel(selection.edge.type));
@@ -70,7 +88,7 @@ export function RelationshipGraph({
         setPair(selection.edges);
       }
     },
-    [graph.edges, inspect],
+    [drawable, inspect],
   );
 
   return (
@@ -89,7 +107,7 @@ export function RelationshipGraph({
       <div className="h-[min(28rem,55vh)] min-h-[18rem] overflow-hidden rounded-lg border border-zinc-200 dark:border-zinc-800">
         <RelationshipGraphCanvas
           nodes={graph.nodes}
-          edges={graph.edges}
+          edges={drawable}
           onInspectNode={onInspectNode}
           onSelectEdge={onSelectEdge}
         />
@@ -100,9 +118,9 @@ export function RelationshipGraph({
         </p>
       )}
       {pair && (
-        <section aria-labelledby="relationship-pair-title" className="space-y-2 rounded-lg border border-blue-200 p-3 dark:border-blue-900">
+        <section aria-labelledby={pairTitleId} className="space-y-2 rounded-lg border border-blue-200 p-3 dark:border-blue-900">
           <div className="flex items-start justify-between gap-3">
-            <h3 id="relationship-pair-title" ref={pairHeading} tabIndex={-1} className="break-words text-sm font-semibold">
+            <h3 id={pairTitleId} ref={pairHeading} tabIndex={-1} className="break-words text-sm font-semibold">
               {pair.length} relationships between {name(pair[0].source)} and {name(pair[0].target)}
             </h3>
             <button type="button" onClick={() => setPair(null)} className="rounded border border-zinc-300 px-2 py-1 text-xs dark:border-zinc-700">
@@ -112,39 +130,47 @@ export function RelationshipGraph({
           <ul className="space-y-2">
             {pair.map((edge) => (
               <li key={edge.id} data-pair-edge={edge.id} className="flex flex-wrap items-center justify-between gap-2 text-sm">
-                <span className="break-words">
-                  {name(edge.source)} <span aria-label="to">→</span> {name(edge.target)}: <span className="capitalize">{relationLabel(edge.type)}</span> ({edge.status})
+                <span className="flex flex-wrap items-center gap-2 break-words">
+                  <span>
+                    {name(edge.source)} <span aria-label="to">→</span> {name(edge.target)}: <span className="capitalize">{relationLabel(edge.type)}</span>
+                  </span>
+                  <Status value={edge.status} />
                 </span>
                 <button type="button" aria-haspopup="dialog" onClick={() => inspect(edge.evidence_ids, relationLabel(edge.type))}
                   className="rounded-md border border-blue-200 bg-blue-50 px-2 py-1 text-xs text-blue-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-200">
-                  Open {edge.evidence_ids.length} source{edge.evidence_ids.length === 1 ? "" : "s"}
+                  Open {sourceCountLabel(edge.evidence_ids)}
                 </button>
               </li>
             ))}
           </ul>
         </section>
       )}
-      {graph.edges.length > 0 && (
+      {graph.edges.length > 0 ? (
         <ul aria-label="Relationships" className="space-y-3">
           {graph.edges.map((edge) => (
-            <li key={edge.id} data-edge-id={edge.id} className="space-y-1.5 rounded-lg bg-zinc-50 p-3 dark:bg-zinc-900">
+            <li key={edge.id} data-edge-id={edge.id} className="space-y-2 rounded-lg bg-zinc-50 p-3 dark:bg-zinc-900">
               <p className="break-words text-sm font-medium">
                 {name(edge.source)} <span aria-label="to">→</span> {name(edge.target)}
               </p>
-              <p className="text-xs text-zinc-500">
-                <span className="capitalize">{relationLabel(edge.type)}</span> · Status: <span className="font-medium">{edge.status}</span>
-              </p>
+              {danglingIds.has(edge.id) && (
+                <p data-unknown-entity className="text-xs text-amber-800 dark:text-amber-300">
+                  References an entity not in this graph, so it is not drawn above.
+                </p>
+              )}
+              <p className="text-xs capitalize text-zinc-500">{relationLabel(edge.type)}</p>
               {edge.description && <p className="break-words text-sm leading-6">{edge.description}</p>}
-              <SourceReferences records={records} caseId={caseId} ids={edge.evidence_ids} />
+              <Status value={edge.status} />
+              <SourceReferences {...sourceProps} ids={edge.evidence_ids} />
             </li>
           ))}
         </ul>
+      ) : (
+        <p className="text-sm text-zinc-500">No supported relationships.</p>
       )}
       {drawerIds.length > 0 && (
         <SourceReferences
           key={openToken}
-          records={records}
-          caseId={caseId}
+          {...sourceProps}
           ids={drawerIds}
           autoOpen
           hideTriggers

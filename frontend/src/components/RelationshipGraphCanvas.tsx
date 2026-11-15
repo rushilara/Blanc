@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useMemo, type KeyboardEvent } from "react";
+import { createContext, useCallback, useContext, useMemo, type KeyboardEvent } from "react";
 import {
   Background,
   BaseEdge,
@@ -14,7 +14,6 @@ import {
   getBezierPath,
   useEdgesState,
   useNodesState,
-  useReactFlow,
   type Edge,
   type EdgeChange,
   type EdgeProps,
@@ -99,8 +98,8 @@ function RelationEdge({
         <button
           type="button"
           data-edge-label={id}
-          aria-haspopup="dialog"
-          aria-label={`Relationship: ${type}, ${status}. Inspect cited sources.`}
+          aria-haspopup={(data?.lane.count ?? 1) > 1 ? undefined : "dialog"}
+          aria-label={data?.actionLabel ?? `Open sources for ${type}`}
           onClick={(event) => {
             event.stopPropagation();
             handlers?.onSelectEdge(id);
@@ -123,15 +122,6 @@ function RelationEdge({
 const nodeTypes = { entity: EntityNode };
 const edgeTypes = { relation: RelationEdge };
 
-function FitViewOnChange({ nodeCount, edgeCount }: { nodeCount: number; edgeCount: number }) {
-  const { fitView } = useReactFlow();
-  useEffect(() => {
-    const timer = window.setTimeout(() => fitView({ padding: 0.2, duration: 200 }), 30);
-    return () => window.clearTimeout(timer);
-  }, [fitView, nodeCount, edgeCount]);
-  return null;
-}
-
 function GraphInner({
   nodes,
   edges,
@@ -142,14 +132,10 @@ function GraphInner({
   edges: GraphEdge[];
 } & Handlers) {
   const built = useMemo(() => buildElements(nodes, edges), [nodes, edges]);
-  const [flowNodes, setNodes, applyNodeChanges] = useNodesState(built.flowNodes);
-  const [flowEdges, setEdges, applyEdgeChanges] = useEdgesState(built.flowEdges);
+  // Initial state only: the parent remounts the graph for each revision.
+  const [flowNodes, , applyNodeChanges] = useNodesState(built.flowNodes);
+  const [flowEdges, , applyEdgeChanges] = useEdgesState(built.flowEdges);
   const handlers = useMemo(() => ({ onInspectNode, onSelectEdge }), [onInspectNode, onSelectEdge]);
-
-  useEffect(() => {
-    setNodes(built.flowNodes);
-    setEdges(built.flowEdges);
-  }, [built, setNodes, setEdges]);
 
   // Read-only view: drag, select and dimension changes apply; removals never do.
   const onNodesChange = useCallback(
@@ -197,7 +183,6 @@ function GraphInner({
         aria-label="Entity relationship graph"
         className="bg-zinc-50 dark:bg-zinc-900/40"
       >
-        <FitViewOnChange nodeCount={nodes.length} edgeCount={edges.length} />
         <Background gap={18} size={1} color="#a1a1aa" className="opacity-40" />
         <Controls showInteractive={false} className="!overflow-hidden !rounded-lg !border !border-zinc-200 !bg-white !shadow-none dark:!border-zinc-700 dark:!bg-zinc-950" />
         <MiniMap
@@ -221,7 +206,7 @@ export default function RelationshipGraphCanvas({
   edges: GraphEdge[];
 } & Handlers) {
   if (!nodes.length && !edges.length) {
-    return <p className="p-5 text-sm text-zinc-500">No supported relationships.</p>;
+    return <p className="p-5 text-sm text-zinc-500">No entities to draw.</p>;
   }
 
   return (

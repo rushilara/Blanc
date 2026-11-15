@@ -28,6 +28,20 @@ had that evidence state, there is nothing to reuse, and it raises ``NoPriorState
 Analyzing (BLA-20). ``run_case_analysis`` retrieves evidence, runs ``analyze_with_retry``,
 and saves through ``save_revision``. A follow-up that names a prior revision inherits that
 revision's exclusions so excluded evidence cannot silently return.
+
+Excluding (BLA-33). ``exclude_records`` reruns the same question with more records excluded:
+retrieval filters every chunk of them, the new revision is generated from permitted evidence
+only and saved as a child of the base, and the excluded records stay in the corpus. So that
+unchanged findings keep their identity for the support diff (``app.comparison``), the rerun
+sees the base revision's findings that cite no excluded record (never its answer, and never
+a finding that cites an excluded record), and the system prompt asks it to reuse their IDs
+and wording only when the remaining evidence still supports them. This filter is by
+citation: a finding that cites only permitted records was still written by a model that saw
+the excluded record, so its wording can paraphrase excluded content. The system prompt
+requires every kept finding to be re-supported by the current records, and validation
+strips any citation to an excluded record, but the prompt is not guaranteed free of excluded
+information. ``compare_to_parent`` returns the diff for exclusion and restore children
+(same question as the parent).
 """
 
 from __future__ import annotations
@@ -43,7 +57,8 @@ from sqlalchemy.orm import Session
 
 from app.analysis_llm import AnalysisLLM
 from app.analysis_retry import RevisionMetadata, analyze_with_retry
-from app.contracts import AnalysisRevision
+from app.comparison import compare_revisions
+from app.contracts import AnalysisRevision, RevisionComparison
 from app.db import utcnow
 from app.embeddings import Embedder
 from app.evidence_store import list_records
@@ -71,6 +86,15 @@ class InvalidRestoreError(RevisionStoreError):
 
 class NoPriorStateError(RevisionStoreError):
     """No earlier revision in the lineage had the evidence state the restore asks for."""
+
+
+class InvalidExclusionError(RevisionStoreError):
+    """The records to exclude are missing, unknown in the case or already excluded."""
+
+
+class ComparisonNotApplicableError(RevisionStoreError):
+    """The revision's question differs from its parent's (a follow-up), so a support diff
+    would not describe the effect of an exclusion."""
 
 
 class InvalidRevisionError(RevisionStoreError):
@@ -385,6 +409,164 @@ def run_case_analysis(
         prior_text = prior_analysis_summary(prior)
         excluded = list(prior.excluded_record_ids)
 
+    return _analyze_and_save(
+        session,
+        case_id,
+        question,
+        llm,
+        embedder,
+        excluded=excluded,
+        parent_id=parent_id,
+        prior_text=prior_text,
+        retrieval_config=retrieval_config,
+        now=now,
+    )
+
+
+def exclude_records(
+    session: Session,
+    case_id: str,
+    analysis_id: str,
+    record_ids: Collection[str],
+    llm: AnalysisLLM,
+    embedder: Embedder,
+    *,
+    retrieval_config: RetrievalConfig | None = None,
+    now: datetime | None = None,
+) -> AnalysisRevision:
+    """Exclude ``record_ids`` from revision ``analysis_id`` and rerun its question (BLA-33).
+
+    The new revision's excluded set is the base's plus ``record_ids``; it is generated from
+    the remaining evidence only, saved as a child of the base, and returned. Nothing is
+    deleted: the excluded records stay in the corpus and the base stays in the history.
+
+    Raises ``RevisionNotFoundError`` for an unknown base, ``InvalidExclusionError`` if no
+    record is given, a record is not in this case, or every record is already excluded,
+    ``ExcludedRecordLeakError`` if retrieval leaked an exclusion (a server bug), and
+    ``AnalysisLLMError`` on provider failure.
+    """
+    base = get_revision(session, case_id, analysis_id)
+    requested = set(record_ids)
+    if not requested:
+        raise InvalidExclusionError("name at least one record to exclude")
+    known = set(
+        session.scalars(
+            select(EvidenceRecordRow.record_id).where(
+                EvidenceRecordRow.case_id == case_id,
+                EvidenceRecordRow.record_id.in_(sorted(requested)),
+            )
+        )
+    )
+    unknown = sorted(requested - known)
+    if unknown:
+        raise InvalidExclusionError(
+            "not records of this case, so they cannot be excluded: " + ", ".join(unknown)
+        )
+    already = set(base.excluded_record_ids)
+    if requested <= already:
+        raise InvalidExclusionError(
+            f"already excluded in analysis {analysis_id}: " + ", ".join(sorted(requested))
+        )
+    excluded = sorted(already | requested)
+    return _analyze_and_save(
+        session,
+        case_id,
+        base.question,
+        llm,
+        embedder,
+        excluded=excluded,
+        parent_id=base.analysis_id,
+        prior_text=prior_findings_context(base, excluded),
+        retrieval_config=retrieval_config,
+        now=now,
+    )
+
+
+def prior_findings_context(base: AnalysisRevision, excluded: Collection[str]) -> str:
+    """The base revision's findings that do not rely on any excluded record, as JSON, for
+    the rerun's "prior analysis — not evidence" context.
+
+    Left out: the answer and unresolved questions (written with the excluded evidence in
+    view), every claim, edge and event citing an excluded record, every node whose cited
+    records are all excluded, and edges whose endpoints were left out. What remains cites
+    only permitted records, so excluded content is never sent verbatim or by citation. It
+    can still be paraphrased: the remaining findings were written by a model that saw the
+    excluded record. The system prompt therefore requires every kept finding to be
+    re-supported by the current source records.
+    """
+    out = set(excluded)
+
+    def clean(ids: Collection[str] | None) -> bool:
+        return not (set(ids or ()) & out)
+
+    nodes = [
+        node
+        for node in base.graph.nodes
+        if not node.evidence_ids or not set(node.evidence_ids) <= out
+    ]
+    node_ids = {node.id for node in nodes}
+    edges = [
+        edge
+        for edge in base.graph.edges
+        if clean(edge.evidence_ids) and edge.source in node_ids and edge.target in node_ids
+    ]
+    referenced = {end for edge in edges for end in (edge.source, edge.target)}
+    nodes = [node for node in nodes if node.evidence_ids or node.id in referenced]
+    for_node = [
+        {
+            **node.to_contract_json(),
+            "evidence_ids": [r for r in (node.evidence_ids or []) if r not in out],
+        }
+        for node in nodes
+    ]
+    context = {
+        "label": "Earlier findings for this question that do not rely on any excluded record",
+        "claims": [c.to_contract_json() for c in base.claims if clean(c.evidence_ids)],
+        "nodes": [{k: v for k, v in n.items() if v != []} for n in for_node],
+        "edges": [e.to_contract_json() for e in edges],
+        "timeline_events": [
+            e.to_contract_json() for e in base.timeline_events if clean(e.evidence_ids)
+        ],
+    }
+    return json.dumps(context, ensure_ascii=False)
+
+
+def compare_to_parent(session: Session, case_id: str, analysis_id: str) -> RevisionComparison:
+    """The support diff between a saved revision and its parent (``app.comparison``).
+
+    Deterministic: ``created_at`` is the child's own creation time, so the same two
+    revisions always give the identical comparison. Only for children that ask the same
+    question as their parent (exclusions and restores): a follow-up asks something else, so
+    its "not supported" findings would just be ones the new question did not cover. Raises
+    ``RevisionNotFoundError`` if the revision is unknown or has no parent, and
+    ``ComparisonNotApplicableError`` if the questions differ.
+    """
+    child = get_revision(session, case_id, analysis_id)
+    if child.parent_analysis_id is None:
+        raise RevisionNotFoundError(f"analysis {analysis_id} has no parent to compare with")
+    parent = get_revision(session, case_id, child.parent_analysis_id)
+    if child.question != parent.question:
+        raise ComparisonNotApplicableError(
+            f"analysis {analysis_id} asks a different question than its parent (a follow-up), "
+            "so a support comparison would not show the effect of an exclusion"
+        )
+    return compare_revisions(parent, child, created_at=child.created_at)
+
+
+def _analyze_and_save(
+    session: Session,
+    case_id: str,
+    question: str,
+    llm: AnalysisLLM,
+    embedder: Embedder,
+    *,
+    excluded: list[str],
+    parent_id: str | None,
+    prior_text: str | None,
+    retrieval_config: RetrievalConfig | None,
+    now: datetime | None,
+) -> AnalysisRevision:
+    """Retrieve without ``excluded``, analyze with one retry, save and return the revision."""
     retrieval = retrieve(
         session,
         case_id,

@@ -19,11 +19,17 @@ Blanc is a persistent investigative workspace in which an investigator asks case
 5. [`docs/05_CLAUDE_CODE_KICKOFF.md`](docs/05_CLAUDE_CODE_KICKOFF.md): initial issue board and handoff prompts for developers/coding agents.
 6. [`contracts/`](contracts/): minimal machine-readable evidence and reconstruction schemas plus a synthetic example.
 
+## Architecture posture (MVP)
+
+**Local-first data, cloud AI compute.** Forensic files, parsed records, embeddings, SQLite (including sqlite-vec + FTS5), and saved investigations live on the investigator’s machine. FastAPI and the Next.js UI run on localhost. **Google Gemini** is used for embeddings and structured LLM analysis, so evidence *content* still leaves the machine for those API calls. This is **not** a fully offline or zero-third-party design. Use public/synthetic datasets for the hackathon.
+
+Cloud hosting of the case database or original evidence is **out of MVP**. The landing **login page stays**; cloud auth can gate the local app against casual local misuse and support later hosted surfaces. Optional later: host a marketing/landing site, optional full cloud deploy for teams that want it, and local/offline models.
+
 ## Scope decision
 
-- **In MVP:** upload/import *supported extracted* evidence, hybrid retrieval, one structured LLM reconstruction, clickable provenance, persistent case workspace, follow-up queries, save/append findings, reversible source exclusion, reconstruction comparison, at least one real verified forensic case.
-- **Target if ready:** second unrelated case using the same code path, basic exports, annotations, keyword baseline.
-- **After MVP:** bounded multi-hop agentic search, forensic-domain embedder fine-tuning, native raw disk/memory acquisition, full production-grade investigation governance.
+- **In MVP:** local import of *supported extracted* evidence, hybrid retrieval, one structured LLM reconstruction via Gemini, clickable provenance, persistent local case workspace, follow-up queries, save/append findings, reversible source exclusion, reconstruction comparison, at least one real verified forensic case; demo on localhost.
+- **Target if ready:** second unrelated case using the same code path, basic exports, annotations, keyword baseline; optional static landing host (no evidence in the cloud).
+- **After MVP:** bounded multi-hop agentic search, forensic-domain embedder fine-tuning, native raw disk/memory acquisition, desktop packaging, optional cloud deploy, fully offline/local models, production-grade investigation governance.
 
 ## Hard rules
 
@@ -61,8 +67,9 @@ make test              # backend ruff + pytest, frontend lint
 
 Check the backend at http://localhost:8000/health (also shown in the workspace header). Run `make backend` and `make frontend` in separate terminals. If `python3.12` is not on your PATH, pass it explicitly, e.g. `make backend PYTHON=/path/to/python3.12`.
 
-- LLM: Google Gemini API (`GEMINI_API_KEY`, `GEMINI_MODEL`).
-- Embeddings: Gemini embeddings API (`GEMINI_API_KEY`, `EMBEDDING_MODEL`, `EMBEDDING_DIM`), stored in SQLite with sqlite-vec.
+- LLM: Google Gemini API (`GEMINI_API_KEY`, `GEMINI_MODEL`) — cloud compute; key stays in local `.env`.
+- Embeddings: Gemini embeddings API (`GEMINI_API_KEY`, `EMBEDDING_MODEL`, `EMBEDDING_DIM`); vectors are stored locally in SQLite with sqlite-vec.
+- Persistence: local `DATABASE_URL` (default `sqlite:///./data/blanc.db` under `backend/`). Do not point MVP demos at a hosted volume for case evidence.
 
 ## Suggested kickoff
 

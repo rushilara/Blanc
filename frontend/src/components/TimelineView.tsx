@@ -7,7 +7,21 @@ import { SourceReferences } from "./SourceReferences";
 
 const PRECISION = { exact: "Exact time", day: "Day only", month: "Month only", approximate: "Approximate", unknown: "Undated / uncertain" };
 
-export function TimelineView({ events, caseId, records }: { events: TimelineEvent[]; caseId: string; records: EvidenceRecord[] }) {
+export function TimelineView({
+  events,
+  caseId,
+  records,
+  excludedRecordIds,
+  onExclude,
+  onAnnotate,
+}: {
+  events: TimelineEvent[];
+  caseId: string;
+  records: EvidenceRecord[];
+  excludedRecordIds?: string[];
+  onExclude?: (recordId: string) => void;
+  onAnnotate?: (recordId: string) => void;
+}) {
   const [result, setResult] = useState<{ input: TimelineEvent[]; data: NormalizedTimeline } | null>(null);
   const [failed, setFailed] = useState<TimelineEvent[] | null>(null);
   const [retry, setRetry] = useState(0);
@@ -38,7 +52,15 @@ export function TimelineView({ events, caseId, records }: { events: TimelineEven
           {time?.precision === "exact" && !time.timezone_known && <p className="text-xs text-amber-700 dark:text-amber-300">Time zone unknown — not placed on the absolute timeline.</p>}
           {time?.timezone_known && <p className="text-xs text-zinc-500">Normalized to UTC</p>}
           {event.timestamp && <p className="break-words text-xs text-zinc-500">Source time as written: {event.timestamp}</p>}
-          <SourceReferences records={records} caseId={caseId} ids={event.evidence_ids} triggerLabel={event.description} />
+          <SourceReferences
+            records={records}
+            caseId={caseId}
+            ids={event.evidence_ids}
+            triggerLabel={event.description}
+            excludedRecordIds={excludedRecordIds}
+            onExclude={onExclude}
+            onAnnotate={onAnnotate}
+          />
           <p className="break-all font-mono text-xs text-zinc-500">{[...new Set(event.evidence_ids)].join(" · ")}</p>
         </li>)}
       </ol>

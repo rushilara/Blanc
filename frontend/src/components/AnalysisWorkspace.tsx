@@ -1,8 +1,11 @@
-import type { ReactNode } from "react";
+"use client";
+
+import { useMemo, type ReactNode } from "react";
 import type { AnalysisRevision, EvidenceRecord } from "@/lib/analysis";
 import { QuestionInput } from "@/components/QuestionInput";
 import { RelationshipGraph } from "@/components/RelationshipGraph";
 import { SourceReferences } from "@/components/SourceReferences";
+import { Status } from "@/components/StatusBadge";
 import { TimelineView } from "@/components/TimelineView";
 
 function Pane({ id, title, count, children }: {
@@ -19,22 +22,35 @@ function Pane({ id, title, count, children }: {
   );
 }
 
-const STATUS_STYLES: Record<string, string> = {
-  observed: "border-emerald-300 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200",
-  reported: "border-blue-300 bg-blue-50 text-blue-900 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-200",
-  inferred: "border-violet-300 bg-violet-50 text-violet-900 dark:border-violet-800 dark:bg-violet-950 dark:text-violet-200",
-  unresolved: "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200",
+type AnalysisWorkspaceProps = {
+  revision: AnalysisRevision;
+  records?: EvidenceRecord[];
+  showQuestionInput?: boolean;
+  onExclude?: (recordId: string) => void;
+  onAnnotate?: (recordId: string) => void;
 };
-
-function Status({ value }: { value: string }) {
-  return <span className={`inline-block rounded-full border px-2 py-0.5 text-xs font-semibold capitalize ${STATUS_STYLES[value] ?? "border-zinc-300 text-zinc-600"}`}>{value.replaceAll("_", " ")}</span>;
-}
 
 // Fixture loading is outside this component. BLA-42 can pass a validated live
 // response to the same renderer; no case-specific findings belong here.
-export function AnalysisWorkspace({ revision, records = [], showQuestionInput = true }: { revision: AnalysisRevision; records?: EvidenceRecord[]; showQuestionInput?: boolean }) {
+export function AnalysisWorkspace({
+  revision,
+  records = [],
+  showQuestionInput = true,
+  onExclude,
+  onAnnotate,
+}: AnalysisWorkspaceProps) {
   // Do not serialize other cases' excerpts into the client-side source controls.
-  const caseRecords = records.filter((record) => record.case_id === revision.case_id);
+  const caseRecords = useMemo(
+    () => records.filter((record) => record.case_id === revision.case_id),
+    [records, revision.case_id],
+  );
+  const sourceProps = {
+    records: caseRecords,
+    caseId: revision.case_id,
+    excludedRecordIds: revision.excluded_record_ids,
+    onExclude,
+    onAnnotate,
+  };
   return (
     <main className="mx-auto w-full max-w-7xl space-y-6 p-4 sm:p-6">
       {showQuestionInput && <QuestionInput key={revision.analysis_id} question={revision.question} />}
@@ -57,7 +73,7 @@ export function AnalysisWorkspace({ revision, records = [], showQuestionInput = 
               <li key={claim.id} className="space-y-2 border-l-2 border-zinc-200 pl-3 dark:border-zinc-700">
                 <Status value={claim.status} />
                 <p className="text-sm leading-6">{claim.text}</p>
-                <SourceReferences records={caseRecords} caseId={revision.case_id} ids={claim.evidence_ids} />
+                <SourceReferences {...sourceProps} ids={claim.evidence_ids} />
               </li>
             ))}
           </ul>
@@ -75,18 +91,25 @@ export function AnalysisWorkspace({ revision, records = [], showQuestionInput = 
           <RelationshipGraph
             key={`${revision.case_id}:${revision.analysis_id}`}
             graph={revision.graph}
-            caseId={revision.case_id}
-            records={caseRecords}
+            {...sourceProps}
           />
         </Pane>
         <Pane id="timeline" title="Timeline" count={revision.timeline_events.length}>
-          <TimelineView key={`${revision.case_id}:${revision.analysis_id}`} events={revision.timeline_events} caseId={revision.case_id} records={caseRecords} />
+          <TimelineView
+            key={`${revision.case_id}:${revision.analysis_id}`}
+            events={revision.timeline_events}
+            caseId={revision.case_id}
+            records={caseRecords}
+            excludedRecordIds={revision.excluded_record_ids}
+            onExclude={onExclude}
+            onAnnotate={onAnnotate}
+          />
         </Pane>
       </div>
       {!!revision.excluded_record_ids.length && (
         <aside className="space-y-2 text-sm text-zinc-500">
           <p>Excluded from this revision</p>
-          <SourceReferences records={caseRecords} caseId={revision.case_id} ids={revision.excluded_record_ids} />
+          <SourceReferences {...sourceProps} ids={revision.excluded_record_ids} />
         </aside>
       )}
     </main>
