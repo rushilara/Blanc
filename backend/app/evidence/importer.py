@@ -246,6 +246,10 @@ def import_path(
                 result.skipped.append(ImportProblem(source_file, f"unsupported format {shown}"))
                 continue
             if strict:
+                # Earlier files already landed in result.written_media; drop them too so a
+                # hard abort never leaves bytes for a case the CLI will not store.
+                remove_media_files(result.written_media)
+                result.written_media.clear()
                 raise
             reason = (
                 str(error)
@@ -254,6 +258,13 @@ def import_path(
             )
             result.errors.append(ImportProblem(source_file, reason))
             continue
+        except Exception:
+            # Unexpected failure (not EvidenceImportError/ValidationError): same orphan
+            # risk for this file and any earlier successful media writes.
+            remove_media_files(sink.written_media)
+            remove_media_files(result.written_media)
+            result.written_media.clear()
+            raise
         seen_ids.update(record.record_id for record in records)
         result.records.extend(records)
         result.written_media.update(sink.written_media)
@@ -761,22 +772,31 @@ def _media_record(
         )
     except MediaStoreError as error:
         raise EvidenceImportError(f"{builder.source_file} {locator}: {error}") from error
+    dest = media_dir / f"{record_id}{ext}"
     if created:
-        builder.sink.written_media[record_id] = media_dir / f"{record_id}{ext}"
+        builder.sink.written_media[record_id] = dest
     details = dict(metadata)
     details["media_sha256"] = media_sha
     if filename:
         details["filename"] = filename
-    return builder.build(
-        locator=locator,
-        content="",  # no text chunks until multimodal embedding (BLA-69)
-        timestamp=timestamp,
-        timestamp_kind=timestamp_kind,
-        metadata=details,
-        modality=modality,
-        media_path=media_path,
-        content_type=content_type,
-    )
+    try:
+        return builder.build(
+            locator=locator,
+            content="",  # no text chunks until multimodal embedding (BLA-69)
+            timestamp=timestamp,
+            timestamp_kind=timestamp_kind,
+            metadata=details,
+            modality=modality,
+            media_path=media_path,
+            content_type=content_type,
+        )
+    except Exception:
+        # build() can fail after bytes are on disk (e.g. schema ValidationError); drop the
+        # orphan so a metadata-only fallback or failed file never keeps a row-less file.
+        if created:
+            builder.sink.written_media.pop(record_id, None)
+            dest.unlink(missing_ok=True)
+        raise
 
 
 # --- EML ----------------------------------------------------------------------
@@ -876,9 +896,11 @@ def _message_records(
                 yield _email_image_record(
                     part, where, builder, base=base, date=date, parent_locator=headers_locator
                 )
-            except (EvidenceImportError, ValidationError, MediaStoreError) as error:
+            except (EvidenceImportError, ValidationError) as error:
                 # Mislabelled or truncated attachments are common; keep the email text and
                 # the attachments[] metadata entry rather than failing the whole .eml.
+                # MediaStoreError is already wrapped as EvidenceImportError in _media_record;
+                # build failures after a write unlink the file there before re-raising.
                 detail = str(error)
                 for prefix in (
                     f"{builder.source_file} {where}: ",

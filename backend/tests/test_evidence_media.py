@@ -196,6 +196,9 @@ def test_mislabeled_email_image_falls_back_to_metadata(tmp_path: Path) -> None:
     assert records[1].content == "Body text must survive."
     assert records[0].metadata["attachments"][0]["filename"] == "lie.png"
     assert sink.warnings
+    assert sink.warnings[0].source_file == "mail.eml"
+    assert sink.warnings[0].reason.startswith("part ")
+    assert sink.warnings[0].reason.count("part ") == 1  # prefix not duplicated
     assert "metadata only" in sink.warnings[0].reason
     assert not media_dir.exists() or list(media_dir.iterdir()) == []
 
@@ -551,15 +554,25 @@ def test_cli_reimport_embedding_failure_keeps_existing_media(tmp_path: Path) -> 
     assert existing.read_bytes() == before
 
 
-def test_cli_empty_records_cleanup_leaves_no_media(tmp_path: Path) -> None:
-    from app.evidence.__main__ import main
+def test_cli_empty_records_cleanup_leaves_no_media(tmp_path: Path, monkeypatch) -> None:
+    """CLI finally must unlink media when import returns written files but no records."""
+    from app.evidence import __main__ as cli
+    from app.evidence.importer import ImportResult
 
+    media_dir = tmp_path / "media"
+    media_dir.mkdir()
+    orphan = media_dir / "rec_0123456789abcdef.png"
+    orphan.write_bytes(PNG_BYTES)
+
+    def fake_import(args, case_id):  # noqa: ANN001, ARG001
+        return ImportResult(written_media={"rec_0123456789abcdef": orphan})
+
+    monkeypatch.setattr(cli, "_import", fake_import)
     exports = tmp_path / "exports"
     exports.mkdir()
-    (exports / "empty.eml").write_bytes(b"")  # empty eml → no records
+    (exports / "notes.txt").write_text("unused\n", encoding="utf-8")
     db = tmp_path / "blanc.db"
-    media_dir = tmp_path / "media"
-    code = main(
+    code = cli.main(
         [
             str(exports),
             "--store",
@@ -573,6 +586,178 @@ def test_cli_empty_records_cleanup_leaves_no_media(tmp_path: Path) -> None:
         embedder=FakeEmbedder(),
     )
     assert code == 1
+    assert not orphan.exists()
+
+
+def test_strict_store_cleans_media_from_earlier_files(tmp_path: Path) -> None:
+    """--strict must not leave media from files that imported before the failure."""
+    import base64
+
+    from app.evidence.__main__ import main
+
+    exports = tmp_path / "exports"
+    exports.mkdir()
+    write_bytes(exports, "a.png", PNG_BYTES)
+    raw = (
+        b"From: Alex <alex@example.test>\r\n"
+        b"To: Jordan <jordan@example.test>\r\n"
+        b"Date: Fri, 10 Apr 2026 09:15:00 -0400\r\n"
+        b"Subject: Strict fail\r\n"
+        b"Message-ID: <strict@example.test>\r\n"
+        b'MIME-Version: 1.0\r\n'
+        b'Content-Type: multipart/mixed; boundary="bound"\r\n'
+        b"\r\n"
+        b"--bound\r\n"
+        b"Content-Type: image/png\r\n"
+        b"Content-Transfer-Encoding: base64\r\n"
+        b'Content-Disposition: attachment; filename="dock.png"\r\n'
+        b"\r\n"
+    )
+    raw += base64.b64encode(PNG_BYTES) + b"\r\n"
+    raw += (
+        b"--bound\r\n"
+        b"Content-Type: text/plain; charset=x-no-such-charset\r\n"
+        b"Content-Transfer-Encoding: 8bit\r\n"
+        b"\r\n"
+        b"body that cannot decode\r\n"
+        b"--bound--\r\n"
+    )
+    write_bytes(exports, "b.eml", raw)
+    db = tmp_path / "blanc.db"
+    media_dir = tmp_path / "media"
+    code = main(
+        [
+            str(exports),
+            "--store",
+            "--strict",
+            "--title",
+            "Strict orphan",
+            "--database-url",
+            f"sqlite:///{db}",
+            "--media-dir",
+            str(media_dir),
+        ],
+        embedder=FakeEmbedder(),
+    )
+    assert code == 1
+    leftover = list(media_dir.rglob("*.png")) if media_dir.exists() else []
+    assert leftover == []
+
+
+def test_import_path_unexpected_error_cleans_earlier_media(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A non-EvidenceImportError abort must still drop earlier files' media."""
+    from app.evidence import importer as imp
+
+    write_bytes(tmp_path, "a.png", PNG_BYTES)
+    write_bytes(tmp_path, "b.png", PNG_BYTES)
+    media_dir = tmp_path / "media"
+    calls = {"n": 0}
+    real = imp.import_file
+
+    def wrapped(*args, **kwargs):  # noqa: ANN002, ANN003
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            raise RuntimeError("boom")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(imp, "import_file", wrapped)
+    with pytest.raises(RuntimeError, match="boom"):
+        import_path(tmp_path, "case-a", media_dir=media_dir)
+    leftover = list(media_dir.rglob("*.png")) if media_dir.exists() else []
+    assert leftover == []
+
+
+def test_media_build_failure_unlinks_written_file(tmp_path: Path, monkeypatch) -> None:
+    """If EvidenceRecord build fails after store_media_bytes, the file must go."""
+    from app.evidence import importer as imp
+
+    path = write_bytes(tmp_path, "shot.png", PNG_BYTES)
+    media_dir = tmp_path / "media"
+    real_build = imp._RecordBuilder.build
+
+    def boom(self, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        if kwargs.get("modality") == "image":
+            raise ValidationError.from_exception_data(
+                "EvidenceRecord",
+                [{"type": "missing", "loc": ("media_path",), "input": {}}],
+            )
+        return real_build(self, *args, **kwargs)
+
+    monkeypatch.setattr(imp._RecordBuilder, "build", boom)
+    with pytest.raises(ValidationError):
+        import_file(path, "case-a", source_root=tmp_path, media_dir=media_dir)
+    leftover = list(media_dir.rglob("*")) if media_dir.exists() else []
+    assert leftover == []
+
+
+def test_email_image_build_failure_falls_back_without_orphan(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Attachment build failure after write → metadata-only warning, no leftover file."""
+    from app.evidence import importer as imp
+
+    msg = EmailMessage()
+    msg["From"] = "Alex <alex@example.test>"
+    msg["To"] = "Jordan <jordan@example.test>"
+    msg["Date"] = DATE
+    msg["Subject"] = "Build fail"
+    msg["Message-ID"] = "<build@example.test>"
+    msg.set_content("Body survives.")
+    msg.add_attachment(PNG_BYTES, maintype="image", subtype="png", filename="dock.png")
+    path = write_bytes(tmp_path, "mail.eml", msg.as_bytes())
+    media_dir = tmp_path / "media"
+    real_build = imp._RecordBuilder.build
+
+    def boom(self, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        if kwargs.get("modality") == "image":
+            raise ValidationError.from_exception_data(
+                "EvidenceRecord",
+                [{"type": "missing", "loc": ("media_path",), "input": {}}],
+            )
+        return real_build(self, *args, **kwargs)
+
+    monkeypatch.setattr(imp._RecordBuilder, "build", boom)
+    sink = ImportSink()
+    records = import_file(
+        path, "case-a", source_root=tmp_path, media_dir=media_dir, sink=sink
+    )
+    assert [r.source_locator for r in records] == ["headers", "part 1"]
+    assert sink.warnings
+    assert "metadata only" in sink.warnings[0].reason
+    leftover = list(media_dir.rglob("*.png")) if media_dir.exists() else []
+    assert leftover == []
+
+
+def test_verify_media_bytes_rejects_oversized(monkeypatch) -> None:
+    from app.case_media import verify_media_bytes
+
+    monkeypatch.setattr("app.case_media.MAX_MEDIA_BYTES", 10)
+    with pytest.raises(MediaStoreError, match="limit"):
+        verify_media_bytes(b"x" * 11, "image/png")
+
+
+def test_import_path_validation_error_cleans_media(tmp_path: Path, monkeypatch) -> None:
+    """ValidationError during a folder import must not leave that file's media behind."""
+    from app.evidence import importer as imp
+
+    write_bytes(tmp_path, "shot.png", PNG_BYTES)
+    media_dir = tmp_path / "media"
+    real_build = imp._RecordBuilder.build
+
+    def boom(self, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        if kwargs.get("modality") == "image":
+            raise ValidationError.from_exception_data(
+                "EvidenceRecord",
+                [{"type": "missing", "loc": ("media_path",), "input": {}}],
+            )
+        return real_build(self, *args, **kwargs)
+
+    monkeypatch.setattr(imp._RecordBuilder, "build", boom)
+    result = import_path(tmp_path, "case-a", media_dir=media_dir)
+    assert result.errors
+    assert "invalid evidence record" in result.errors[0].reason
     leftover = list(media_dir.rglob("*")) if media_dir.exists() else []
     assert leftover == []
 
