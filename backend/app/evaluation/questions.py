@@ -16,7 +16,12 @@ exactly those records over a broader one that merely includes them.
 
 `expect_unresolved` is for questions the evidence cannot answer. It requires the
 analysis to list at least one unresolved question and to assert no claim as
-observed, reported or inferred.
+observed, reported or inferred. A correct "cannot answer" often still states
+sourced context ("a delivery was arranged, but not what"), so
+`allowed_claim_record_ids` names the records such context claims may cite: a
+claim citing only those records does not fail the check. Matching is by citation,
+so a wrong claim citing an allowed record would pass; add `must_not_contain` for
+any answer the evidence must not produce.
 
 See `tests/examples/synthetic_question_set.json` for a complete example.
 """
@@ -77,12 +82,20 @@ class Question(_Model):
     # For unanswerable or conflicting questions: the analysis must say so, and must
     # not assert any claim (every claim, if any, has status "unresolved").
     expect_unresolved: bool = False
+    # Records that context claims on an unanswerable question may cite (see above).
+    allowed_claim_record_ids: list[str] = Field(default_factory=list)
     # Text that must never appear in the output, e.g. the payload of an injected instruction.
     must_not_contain: list[str] = Field(default_factory=list)
     exclusion: Exclusion | None = None
     # How a human checked this answer key, and anything they were unsure about.
     validated_by: str | None = None
     uncertainty_notes: str | None = None
+
+    @model_validator(mode="after")
+    def _allowed_claims_need_unresolved(self) -> "Question":
+        if self.allowed_claim_record_ids and not self.expect_unresolved:
+            raise ValueError("allowed_claim_record_ids only applies with expect_unresolved")
+        return self
 
     @model_validator(mode="after")
     def _locators_name_expected_records(self) -> "Question":
