@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -47,7 +47,9 @@ from app.analysis_llm import (
     AnalysisOutputError,
     build_analysis_messages,
     record_metadata,
+    sent_record_ids,
 )
+from app.analysis_media import MediaPart
 from app.citations import sanitize_citations
 from app.contracts import AnalysisRevision, EvidenceRecord
 from app.retrieval import RetrievalResult
@@ -129,6 +131,7 @@ def analyze_with_retry(
     session: Session | None = None,
     excluded_record_ids: Iterable[str] = (),
     prior_analysis: str | None = None,
+    media: Mapping[str, MediaPart] | None = None,
 ) -> AnalysisResult:
     """Analyze ``retrieval.question`` with at most two LLM calls; see the module docstring.
 
@@ -136,9 +139,19 @@ def analyze_with_retry(
     retrieved record). Excluded IDs are ``retrieval.excluded_record_ids`` plus
     ``excluded_record_ids``. Raises ``ValueError`` if the corpus or retrieval set is
     inconsistent, and ``AnalysisLLMError`` if the provider fails before any usable answer.
+
+    ``media`` (BLA-71) holds the image/PDF parts to send inline, by record ID
+    (``app.analysis_media.select_media``). Both attempts send the same parts. An image/PDF
+    record without a part is not sent, so it is not in ``retrieved_record_ids`` and citing
+    it is stripped like any other unretrieved ID.
     """
     excluded = sorted({*retrieval.excluded_record_ids, *excluded_record_ids})
-    retrieved = [r.record_id for r in retrieval.records if r.record_id not in set(excluded)]
+    sent = sent_record_ids(retrieval, media)
+    retrieved = [
+        r.record_id
+        for r in retrieval.records
+        if r.record_id not in set(excluded) and r.record_id in sent
+    ]
     base_fields = {
         "schema_version": "1.0",
         "analysis_id": metadata.analysis_id,
@@ -164,6 +177,7 @@ def analyze_with_retry(
         excluded_record_ids=excluded,
         prior_analysis=prior_analysis,
         metadata_by_id=metadata_by_id,
+        media=media,
     )
 
     attempts: list[_Attempt] = []
@@ -221,7 +235,7 @@ def analyze_with_retry(
 def _attempt(
     number: int,
     llm: AnalysisLLM,
-    messages: Sequence[dict[str, str]],
+    messages: Sequence[dict[str, Any]],
     records: Sequence[EvidenceRecord],
     base_fields: dict[str, Any],
 ) -> _Attempt:

@@ -17,3 +17,6 @@ python-ulid==4.1.0
 # Pin a current release: 7.x includes security hardening for malformed PDFs
 # (xref/object-stream limits, image size checks, XFA decode limits; see pypdf changelog).
 pypdf==7.1.0
+# Read EXIF (GPS, capture time, camera) from images locally for the vision analysis
+# prompt (BLA-71, app/media_metadata.py). Headers only; pixels are never decoded.
+Pillow==13.0.0

@@ -46,6 +46,10 @@ def validate_revision(records: list[dict], analysis: dict) -> list[str]:
     return errors
 
 
+# Image/PDF records in the window that were not sent to the model (BLA-70, BLA-71).
+MEDIA_REASONS = ('media', 'media_limit', 'media_too_large')
+
+
 def _left_out(skipped: list[dict], max_records: int) -> list[str]:
     """Record-limit skips that the vector or keyword search alone ranked in the window."""
     return [
@@ -81,7 +85,7 @@ def _coverage_errors(analysis: dict, known: set[str]) -> list[str]:
     for s in skipped:
         if (s['reason'] == 'record_limit') == (s['rank'] <= window):
             errors.append(f"retrieval_coverage rank {s['rank']} does not fit reason {s['reason']}")
-        if (s['reason'] == 'media') != (s.get('modality') is not None) and s['reason'] != 'record_limit':
+        if (s['reason'] in MEDIA_REASONS) != (s.get('modality') is not None) and s['reason'] != 'record_limit':
             errors.append(f"retrieval_coverage {s['record_id']}: media skips need a modality, budget skips none")
     if coverage['budget_substituted'] and not any(s['reason'] == 'budget' for s in skipped):
         errors.append('retrieval_coverage budget_substituted without a budget skip')

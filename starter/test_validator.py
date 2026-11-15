@@ -70,6 +70,11 @@ class TestRetrievalCoverage(unittest.TestCase):
         self.assertEqual(validate_revision(records,media),[])
         no_modality=deepcopy(media); del no_modality['retrieval_coverage']['skipped'][0]['modality']
         self.assertTrue(validate_revision(records,no_modality))
+        for reason in ('media_limit','media_too_large'):  # BLA-71 caps
+            capped=deepcopy(media); capped['retrieval_coverage']['skipped'][0]['reason']=reason
+            self.assertEqual(validate_revision(records,capped),[],reason)
+            del capped['retrieval_coverage']['skipped'][0]['modality']
+            self.assertTrue(validate_revision(records,capped),reason)
         image_past=covered(); image_past['retrieval_coverage']['skipped'][0]['modality']='image'
         image_past['retrieval_coverage'].update({'left_out_record_ids':[],'offer_expanded_window':False})
         self.assertEqual(validate_revision(records,image_past),[])

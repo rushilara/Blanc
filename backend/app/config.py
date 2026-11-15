@@ -17,6 +17,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_EMBEDDING_MODEL = "gemini-embedding-2"
 # Requested output_dimensionality (embedding-2's native default is 3072).
 DEFAULT_EMBEDDING_DIM = 768
+# Hard ceiling for the analysis media byte settings: 14 MB of raw bytes is ~18.7 MB once
+# base64-encoded, still under Gemini's 20 MB inline request limit (BLA-71).
+MAX_INLINE_MEDIA_BYTES = 14_000_000
 
 
 class Settings(BaseSettings):
@@ -60,6 +63,19 @@ class Settings(BaseSettings):
     # Most image/PDF records the evidence window keeps (BLA-70); they count toward
     # RETRIEVAL_MAX_RECORDS but not the character budget. Extra media are listed as skipped.
     RETRIEVAL_MAX_MEDIA: int = Field(default=4, ge=0, le=50)
+
+    # Vision analysis (BLA-71, app/analysis_media.py): retrieved images/PDFs are sent to
+    # Gemini as inline bytes in the analysis request, on top of the record window above.
+    # Gemini's inline limit is 20 MB for the whole request (prompt + system instruction +
+    # base64 bytes, which grow ~4/3), so the byte caps stay well below it: 12 MB of files
+    # is ~16 MB encoded, leaving room for the 32000-character text budget. Media past these
+    # caps is not sent and is listed in retrieval_coverage (media_limit / media_too_large).
+    ANALYSIS_MAX_IMAGES: int = Field(default=6, ge=0, le=50)
+    ANALYSIS_MAX_PDFS: int = Field(default=2, ge=0, le=20)
+    ANALYSIS_MAX_MEDIA_BYTES: int = Field(default=12_000_000, ge=0, le=MAX_INLINE_MEDIA_BYTES)
+    ANALYSIS_MAX_MEDIA_FILE_BYTES: int = Field(
+        default=8_000_000, ge=0, le=MAX_INLINE_MEDIA_BYTES
+    )
 
     # Storage: one SQLite file holds tables, the sqlite-vec vector index and the FTS5 index.
     DATABASE_URL: str = "sqlite:///./data/blanc.db"

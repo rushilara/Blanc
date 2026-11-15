@@ -27,6 +27,7 @@ from typing import Any
 from pydantic import BaseModel, ValidationError
 
 from app.contracts import (
+    MEDIA_SKIP_REASONS,
     AnalysisRevision,
     Claim,
     EvidenceRecord,
@@ -290,12 +291,14 @@ def _coverage_errors(analysis: AnalysisRevision, known: set[str]) -> list[str]:
                 f"{label} skips {skip.record_id} for the budget at rank {skip.rank}, "
                 f"outside the {coverage.max_records}-record window"
             )
-        if skip.reason == "media" and skip.rank > coverage.max_records:
+        # media / media_limit / media_too_large: an image or PDF in the window that was
+        # not sent to the model (BLA-70, BLA-71).
+        if skip.reason in MEDIA_SKIP_REASONS and skip.rank > coverage.max_records:
             errors.append(
                 f"{label} skips {skip.record_id} as unanalyzed media at rank {skip.rank}, "
                 f"outside the {coverage.max_records}-record window"
             )
-        if skip.reason == "media" and skip.modality is None:
+        if skip.reason in MEDIA_SKIP_REASONS and skip.modality is None:
             errors.append(f"{label} skips {skip.record_id} as media but gives no modality")
         if skip.reason == "budget" and skip.modality is not None:
             errors.append(
