@@ -8,7 +8,10 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test tests/*.test.ts"
+    "test": "node --import tsx --test tests/*.test.ts",
+    "auth:secret": "node --import tsx scripts/auth-user.ts secret",
+    "auth:add-user": "node --import tsx scripts/auth-user.ts add",
+    "auth:remove-user": "node --import tsx scripts/auth-user.ts remove"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.9",

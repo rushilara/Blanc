@@ -173,7 +173,7 @@ function SourceImage({ caseId, recordId, name, caption, missing }: {
     // setState("loading") here (react-hooks/set-state-in-effect).
     const controller = new AbortController();
     let objectUrl: string | undefined;
-    fetch(mediaUrl(caseId, recordId), { signal: controller.signal })
+    fetch(mediaUrl(caseId, recordId), { signal: controller.signal, credentials: "include" })
       .then(async response => {
         if (controller.signal.aborted) return;
         const interpreted = interpretMediaResponse(response.status, response.headers);
