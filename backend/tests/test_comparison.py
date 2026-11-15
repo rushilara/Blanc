@@ -123,8 +123,8 @@ def test_a_finding_only_in_the_child_is_newly_supported(base_raw, child_raw) -> 
     assert all(i.base_evidence_ids == [] for i in new)
 
 
-def test_findings_are_paired_by_evidence_when_ids_change(base_raw, child_raw) -> None:
-    # A second LLM run numbers its findings differently.
+def test_findings_keep_their_identity_when_ids_are_regenerated(base_raw, child_raw) -> None:
+    # A second LLM run numbers its findings differently but words them the same.
     child_raw["claims"][0]["id"] = "claim-a"
     child_raw["timeline_events"][0]["id"] = "event-a"
     child_raw["graph"]["edges"][0]["id"] = "edge-a"
@@ -135,16 +135,97 @@ def test_findings_are_paired_by_evidence_when_ids_change(base_raw, child_raw) ->
     assert "newly_supported" not in result.values()
 
 
-def test_a_reused_id_with_different_evidence_is_not_treated_as_the_same_finding(
-    base_raw, child_raw
-) -> None:
-    # The child reuses "claim-2" for an unrelated claim resting on rec-01.
+def test_a_light_rewording_is_still_the_same_finding(base_raw, child_raw) -> None:
+    child_raw["claims"][0]["id"] = "claim-a"
+    child_raw["claims"][0]["text"] = base_raw["claims"][0]["text"].rstrip(".") + " ."
+    result = statuses(compare(base_raw, child_raw))
+    assert result[("claim", "claim-1", "claim-a")] == "still_supported"
+
+
+def test_near_identical_wording_needs_a_shared_record_to_match(base_raw, child_raw) -> None:
+    reworded = base_raw["claims"][0]["text"].replace("about a document", "about the document")
+    assert reworded != base_raw["claims"][0]["text"]
+    child_raw["claims"][0].update(id="claim-a", text=reworded)
+    result = statuses(compare(base_raw, child_raw))
+    assert result[("claim", "claim-1", "claim-a")] == "still_supported"
+
+    # The same near-identical wording resting on a different record is a different finding.
+    base_raw["claims"][0]["evidence_ids"] = ["rec-02"]
+    result = statuses(compare(base_raw, child_raw))
+    assert result[("claim", "claim-1", None)] == "not_supported"
+    assert result[("claim", None, "claim-a")] == "newly_supported"
+
+
+def test_sharing_a_record_does_not_make_two_findings_the_same(base_raw, child_raw) -> None:
+    # The child drops claim-1 and adds an unrelated claim that happens to cite rec-01.
     child_raw["claims"] = [
-        {"id": "claim-2", "text": "Unrelated.", "evidence_ids": ["rec-01"], "status": "inferred"}
+        {
+            "id": "completely-new-claim",
+            "text": "The delivery was scheduled before the quarterly audit.",
+            "evidence_ids": ["rec-01"],
+            "status": "inferred",
+        }
+    ]
+    comparison = compare(base_raw, child_raw)
+    result = statuses(comparison)
+    # The vanished conclusion is not shown as surviving, and the new one is not hidden.
+    assert result[("claim", "claim-1", None)] == "unresolved"
+    assert result[("claim", None, "completely-new-claim")] == "newly_supported"
+    assert result[("claim", "claim-2", None)] == "not_supported"
+    vanished = next(i for i in comparison.items if i.base_ref_id == "claim-1")
+    assert "no finding in the active analysis could be identified as this one" in (
+        vanished.explanation
+    )
+
+
+def test_a_reused_id_does_not_make_two_findings_the_same(base_raw, child_raw) -> None:
+    # The child reuses the ID "claim-1" for a different claim resting on the same record.
+    child_raw["claims"] = [
+        {"id": "claim-1", "text": "Unrelated.", "evidence_ids": ["rec-01"], "status": "inferred"}
     ]
     result = statuses(compare(base_raw, child_raw))
-    assert result[("claim", "claim-1", "claim-2")] == "still_supported"
-    assert result[("claim", "claim-2", None)] == "not_supported"
+    assert result[("claim", "claim-1", None)] == "unresolved"
+    assert result[("claim", None, "claim-1")] == "newly_supported"
+
+
+def test_two_findings_on_one_record_are_paired_by_wording_not_order(
+    base_raw, child_raw
+) -> None:
+    first = {"id": "claim-1", "text": "Alex wrote to Jordan.", "evidence_ids": ["rec-01"]}
+    second = {"id": "claim-2", "text": "A document was due on Friday.", "evidence_ids": ["rec-01"]}
+    base_raw["claims"] = [{**first, "status": "reported"}, {**second, "status": "reported"}]
+    base_events = base_raw["timeline_events"]
+    base_events[1]["evidence_ids"] = ["rec-01"]
+    # The child regenerates IDs and lists the same findings in the opposite order.
+    child_raw["claims"] = [
+        {**second, "id": "claim-x", "status": "reported"},
+        {**first, "id": "claim-y", "status": "reported"},
+    ]
+    child_raw["timeline_events"] = [
+        {**base_events[1], "id": "event-x"},
+        {**base_events[0], "id": "event-y"},
+    ]
+    result = statuses(compare(base_raw, child_raw))
+    assert result[("claim", "claim-1", "claim-y")] == "still_supported"
+    assert result[("claim", "claim-2", "claim-x")] == "still_supported"
+    assert result[("event", "event-1", "event-y")] == "still_supported"
+    assert result[("event", "event-2", "event-x")] == "still_supported"
+
+
+def test_support_is_counted_in_unique_records(base_raw, child_raw) -> None:
+    # The contract allows a finding to cite the same record twice.
+    base_raw["claims"][0]["evidence_ids"] = ["rec-01", "rec-01"]
+    comparison = compare(base_raw, child_raw)
+    item = next(i for i in comparison.items if i.base_ref_id == "claim-1")
+    assert item.support_status == "still_supported"  # one record before, one after
+    assert item.base_evidence_ids == ["rec-01"]
+
+    child_raw["claims"][0]["evidence_ids"] = ["rec-01", "rec-01"]
+    base_raw["claims"][0]["evidence_ids"] = ["rec-01", "rec-02", "rec-02"]
+    comparison = compare(base_raw, child_raw)
+    item = next(i for i in comparison.items if i.base_ref_id == "claim-1")
+    assert item.support_status == "weakened"  # two records before, one after
+    assert item.compared_evidence_ids == ["rec-01"]
 
 
 def test_explanations_never_claim_something_did_not_happen(base_raw, child_raw) -> None:

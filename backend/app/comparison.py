@@ -8,19 +8,32 @@ For every claim, edge and event, `compare_revisions` says how its support change
 - `still_supported`: present in both, citing at least as many records as before.
 - `weakened`: present in both, but citing fewer records than before.
 - `not_supported`: present in the base only, and every record it cited is now excluded.
-- `unresolved`: the child marks it unresolved, or it is gone from the child even
-  though some of its records are still permitted. A finding with an independent
-  second source is therefore never reported as `not_supported` when only one of
-  its sources is excluded.
+- `unresolved`: the child marks it unresolved, or no finding in the child can be
+  identified as this one even though some of its records are still permitted. A
+  finding with an independent second source is therefore never reported as
+  `not_supported` when only one of its sources is excluded.
 - `newly_supported`: present in the child only.
+
+Identity is conservative. Two findings are the same finding only when there is a
+structural reason to think so: an edge joining the same two nodes with the same
+type, or a claim or event with the same wording. Citing the same record is not
+enough, because one record often supports several unrelated facts; and an ID is
+not enough either, because IDs are regenerated on every LLM run. When identity
+cannot be established, the base finding is reported as `unresolved` or
+`not_supported` and the child finding as `newly_supported`, rather than a
+vanished conclusion being shown as surviving.
+
+Support is counted in unique record IDs, so a record cited twice counts once.
 
 Wording rule (contracts/README.md): an exclusion changes what the active analysis
 can conclude, not what happened. Explanations say "no longer supported by the
 remaining evidence", never "did not happen" or "disproved".
 """
 
+import re
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from difflib import SequenceMatcher
 from typing import Any
 
 from app.contracts import (
@@ -32,6 +45,11 @@ from app.contracts import (
 )
 
 _KINDS: tuple[ComparisonItemKind, ...] = ("claim", "edge", "event")
+
+# How alike two wordings must be (0-1) to count as the same finding restated, on top of
+# sharing a supporting record. High on purpose: a miss is reported honestly as
+# unresolved plus newly supported, while a false match hides a vanished conclusion.
+_SAME_WORDING = 0.85
 
 
 def compare_revisions(
@@ -93,12 +111,15 @@ def _items(revision: AnalysisRevision, kind: ComparisonItemKind) -> list[Any]:
 def _match(
     kind: ComparisonItemKind, base_items: Sequence[Any], compared_items: Sequence[Any]
 ) -> dict[int, Any]:
-    """Pair each base finding with its counterpart in the child, if it has one.
+    """Pair each base finding with its counterpart in the child, if one can be identified.
 
-    IDs and wording can change between LLM runs, so findings are paired by what
-    they rest on. In order of preference: an edge joining the same two nodes with
-    the same type; the same ID with at least one shared record; then the largest
-    overlap in cited records. Each child finding is used at most once.
+    Three rules, in order, each using a child finding at most once:
+
+    1. An edge joining the same two nodes with the same type.
+    2. A claim or event with the same wording (ignoring case, spacing and punctuation).
+    3. A claim or event with nearly the same wording that also shares a record.
+
+    There is no rule based on shared records or on IDs alone; see the module docstring.
     """
     pairs: dict[int, Any] = {}
     taken: set[int] = set()
@@ -117,34 +138,46 @@ def _match(
                 if (after.source, after.target, after.type) == key:
                     pair(before, after)
                     break
+        return pairs
 
     for before in base_items:
-        if id(before) in pairs:
-            continue
+        wording = _wording(kind, before)
         for after in free(compared_items):
-            if after.id == before.id and set(after.evidence_ids) & set(before.evidence_ids):
+            if _wording(kind, after) == wording:
                 pair(before, after)
                 break
 
     for before in base_items:
         if id(before) in pairs:
             continue
-        cited = set(before.evidence_ids)
-        best, best_overlap = None, 0
+        wording, cited = _wording(kind, before), set(before.evidence_ids)
+        best, best_ratio = None, _SAME_WORDING
         for after in free(compared_items):
-            overlap = len(cited & set(after.evidence_ids))
-            if overlap > best_overlap:
-                best, best_overlap = after, overlap
+            if not cited & set(after.evidence_ids):
+                continue
+            ratio = SequenceMatcher(None, wording, _wording(kind, after)).ratio()
+            if ratio >= best_ratio:
+                best, best_ratio = after, ratio
         if best is not None:
             pair(before, best)
 
     return pairs
 
 
+def _wording(kind: ComparisonItemKind, item: Any) -> str:
+    text = item.text if kind == "claim" else item.description
+    return " ".join(re.sub(r"[^\w\s]", " ", text.casefold()).split())
+
+
+def _unique(ids: Sequence[str]) -> list[str]:
+    """The IDs in order, each once: a record cited twice is still one supporting record."""
+    return list(dict.fromkeys(ids))
+
+
 def _classify(
     kind: ComparisonItemKind, before: Any, after: Any | None, excluded_now: set[str]
 ) -> ComparisonItem:
-    cited_before = list(before.evidence_ids)
+    cited_before = _unique(before.evidence_ids)
     lost = [rid for rid in cited_before if rid in excluded_now]
 
     if after is None:
@@ -152,9 +185,9 @@ def _classify(
         if remaining:
             status: SupportStatus = "unresolved"
             explanation = (
-                f"{_ids(remaining)} {_is(remaining)} still permitted, but the remaining "
-                "evidence is not enough for the active analysis to restate this. "
-                "That does not show it did not happen."
+                f"{_ids(remaining)} {_is(remaining)} still permitted, but no finding in the "
+                "active analysis could be identified as this one, so it is not established "
+                "by the remaining evidence. That does not show it did not happen."
             )
         else:
             status = "not_supported"
@@ -173,7 +206,7 @@ def _classify(
             explanation=explanation,
         )
 
-    cited_after = list(after.evidence_ids)
+    cited_after = _unique(after.evidence_ids)
     if getattr(after, "status", None) == "unresolved":
         status = "unresolved"
         explanation = (
@@ -204,7 +237,7 @@ def _classify(
 
 
 def _new_item(kind: ComparisonItemKind, after: Any) -> ComparisonItem:
-    cited = list(after.evidence_ids)
+    cited = _unique(after.evidence_ids)
     return ComparisonItem(
         kind=kind,
         base_ref_id=None,
