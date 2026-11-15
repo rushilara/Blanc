@@ -10,6 +10,7 @@ from typing import Annotated
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
+from app.analysis_llm import AnalysisLLM
 from app.db import get_session
 from app.embeddings import Embedder
 from app.models import Case
@@ -40,3 +41,12 @@ def get_embedder(request: Request) -> Embedder:
 
 
 EmbedderDep = Annotated[Embedder, Depends(get_embedder)]
+
+
+def get_analysis_llm(request: Request) -> AnalysisLLM:
+    """Dependency: the app's analysis LLM (``GeminiAnalysisLLM``; tests may swap in a fake
+    by setting ``app.state.analysis_llm``)."""
+    return request.app.state.analysis_llm
+
+
+AnalysisLLMDep = Annotated[AnalysisLLM, Depends(get_analysis_llm)]

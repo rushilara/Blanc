@@ -1,15 +1,15 @@
-"""Saved analysis revisions: history, one revision, its lineage (BLA-28), and restoring
-excluded records by reusing an earlier evidence state (BLA-35).
+"""Saved analysis revisions: create (BLA-20), history/lineage (BLA-28), restore (BLA-35).
 
-Revisions are created by the analyze, follow-up and exclude endpoints through
-``app.analyses.save_revision``; restore creates one through ``restore_records``. A revision
-is returned as ``AnalysisRevision`` contract JSON, exactly as saved.
+``POST /cases/{case_id}/analyses`` runs retrieval + validated LLM analysis and saves through
+``app.analyses.save_revision``. GET routes reload history; restore reuses an earlier evidence
+state. A revision is returned as ``AnalysisRevision`` contract JSON, exactly as saved.
 """
 
+import logging
 from datetime import datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
@@ -23,11 +23,21 @@ from app.analyses import (
     list_revisions,
     restore_records,
     revision_lineage,
+    run_case_analysis,
 )
+from app.analysis_llm import AnalysisLLMError
 from app.contracts import AnalysisRevision
-from app.deps import CaseDep, SessionDep
+from app.deps import AnalysisLLMDep, CaseDep, EmbedderDep, SessionDep
+from app.retrieval import ExcludedRecordLeakError, RetrievalConfig
+from app.routers.search import get_retrieval_config
+from app.schemas.analyses import AnalysisCreate
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/cases/{case_id}/analyses", tags=["analyses"])
+
+LLM_UNAVAILABLE = "The analysis service is not ready. Please try again later."
+RetrievalConfigDep = Annotated[RetrievalConfig, Depends(get_retrieval_config)]
 
 
 class RevisionSummaryRead(BaseModel):
@@ -44,6 +54,51 @@ class RevisionSummaryRead(BaseModel):
     @classmethod
     def of(cls, summary: RevisionSummary) -> "RevisionSummaryRead":
         return cls(**summary.__dict__)
+
+
+@router.post("", status_code=status.HTTP_201_CREATED, responses={201: {"model": AnalysisRevision}})
+def create_case_analysis(
+    body: AnalysisCreate,
+    case: CaseDep,
+    session: SessionDep,
+    embedder: EmbedderDep,
+    llm: AnalysisLLMDep,
+    config: RetrievalConfigDep,
+) -> Any:
+    """Retrieve evidence for ``question``, run structured analysis, save and return the
+    revision. Optional ``analysis_id`` is a prior revision of this case (parent context);
+    its exclusions are inherited.
+
+    201 with AnalysisRevision contract JSON. 404 unknown case or prior analysis. 422 when
+    the question has no letters or digits (same rule as ``POST /search``). 503 when the LLM
+    is not configured or the provider fails.
+    """
+    try:
+        revision = run_case_analysis(
+            session,
+            case.case_id,
+            body.question,
+            llm,
+            embedder,
+            retrieval_config=config,
+            prior_analysis_id=body.analysis_id,
+        )
+    except RevisionNotFoundError as error:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, detail="Prior analysis not found"
+        ) from error
+    except AnalysisLLMError as error:
+        logger.warning("analysis LLM unavailable for case %s: %s", case.case_id, error)
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=LLM_UNAVAILABLE) from error
+    except ExcludedRecordLeakError:
+        logger.exception(
+            "excluded record leaked into analysis for case %s; this is a server bug",
+            case.case_id,
+        )
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error"
+        ) from None
+    return JSONResponse(revision.to_contract_json(), status_code=status.HTTP_201_CREATED)
 
 
 @router.get("")

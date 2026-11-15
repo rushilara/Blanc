@@ -196,6 +196,7 @@ revision_lineage(session, case_id, analysis_id)  # root ... this revision
 
 | Endpoint | Returns |
 |---|---|
+| `POST /cases/{case_id}/analyses` | `{"question", "analysis_id"?}`: retrieve, analyze (BLA-18 retry), save and return the new `AnalysisRevision` (201). Optional `analysis_id` is a prior revision of this case; its exclusions are inherited. 422 if the question has no letters or digits; 503 if the LLM is unavailable. |
 | `GET /cases/{case_id}/analyses` | History, newest first: `analysis_id`, `parent_analysis_id`, `question`, `needs_review`, `created_at`, `excluded_record_ids` (its evidence state) and `restored_from_analysis_id` (set on a restore). |
 | `GET /cases/{case_id}/analyses/{analysis_id}` | The revision, as `AnalysisRevision` contract JSON exactly as saved (404 if it is not in this case). |
 | `GET /cases/{case_id}/analyses/{analysis_id}/lineage` | The revision and its ancestors, oldest first. |
@@ -203,7 +204,7 @@ revision_lineage(session, case_id, analysis_id)  # root ... this revision
 
 **Restoring (BLA-35).** Restore reuses an earlier evidence state; it deletes and rewrites nothing. The target state is the current exclusions minus `record_ids`. The nearest ancestor with the same question and exactly that exclusion set is found, and its findings are saved again as a new revision whose parent is the current one. A `revision_restores` row records which revision it reused, which is shown in the history. No LLM call is made. Errors: 422 if a record is not excluded in this revision, and 409 if no ancestor ever had that state. For example, if records A then B were excluded, restoring A alone would leave only B excluded, which never existed, so the analysis has to be rerun with that exclusion set.
 
-Creating revisions is the analyze, follow-up and exclude endpoints' job (BLA-20, BLA-29, BLA-33); they call `save_revision`. Restore is implemented here (`restore_records`). Everything is in SQLite, so revisions and boards (with their notes) reload after a browser refresh or a server restart.
+Creating revisions: `POST /cases/{case_id}/analyses` (BLA-20) runs the pipeline and calls `save_revision`; follow-up and exclude (BLA-29, BLA-33) will do the same. A follow-up that names a prior revision inherits that revision's `excluded_record_ids` so excluded evidence cannot silently return (restoring is BLA-35). Restore is implemented here (`restore_records`). Everything is in SQLite, so revisions and boards (with their notes) reload after a browser refresh or a server restart.
 
 ## Boards (BLA-31)
 
