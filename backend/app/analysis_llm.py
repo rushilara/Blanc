@@ -224,7 +224,8 @@ class GeminiAnalysisLLM:
         return self._client
 
     def generate(self, messages: Sequence[Message]) -> AnalysisOutput:
-        from google.genai import types
+        import httpx
+        from google.genai import errors, types
 
         client = self._get_client()
         system = [m["content"] for m in messages if m["role"] == "system"]
@@ -252,7 +253,9 @@ class GeminiAnalysisLLM:
             response = client.models.generate_content(
                 model=self.model, contents=contents, config=config
             )
-        except Exception as exc:
+        # Only provider and transport failures; bugs in our own request building must surface
+        # as themselves, not as an outage.
+        except (errors.APIError, httpx.TransportError, OSError) as exc:
             raise AnalysisLLMError(f"Gemini analysis request failed: {exc}") from exc
         text = response.text
         if not text:

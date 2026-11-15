@@ -7,9 +7,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import jsonschema
 import pytest
 from _paths import RAW
+from google.genai import errors as genai_errors
 from google.genai import types
 from sqlalchemy.orm import Session
 
@@ -401,11 +403,32 @@ def test_gemini_empty_response_reports_finish_reason() -> None:
         run_analysis(llm, RETRIEVAL)
 
 
-def test_gemini_request_failure_is_wrapped() -> None:
-    llm, _ = gemini(error=RuntimeError("503 unavailable"))
-    with pytest.raises(AnalysisLLMError, match="503 unavailable") as info:
+@pytest.mark.parametrize(
+    "error",
+    [
+        genai_errors.ServerError(503, {"error": {"code": 503, "status": "UNAVAILABLE"}}),
+        genai_errors.ClientError(400, {"error": {"code": 400, "status": "INVALID_ARGUMENT"}}),
+        httpx.ConnectError("connection refused"),
+        httpx.ReadTimeout("timed out"),
+        ConnectionResetError("reset by peer"),
+    ],
+)
+def test_gemini_provider_failure_is_wrapped(error: Exception) -> None:
+    llm, _ = gemini(error=error)
+    with pytest.raises(AnalysisLLMError, match="Gemini analysis request failed") as info:
         run_analysis(llm, RETRIEVAL)
     assert not isinstance(info.value, AnalysisOutputError)
+    assert info.value.__cause__ is error
+
+
+@pytest.mark.parametrize("error", [TypeError("bad argument"), KeyError("missing"),
+                                   RuntimeError("bug")])
+def test_gemini_programming_errors_are_not_wrapped(error: Exception) -> None:
+    llm, _ = gemini(error=error)
+    with pytest.raises(type(error)) as info:
+        run_analysis(llm, RETRIEVAL)
+    assert info.value is error
+    assert not isinstance(info.value, AnalysisLLMError)
 
 
 def test_missing_key_errors_at_call_time_not_construction() -> None:
