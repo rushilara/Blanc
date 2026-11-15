@@ -56,7 +56,7 @@ Local sign-in gates the browser and API against casual misuse on a shared machin
    docker compose run --rm --no-deps frontend npm run -s auth:add-user -- yourname
    ```
 
-   Users are stored as scrypt hashes in `.blanc/users.json` on the laptop (compose mounts `./.blanc` into the frontend container at `/app/.blanc`). Override the path with `BLANC_USERS_FILE` in `.env` if needed. Passwords are never written in plain text.
+   Users are stored as scrypt hashes in `.blanc/users.json` on the laptop (compose mounts `./.blanc` into the frontend container at `/app/.blanc`). Leave `BLANC_USERS_FILE` unset unless you need a different path — if you set it, keep the file under the mounted `.blanc` directory (for example `.blanc/team.json`); any other relative path lives only in the container and disappears when it is recreated. Passwords are never written in plain text.
 
 3. Restart and sign in on the landing page:
 
@@ -85,6 +85,7 @@ Both ports are bound to `127.0.0.1`, so other machines on the network cannot rea
 ## Troubleshooting
 
 - **"The analysis service is not ready"**: `GEMINI_API_KEY` is missing from `.env`. Add it and run `docker compose up -d`.
-- **Sign-in says it is not set up correctly**: `BLANC_AUTH_SECRET` is set but shorter than 32 characters, or `.blanc/users.json` is missing/unreadable. Regenerate the secret, add a user, and restart.
+- **Sign-in says the username and password did not match** (and you expected a user to exist): `.blanc/users.json` is missing, or it has no matching user. A missing file is treated as an empty user list — run `auth:add-user` (step 2 above) and try again.
+- **"Sign-in is not set up correctly on this machine"** (`?error=config`): either `BLANC_AUTH_SECRET` is set but shorter than 32 characters, or `.blanc/users.json` exists but is unreadable or invalid JSON. Fix the file (or remove a corrupt one and re-add the user). For a short secret, put a fresh 32+ character value in `.env` and restart — the backend also refuses to start with `BLANC_AUTH_SECRET must be at least 32 characters`, so compose will show that service failing until the secret is replaced.
 - **Port already in use**: something else is on 3000 or 8000 (often a local `make backend` / `make frontend`). Stop it first.
 - **Logs**: `docker compose logs -f`.
