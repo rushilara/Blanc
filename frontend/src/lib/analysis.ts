@@ -1,4 +1,13 @@
 // View contract. Validate live responses against the shared JSON schema upstream.
+export type EvidenceRecord = {
+  record_id: string;
+  case_id: string;
+  source_file: string;
+  source_locator: string;
+  content: string;
+  timestamp?: string | null;
+  timestamp_kind?: string;
+};
 type SupportedStatus = "observed" | "reported" | "inferred";
 type ClaimStatus = SupportedStatus | "unresolved";
 type NodeType = "person" | "account" | "device" | "location" | "organization" | "document" | "other";
@@ -10,8 +19,12 @@ type Finding<Status extends ClaimStatus = SupportedStatus> = {
   status: Status;
 };
 export type AnalysisRevision = {
+  schema_version: "1.0";
   analysis_id: string;
+  parent_analysis_id?: string | null;
   case_id: string;
+  retrieved_record_ids: string[];
+  created_at: string;
   question: string;
   answer: string;
   claims: (Finding<ClaimStatus> & { text: string })[];
