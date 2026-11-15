@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Request
-from sqlalchemy import DateTime, Engine, create_engine, event
+from sqlalchemy import DateTime, Engine, create_engine, event, text
 from sqlalchemy.engine import Dialect, make_url
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -120,7 +120,8 @@ def make_session_factory(engine: Engine) -> sessionmaker[Session]:
 
 
 def init_db(engine: Engine, embedding_dim: int = DEFAULT_EMBEDDING_DIM) -> None:
-    """Create all tables, plus the vector/keyword indexes for chunks.
+    """Create all tables, plus the vector/keyword indexes for chunks, and mark cases that
+    already hold records as ``ready``.
 
     Imports the models so they register on ``Base.metadata``. ``embedding_dim`` sizes the
     sqlite-vec table; see ``app.search_index.ensure_search_index`` for what happens when it
@@ -132,6 +133,13 @@ def init_db(engine: Engine, embedding_dim: int = DEFAULT_EMBEDDING_DIM) -> None:
     Base.metadata.create_all(engine)
     with engine.begin() as connection:
         ensure_search_index(connection, embedding_dim)
+        # Cases imported before ``store_records`` set ``ready`` were left ``empty``.
+        connection.execute(
+            text(
+                "UPDATE cases SET import_status = 'ready' WHERE import_status = 'empty' "
+                "AND EXISTS (SELECT 1 FROM evidence_records r WHERE r.case_id = cases.case_id)"
+            )
+        )
 
 
 def get_session(request: Request) -> Iterator[Session]:
