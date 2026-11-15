@@ -107,9 +107,17 @@ def test_parts_are_numbered_and_attachments_are_listed(tmp_path: Path) -> None:
     assert records["part 1.1"].content == "See the attached notes."
     assert records["part 3"].content == "Pickup list: crates 1-40."
     assert records["part 3"].metadata["filename"] == "list.txt"
-    assert records["headers"].content.splitlines()[-1] == (
-        "Attachments: scan.pdf (application/pdf, 13 bytes, part 2, not imported as text)"
-    )
+    # Non-text attachments are listed in metadata, never added to the source text.
+    assert records["headers"].metadata["attachments"] == [
+        {
+            "locator": "part 2",
+            "filename": "scan.pdf",
+            "content_type": "application/pdf",
+            "size_bytes": 13,
+        }
+    ]
+    assert "scan.pdf" not in records["headers"].content
+    assert records["headers"].content.splitlines()[-1] == "Message-ID: <m1@example.test>"
 
 
 def test_encoded_headers_and_bodies_are_decoded(tmp_path: Path) -> None:
@@ -131,13 +139,77 @@ def test_encoded_headers_and_bodies_are_decoded(tmp_path: Path) -> None:
     assert records["body"].metadata["charset"] == "iso-8859-1"
 
 
-def test_a_forwarded_message_is_imported_as_its_own_part(tmp_path: Path) -> None:
+def forwarded(inner: EmailMessage) -> EmailMessage:
     outer = message("Forwarding this.")
-    outer.add_attachment(message("Original text."))
-    records = by_locator(save(tmp_path, "fwd.eml", outer), tmp_path)
-    assert list(records) == ["headers", "part 1", "part 2"]
-    assert "Original text." in records["part 2"].content
-    assert "Subject: Delivery" in records["part 2"].content
+    outer.replace_header("Date", "Mon, 13 Apr 2026 08:00:00 +0000")
+    outer.replace_header("Subject", "Fwd: Delivery")
+    outer.add_attachment(inner)
+    return outer
+
+
+def test_a_forwarded_message_is_read_like_the_outer_one(tmp_path: Path) -> None:
+    records = by_locator(save(tmp_path, "fwd.eml", forwarded(message("Original text."))), tmp_path)
+    assert list(records) == ["headers", "part 1", "part 2 headers", "part 2.1"]
+    assert records["part 2.1"].content == "Original text."
+    assert "Subject: Delivery" in records["part 2 headers"].content
+    # Each message keeps its own date and subject.
+    assert records["part 1"].timestamp == "Mon, 13 Apr 2026 08:00:00 +0000"
+    assert records["part 1"].metadata["subject"] == "Fwd: Delivery"
+    for locator in ("part 2 headers", "part 2.1"):
+        assert records[locator].timestamp == DATE
+        assert records[locator].metadata["subject"] == "Delivery"
+
+
+def test_a_forwarded_multipart_message_is_decoded_not_stored_as_raw_mime(
+    tmp_path: Path,
+) -> None:
+    inner = message("See the attached scan.")
+    inner.add_alternative("<p>See the attached <b>scan</b>.</p>", subtype="html")
+    pdf = b"%PDF-1.7 fake"
+    inner.add_attachment(pdf, maintype="application", subtype="pdf", filename="scan.pdf")
+    inner.add_attachment("Caf\u00e9 list: crates 1-40.", filename="list.txt", cte="base64")
+    records = by_locator(save(tmp_path, "fwd.eml", forwarded(inner)), tmp_path)
+
+    # inner = mixed[alternative[plain, html], pdf, text] inside outer part 2
+    assert list(records) == ["headers", "part 1", "part 2 headers", "part 2.1.1", "part 2.3"]
+    assert records["part 2.1.1"].content == "See the attached scan."
+    assert records["part 2.3"].content == "Caf\u00e9 list: crates 1-40."  # base64 decoded
+    assert records["part 2 headers"].metadata["attachments"] == [
+        {
+            "locator": "part 2.2",
+            "filename": "scan.pdf",
+            "content_type": "application/pdf",
+            "size_bytes": 13,
+        }
+    ]
+    assert "attachments" not in records["headers"].metadata  # the outer message has none
+    for record in records.values():
+        assert "Content-Transfer-Encoding" not in record.content
+        assert "--=" not in record.content and "JVBER" not in record.content  # no MIME/base64
+
+
+def test_forwarded_messages_nested_too_deep_are_an_error(tmp_path: Path) -> None:
+    nested = message("Innermost.")
+    for _ in range(22):
+        nested = forwarded(nested)
+    with pytest.raises(EvidenceImportError, match="nests forwarded messages more than 20 deep"):
+        import_file(save(tmp_path, "deep.eml", nested), "case-a", source_root=tmp_path)
+    shallow = message("Innermost.")
+    for _ in range(3):
+        shallow = forwarded(shallow)
+    records = by_locator(save(tmp_path, "ok.eml", shallow), tmp_path)
+    assert records["part 2.2.2.1"].content == "Innermost."
+
+
+def test_html_entities_are_decoded_exactly_once(tmp_path: Path) -> None:
+    msg = message()
+    # The visible text is "The code is &lt;b&gt; and A &amp; B", escaped once more in HTML.
+    msg.set_content(
+        "<p>The code is &amp;lt;b&amp;gt; and A &amp;amp; B. Caf&eacute; &#233;</p>",
+        subtype="html",
+    )
+    records = by_locator(save(tmp_path, "esc.eml", msg), tmp_path)
+    assert records["body"].content == "The code is &lt;b&gt; and A &amp; B. Café é"
 
 
 def test_an_unparseable_date_is_kept_as_written(tmp_path: Path) -> None:
