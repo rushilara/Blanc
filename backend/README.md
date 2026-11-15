@@ -49,7 +49,8 @@ Every DB connection loads the sqlite-vec extension (`app/db.py`). If startup fai
 - `app/ids.py`: `new_id(prefix)` returns prefixed ULIDs (`case_01J...`). Use it for every server-generated ID (`analysis_`, `board_`, `rec_`, ...).
 - `app/contracts.py`: Pydantic models for the shared contracts in `../contracts/` (`EvidenceRecord`, `AnalysisRevision`, `InvestigationBoard`, `RevisionComparison`). Kept in sync with the JSON Schemas by `tests/test_contracts.py`.
 - `app/validation.py`: cross-reference checks (`validate_revision`, `validate_board`, `validate_comparison`) plus `schema_errors` for parsing untrusted JSON. Each returns readable error strings; an empty list means valid.
-- `app/routers/`: HTTP routers (`cases.py`: `POST /cases`, `GET /cases`, `GET /cases/{case_id}`).
+- `app/routers/`: HTTP routers (`cases.py`: `POST /cases`, `GET /cases`, `GET /cases/{case_id}`; `records.py`: `GET /cases/{case_id}/records[/{record_id}]`).
+- `app/records.py`: case-scoped record + exact excerpt lookup. See "Source records" below.
 - `tests/`: pytest suite (`TestClient`). `conftest.py` gives each test its own temp SQLite file.
 
 ## Persistence
@@ -90,3 +91,29 @@ Every piece of evidence belongs to exactly one case. Search for one case must ne
 Serialize contract models with `to_contract_json(model)` (or `model.to_contract_json()`) from `app.contracts`. If a route returns the model directly, set `response_model_exclude_unset=True`.
 
 Plain `model_dump()` / `model_dump_json()` is **not** schema-valid. Some fields may be left out but must not be `null` (edge `description`, a node board item's `status`, `needs_review`, ...). These default to `None` internally, so a plain dump writes them as `null`, which `../contracts/*.schema.json` rejects. `to_contract_json` drops them and keeps the fields the schema allows to be `null` (`parent_analysis_id`, `base_ref_id`, ...).
+
+## Source records (BLA-59)
+
+The evidence drawer (BLA-40) resolves a citation to its source text with
+`GET /cases/{case_id}/records/{record_id}`. Optional query params select an exact excerpt, **at most one mode**:
+
+- `chunk_id=chk_...`: the excerpt is that chunk's stored text and offsets. The chunk must belong to this case **and** this record.
+- `char_start=N&char_end=M` (both required): the excerpt is `content[N:M]`. Offsets are Python `str` indices (Unicode code points, not UTF-8 bytes or UTF-16 units), the same as `evidence_chunks.char_start`/`char_end`. Requires `0 <= N < M <= len(content)`.
+
+```json
+{
+  "record": {"record_id": "rec-01", "case_id": "case_01J...", "source_file": "mailbox.eml",
+             "source_locator": "message 1, line 12", "content": "Alex emails Jordan ...",
+             "timestamp": "2026-04-10T09:15:00Z", "timestamp_kind": "sent",
+             "original_sha256": null, "metadata": {"sender": "Alex"}},
+  "excerpt": {"text": "Alex emails", "char_start": 0, "char_end": 11, "chunk_id": null}
+}
+```
+
+`record` is exactly the `EvidenceRecord` contract JSON (`to_contract_json`: omitted `timestamp_kind`/`metadata` are absent, never null). `excerpt` is `null` when no mode is given; `excerpt.chunk_id` is null in offset mode.
+
+Errors: unknown case, a record not in this case (even if another case has that `record_id`), or a chunk not in this case and record: **404** (`{"detail": "Case not found" | "Record not found" | "Chunk not found"}`). Both modes at once, a lone `char_start`/`char_end`, negative, empty/reversed or past-the-end offsets, or an empty `chunk_id`: **422**. The record is resolved before offsets are checked, so offsets cannot probe another case's content length.
+
+`GET /cases/{case_id}/records?limit=50&offset=0` lists the case's records ordered by `(source_file, record_id)`: `{"items": [EvidenceRecord, ...], "total", "limit", "offset"}` (`limit` 1-200).
+
+The logic lives in `app/records.py` (`get_record_with_excerpt`, `chunk_excerpt`, `span_excerpt`, `page_records`) for reuse by reconstruction and citation checks; it raises `RecordNotFoundError` / `ChunkNotFoundError` / `InvalidExcerptError`. Stored content is untrusted evidence and is returned verbatim; the UI must render it as text, never as HTML.
