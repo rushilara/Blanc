@@ -565,3 +565,8 @@
 .blanc-answer ul { list-style: disc; }
 .blanc-answer li { margin: 4px 0; padding-left: 2px; }
 .blanc-answer code { padding: 0 3px; border-radius: 2px; background: rgba(60, 40, 20, .08); font: .88em ui-monospace, monospace; overflow-wrap: anywhere; }
+/* Keep the answer in the report's paragraph style (archive.css styles only direct
+   .blanc-report > p children, and the answer's paragraphs sit inside .blanc-answer). */
+html body .blanc-report > .blanc-answer { max-width: 85ch; }
+html body .blanc-report > .blanc-answer p,
+html body .blanc-report > .blanc-answer li { font: 15px/1.85 Arial, sans-serif; overflow-wrap: anywhere; }
