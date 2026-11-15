@@ -322,15 +322,21 @@ def _source(out: list[str], source: ReportSource) -> None:
     stamp = code(source.timestamp) if source.timestamp is not None else "none"
     add(f"- Timestamp: {stamp} ({source.timestamp_kind or 'unknown'})")
     add(f"- Cited by: {', '.join(_ref(ref) for ref in source.cited_by)}")
-    if source.excluded_in:
-        add(
-            f"- Excluded in analysis {_ids(source.excluded_in)}: it supports nothing there; "
-            "it is cited here only by items from a revision that still included it. "
-            "Their content is not shown."
-        )
     excerpt = source.excerpt
+    if source.excluded_in:
+        if excerpt is None:
+            add(
+                f"- Excluded in analysis {_ids(source.excluded_in)}: it supports nothing "
+                "there, and its content is not shown."
+            )
+        else:
+            add(
+                f"- Excluded in analysis {_ids(source.excluded_in)}: it supports nothing "
+                "there; it is cited here from a revision that still included it. The "
+                "active (or exported) revision permits it, so the excerpt is shown."
+            )
     if excerpt is None:
-        add("- Excerpt: omitted (excluded in a reported revision).")
+        add("- Excerpt: omitted (excluded in the active or exported revision).")
         add("")
     else:
         cut = f", truncated from {excerpt.content_chars}" if excerpt.truncated else ""

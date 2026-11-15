@@ -144,9 +144,7 @@ def _records(case_id: str, *, other_case: bool = False) -> list[EvidenceRecord]:
     if other_case:
         # Same record IDs as the primary case, different content — catches missing case_id
         # filters that would otherwise still pass by coincidence.
-        records = [
-            r.model_copy(update={"content": r.content + OTHER_CASE_MARKER}) for r in records
-        ]
+        records = [r.model_copy(update={"content": r.content + OTHER_CASE_MARKER}) for r in records]
     records.append(
         EvidenceRecord(
             record_id="rec-evil",
@@ -422,6 +420,43 @@ def test_first_excluded_in_restarts_after_restore(client, seeded) -> None:
     assert exclusion["inherited"] is False
     assert exclusion["first_excluded_in"] == "analysis-synthetic-reexclude"
     assert exclusion["analysis_id"] == "analysis-synthetic-reexclude"
+
+
+def test_stale_exclusion_pin_does_not_hide_restored_excerpt(client, seeded) -> None:
+    # Active revision permits rec-02; a pin from the earlier exclusion still flags it.
+    board = client.post(
+        f"/cases/{seeded.case_id}/boards",
+        json={
+            "title": "Restored active",
+            "active_analysis_id": "analysis-synthetic-restore",
+        },
+    ).json()
+    response = client.patch(
+        f"/cases/{seeded.case_id}/boards/{board['board_id']}",
+        json={
+            "pin": [
+                {
+                    "kind": "claim",
+                    "source_analysis_id": "analysis-synthetic-restore",
+                    "ref_id": "claim-2",
+                },
+                {"kind": "claim", "source_analysis_id": CHILD_ID, "ref_id": "claim-1"},
+            ]
+        },
+    )
+    assert response.status_code == 200, response.text
+
+    report = export(client, seeded.case_id, "boards", board["board_id"], "json").json()
+    rec02 = next(s for s in report["sources"] if s["record_id"] == "rec-02")
+    assert rec02["excluded_in"] == [CHILD_ID]
+    assert rec02["excerpt"] is not None
+    assert rec02["excerpt"]["text"] == RAW["records"][1]["content"]
+    assert all(ref["analysis_id"] == "analysis-synthetic-restore" for ref in rec02["cited_by"])
+
+    markdown = export(client, seeded.case_id, "boards", board["board_id"], "md").text
+    assert RAW["records"][1]["content"] in markdown
+    assert "Excerpt: omitted" not in markdown
+    assert "the excerpt is shown" in markdown
 
 
 def test_board_notes_are_separate_and_attributed(client, seeded) -> None:

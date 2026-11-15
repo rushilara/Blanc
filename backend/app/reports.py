@@ -15,12 +15,13 @@ Faithfulness rules the report keeps:
   that need human review. Statuses are copied as saved; nothing is called verified.
 - **Every finding cites record IDs**, and every cited record appears once in ``sources``
   with its file, locator and timestamp. Permitted sources also carry an exact slice of
-  content (``content[char_start:char_end]``); sources excluded in any reported revision
-  omit the excerpt.
+  content (``content[char_start:char_end]``). The excerpt is omitted only when the record
+  is excluded in the report's scope revision (the board's active revision, or the single
+  exported revision); ``excluded_in`` still lists every reported revision that excludes it.
 - **Excluded evidence is listed apart**, by record ID and locator, with no content, and
-  is never counted as support. A record excluded in one revision but cited by a pinned
-  item from another revision is flagged on its source entry (``excluded_in``) and still
-  has no excerpt in the export.
+  is never counted as support. A record excluded in a non-active board source but
+  permitted in the active revision keeps its excerpt; a stale pin must not hide restored
+  evidence.
 - **Investigator notes are kept apart** in ``investigator_notes``, attributed to their
   author, and only linked to findings by ID (``note_ids``); their text is never mixed
   into AI-generated text.
@@ -440,8 +441,24 @@ class _Builder:
         excluded_in: dict[str, list[str]] = {}
         for exclusion in exclusions:
             excluded_in.setdefault(exclusion.record_id, []).append(exclusion.analysis_id)
+        # Withhold excerpts for records excluded in the scope revision only: the board's
+        # active revision, or the single exported analysis. Stale pins from older
+        # exclusions must not hide evidence the investigator has restored.
+        if board is not None and board.active_analysis_id:
+            scope = next(
+                (r for r in self.revisions if r.analysis_id == board.active_analysis_id),
+                None,
+            )
+        else:
+            scope = self.revisions[0] if self.revisions else None
+        scope_excluded = set(scope.excluded_record_ids) if scope else set()
         sources = [
-            _source(records[rid], refs, excluded_in.get(rid, []))
+            _source(
+                records[rid],
+                refs,
+                excluded_in.get(rid, []),
+                withhold_excerpt=rid in scope_excluded,
+            )
             for rid, refs in sorted(cited.items())
             if rid in records
         ]
@@ -558,10 +575,18 @@ class _Builder:
         return {row.record_id: row.to_contract() for row in rows}
 
 
-def _source(record: EvidenceRecord, refs: list[FindingRef], excluded_in: list[str]) -> ReportSource:
-    # Never put excluded evidence text in an export that may leave the machine.
+def _source(
+    record: EvidenceRecord,
+    refs: list[FindingRef],
+    excluded_in: list[str],
+    *,
+    withhold_excerpt: bool,
+) -> ReportSource:
+    # Never put currently-excluded evidence text in an export that may leave the machine.
+    # ``excluded_in`` still flags historical exclusions on the board; withholding follows
+    # the scope revision only (active / exported).
     excerpt: Excerpt | None = None
-    if not excluded_in:
+    if not withhold_excerpt:
         end = min(len(record.content), MAX_EXCERPT_CHARS)
         excerpt = Excerpt(
             text=record.content[:end],
