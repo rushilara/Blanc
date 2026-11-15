@@ -223,6 +223,7 @@ export function ConnectionMap({
 }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  const drag = useRef({ x: 0, y: 0, moved: false });
   const positions = useMemo(() => arrange(nodes, edges), [nodes, edges]);
   const labels = useMemo(() => new Map(nodes.map(node => [node.id, node.label])), [nodes]);
   const neighbors = useMemo(() => {
@@ -253,8 +254,6 @@ export function ConnectionMap({
   if (failed) {
     return <ul className="blanc-map-fallback">{edges.map(edge => <li key={edge.id}>{labels.get(edge.source) ?? edge.source} → {labels.get(edge.target) ?? edge.target}</li>)}</ul>;
   }
-
-  const drag = useRef({ x: 0, y: 0, moved: false });
 
   return <div className="blanc-map-frame">
     <div className="blanc-map" onPointerLeave={() => { document.body.style.cursor = ""; }}>
