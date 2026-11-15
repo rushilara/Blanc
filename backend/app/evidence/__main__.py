@@ -20,7 +20,7 @@ from app.evidence.importer import EvidenceImportError, import_path
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m app.evidence",
-        description="Import TXT, JSON and CSV evidence files as EvidenceRecord objects.",
+        description="Import TXT, JSON, CSV and EML evidence files as EvidenceRecord objects.",
     )
     parser.add_argument("path", type=Path, help="A file or a folder of extracted evidence.")
     parser.add_argument("--case-id", required=True, help="Case these records belong to.")

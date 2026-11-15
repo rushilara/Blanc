@@ -1,4 +1,4 @@
-"""Import extracted evidence files (TXT, JSON, CSV) as `EvidenceRecord` objects.
+"""Import extracted evidence files (TXT, JSON, CSV, EML) as `EvidenceRecord` objects.
 
 Case-agnostic by design: nothing here knows about any particular case. One
 source file can yield many records (one per message, row or paragraph), and
@@ -11,6 +11,13 @@ Locator conventions:
 - CSV: `line 4`, or `lines 4-6` for a row whose quoted cells span several lines.
   These are physical line numbers in the file, so the header is line 1 and
   blank lines are counted.
+- EML: `headers` for the message's header block (sender, recipients, date,
+  subject, attachments), then `body` for a single-part message, or `part 1`,
+  `part 1.2` for the parts of a multipart message (IMAP section numbers). A text
+  attachment is a part like any other; other attachments are listed in the
+  headers record, not imported as text. In a `multipart/alternative`, only the
+  plain-text version is kept (the HTML one if there is no plain text), so the
+  same words are not imported twice.
 
 Source root: every `source_file` is the path relative to the case's source
 root, and record IDs are derived from that path. Importing a whole export,
@@ -26,13 +33,19 @@ reinterprets one; normalization happens later in the pipeline.
 """
 
 import csv
+import email
+import email.policy
 import fnmatch
 import hashlib
+import html
 import io
 import json
 import re
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
+from email.message import EmailMessage
+from email.utils import parsedate_to_datetime
+from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
@@ -40,7 +53,7 @@ from pydantic import ValidationError
 
 from app.evidence.records import EvidenceRecord, TimestampKind, stable_record_id
 
-SUPPORTED_SUFFIXES = (".txt", ".json", ".csv")
+SUPPORTED_SUFFIXES = (".txt", ".json", ".csv", ".eml")
 
 TxtMode = Literal["paragraph", "line", "file"]
 
@@ -233,6 +246,13 @@ def import_file(
         raise EvidenceImportError(f"Could not read {source}: {error}") from error
 
     sha256 = hashlib.sha256(raw).hexdigest()
+    if suffix == ".eml":
+        builder = _RecordBuilder(
+            case_id=case_id, source_file=source, sha256=sha256, encoding="utf-8"
+        )
+        records = list(_from_eml(raw, builder))
+        _reject_duplicate_ids(records)
+        return records
     text, encoding = _decode(raw)
     builder = _RecordBuilder(case_id=case_id, source_file=source, sha256=sha256, encoding=encoding)
 
@@ -558,3 +578,213 @@ def _newlines_in(row: Mapping[Any, Any]) -> int:
         cells = value if isinstance(value, list) else [value]
         total += sum(cell.count("\n") for cell in cells if isinstance(cell, str))
     return total
+
+
+# --- EML ----------------------------------------------------------------------
+
+# Headers copied into the `headers` record, in this order, when present.
+EML_HEADERS = (
+    "From",
+    "Sender",
+    "Reply-To",
+    "To",
+    "Cc",
+    "Bcc",
+    "Date",
+    "Subject",
+    "Message-ID",
+    "In-Reply-To",
+    "References",
+)
+_EML_REQUIRED_ANY = ("From", "To", "Date", "Subject", "Message-ID")
+
+
+def _from_eml(raw: bytes, builder: _RecordBuilder) -> Iterator[EvidenceRecord]:
+    """One `headers` record, then one record per text part. All or nothing: any part
+    that cannot be decoded fails the whole file."""
+    name = builder.source_file
+    if not raw.strip():
+        return
+    try:
+        message = email.message_from_bytes(raw, policy=email.policy.default)
+    except Exception as error:  # the parser is lenient; this is a last resort
+        raise EvidenceImportError(f"{name} could not be parsed as an email: {error}") from error
+    if not isinstance(message, EmailMessage) or not any(
+        message.get(header) for header in _EML_REQUIRED_ANY
+    ):
+        raise EvidenceImportError(
+            f"{name} does not look like an email message: it has none of the headers "
+            f"{', '.join(_EML_REQUIRED_ANY)}"
+        )
+
+    try:
+        headers = {header: str(message[header]) for header in EML_HEADERS if message[header]}
+    except Exception as error:
+        raise EvidenceImportError(f"{name} has a header that cannot be decoded: {error}") from error
+    # The raw Date header, exactly as written: the parsed header is empty when the date is
+    # not a valid RFC 5322 date, and a source timestamp must never be dropped.
+    raw_date = next((value for key, value in message.raw_items() if key.lower() == "date"), None)
+    date = " ".join(raw_date.split()) if raw_date and raw_date.strip() else None
+    if date is not None:
+        headers["Date"] = date
+        headers = {header: headers[header] for header in EML_HEADERS if header in headers}
+    base: dict[str, Any] = {
+        "subject": headers.get("Subject"),
+        "message_id": headers.get("Message-ID"),
+    }
+    base = {key: value for key, value in base.items() if value}
+    if date is not None:
+        try:
+            base["date_iso"] = parsedate_to_datetime(date).isoformat()
+        except (TypeError, ValueError, IndexError):
+            base["date_unparsed"] = True
+
+    texts: list[tuple[str, EmailMessage]] = []
+    attachments: list[str] = []
+    _collect_parts(message, None, texts, attachments, name)
+
+    lines = [f"{header}: {value}" for header, value in headers.items()]
+    if attachments:
+        lines.append("Attachments: " + "; ".join(attachments))
+    yield builder.build(
+        locator="headers",
+        content="\n".join(lines),
+        timestamp=date,
+        timestamp_kind="sent",
+        metadata={**base, "content_type": message.get_content_type()},
+    )
+    for locator, part in texts:
+        content = _part_text(part, name, locator)
+        if not content:
+            continue
+        details = {**base, "content_type": part.get_content_type()}
+        if part.get_filename():
+            details["filename"] = part.get_filename()
+        charset = part.get_content_charset()
+        if charset:
+            details["charset"] = charset
+        yield builder.build(
+            locator=locator,
+            content=content,
+            timestamp=date,
+            timestamp_kind="sent",
+            metadata=details,
+        )
+
+
+def _collect_parts(
+    part: EmailMessage,
+    section: str | None,
+    texts: list[tuple[str, EmailMessage]],
+    attachments: list[str],
+    name: str,
+) -> None:
+    """Walk the MIME tree, numbering parts like IMAP sections (1, 1.2, ...)."""
+    locator = f"part {section}" if section else "body"
+    if part.get_content_type() == "message/rfc822":
+        # A forwarded or attached message: one record with its own headers and text.
+        # (The email library reports it as multipart, so check it first.)
+        texts.append((locator, part))
+        return
+    if part.is_multipart():
+        children = list(part.iter_parts())
+        numbered = list(enumerate(children, 1))
+        if part.get_content_subtype() == "alternative":
+            # The same message in several forms: keep one. A plain or HTML leaf wins;
+            # otherwise read the nested multiparts (e.g. multipart/related around HTML).
+            preferred = _preferred_alternative(children)
+            numbered = [
+                (index, child)
+                for index, child in numbered
+                if child is preferred or (preferred is None and child.is_multipart())
+            ]
+        for index, child in numbered:
+            child_section = f"{section}.{index}" if section else str(index)
+            _collect_parts(child, child_section, texts, attachments, name)
+        return
+
+    content_type = part.get_content_type()
+    filename = part.get_filename()
+    if content_type in ("text/plain", "text/html"):
+        texts.append((locator, part))
+        return
+    size = len(part.get_payload(decode=True) or b"")
+    label = filename or "unnamed"
+    attachments.append(f"{label} ({content_type}, {size} bytes, {locator}, not imported as text)")
+
+
+def _preferred_alternative(children: list[EmailMessage]) -> EmailMessage | None:
+    for wanted in ("text/plain", "text/html"):
+        for child in children:
+            if child.get_content_type() == wanted:
+                return child
+    return None
+
+
+def _part_text(part: EmailMessage, name: str, locator: str) -> str:
+    try:
+        if part.get_content_type() == "message/rfc822":
+            inner = part.get_content()
+            return inner.as_string(policy=email.policy.default).strip()
+        text = part.get_content()
+    except (LookupError, UnicodeError, ValueError, AssertionError) as error:
+        raise EvidenceImportError(
+            f"{name} {locator} could not be decoded ({part.get_content_type()}, charset "
+            f"{part.get_content_charset() or 'unspecified'}): {error}; none of this file's "
+            "records were imported"
+        ) from error
+    if part.get_content_type() == "text/html":
+        text = _html_to_text(text)
+    return "\n".join(line.rstrip() for line in text.strip().splitlines()).strip()
+
+
+class _HTMLText(HTMLParser):
+    _BLOCKS = {
+        "p",
+        "div",
+        "br",
+        "tr",
+        "li",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "blockquote",
+        "pre",
+        "table",
+        "hr",
+    }
+    _SKIP = {"script", "style", "head", "title"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.skipping = 0
+
+    def handle_starttag(self, tag: str, attrs: Any) -> None:
+        if tag in self._SKIP:
+            self.skipping += 1
+        elif tag in self._BLOCKS:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self._SKIP and self.skipping:
+            self.skipping -= 1
+        elif tag in self._BLOCKS:
+            self.parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if not self.skipping:
+            self.parts.append(data)
+
+
+def _html_to_text(markup: str) -> str:
+    """Visible text of an HTML part: tags, scripts and styles dropped, blocks on new lines."""
+    parser = _HTMLText()
+    parser.feed(markup)
+    parser.close()
+    text = html.unescape("".join(parser.parts))
+    lines = [" ".join(line.split()) for line in text.splitlines()]
+    return "\n".join(line for line in lines if line)
