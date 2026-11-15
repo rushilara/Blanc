@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -56,6 +57,8 @@ from app.search_index import (
     vector_chunk_ids,
     vector_index_dim,
 )
+
+logger = logging.getLogger(__name__)
 
 # Keep IN (...) lists well under SQLite's bound-parameter limit.
 _IN_BATCH = 500
@@ -487,7 +490,16 @@ def _ensure_media_chunks(
             continue
         sidecar = lexical_sidecar(record)
         # Validate bytes are readable before inserting a chunk that cannot be embedded.
-        _media_input_for(case_id, record, cases_dir=cases_dir, media_dir=media_dir)
+        try:
+            _media_input_for(case_id, record, cases_dir=cases_dir, media_dir=media_dir)
+        except EmbeddingError as exc:
+            logger.warning(
+                "skipping media backfill for %s in case %s: %s",
+                record.record_id,
+                case_id,
+                exc,
+            )
+            continue
         chunk = EvidenceChunk(
             case_id=case_id,
             record_id=record.record_id,
@@ -563,33 +575,47 @@ def reembed_stale_chunks(
         return 0
     records = _stored_records(session, case_id, [c.record_id for c in stale])
     pending: list[tuple[EvidenceChunk, str | MediaInput]] = []
+    skipped_chunk_ids: set[str] = set()
     for chunk in stale:
         record = records.get(chunk.record_id)
         if record is not None and is_media_record(record):
-            pending.append(
-                (
-                    chunk,
-                    _media_input_for(case_id, record, cases_dir=cases_dir, media_dir=media_dir),
+            try:
+                payload: str | MediaInput = _media_input_for(
+                    case_id, record, cases_dir=cases_dir, media_dir=media_dir
                 )
-            )
+            except EmbeddingError as exc:
+                logger.warning(
+                    "skipping re-embed of media chunk %s (%s) in case %s: %s",
+                    chunk.chunk_id,
+                    chunk.record_id,
+                    case_id,
+                    exc,
+                )
+                skipped_chunk_ids.add(chunk.chunk_id)
+                continue
+            pending.append((chunk, payload))
         else:
             pending.append((chunk, chunk.text))
+    if not pending:
+        return 0
     vectors = _embed_pending(embedder, pending)
+    updated = [chunk for chunk, _ in pending]
     # Replace any old vector (delete is a no-op for chunks that had none).
-    delete_vectors(session, [c.chunk_id for c in stale])
-    indexed = [IndexedChunk(c.chunk_id, c.case_id, c.record_id, c.text) for c in stale]
+    delete_vectors(session, [c.chunk_id for c in updated])
+    indexed = [IndexedChunk(c.chunk_id, c.case_id, c.record_id, c.text) for c in updated]
     insert_vectors(session, indexed, vectors)
-    # Only newly created media chunks need FTS rows; re-embedded text already has them.
-    if new_media_chunks:
+    # Only newly created media chunks that were successfully embedded need FTS rows.
+    new_ok = [c for c in new_media_chunks if c.chunk_id not in skipped_chunk_ids]
+    if new_ok:
         insert_keywords(
             session,
-            [IndexedChunk(c.chunk_id, c.case_id, c.record_id, c.text) for c in new_media_chunks],
+            [IndexedChunk(c.chunk_id, c.case_id, c.record_id, c.text) for c in new_ok],
         )
-    for chunk in stale:
+    for chunk in updated:
         chunk.embedding_model = embedder.model
         chunk.embedding_dim = embedder.dim
     session.flush()
-    return len(stale)
+    return len(updated)
 
 
 # --- Case-scoped reads ------------------------------------------------------------------

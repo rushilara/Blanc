@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import hashlib
 import io
+import logging
 import os
 import tempfile
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 IMAGE_TYPES = {
     ".png": ("image/png", "image"),
@@ -105,6 +108,8 @@ def truncate_pdf_for_embedding(data: bytes, *, max_pages: int = GEMINI_PDF_MAX_P
 
     Uses pypdf. Corrupt or unreadable PDFs are returned unchanged so the embed call can
     surface the provider error; page count is only used for truncation, never for IDs.
+    Logs a warning when pages beyond ``max_pages`` are dropped or when parse errors force
+    returning the original bytes.
     """
     if max_pages < 1:
         raise ValueError("max_pages must be >= 1")
@@ -122,8 +127,19 @@ def truncate_pdf_for_embedding(data: bytes, *, max_pages: int = GEMINI_PDF_MAX_P
             writer.add_page(reader.pages[index])
         out = io.BytesIO()
         writer.write(out)
+        logger.warning(
+            "PDF truncated for embedding: keeping first %s of %s pages "
+            "(pages %s+ are not searchable by meaning until a later ticket)",
+            max_pages,
+            total,
+            max_pages + 1,
+        )
         return out.getvalue()
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "PDF truncation failed (%s); embedding original bytes unchanged",
+            exc,
+        )
         return data
 
 

@@ -13,5 +13,7 @@ SQLAlchemy==2.0.55
 sqlite-vec==0.1.9
 # Prefixed ULID identifiers (app/ids.py)
 python-ulid==4.1.0
-# Truncate long PDFs to Gemini embedding-2's ~6-page limit at embed time (BLA-69)
-pypdf==6.1.1
+# Truncate long PDFs to Gemini embedding-2's ~6-page limit at embed time (BLA-69).
+# Pin a current release: 7.x includes security hardening for malformed PDFs
+# (xref/object-stream limits, image size checks, XFA decode limits; see pypdf changelog).
+pypdf==7.1.0
