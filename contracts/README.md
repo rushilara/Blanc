@@ -126,7 +126,7 @@ These schemas are minimal cross-team contracts. The server must additionally enf
 10. User-authored notes remain distinct from LLM-generated conclusions.
 11. Date-time fields are parsed as offset-aware instants before comparison; a board snapshot's `updated_at` is not before its `created_at`, and no item `added_at` or note `created_at` is after its `updated_at`.
 12. `retrieval_coverage`, when present, agrees with its revision: skipped records exist in the case and are never retrieved, excluded or cited; `record_limit` skips rank beyond `max_records`, and `budget` skips before the first `record_limit` skip (images and PDFs never take a text slot, so media skips — `media`, `media_limit`, `media_too_large` — have no rank bound); media skips name a `modality` and `budget` skips never do; no more than `max_records` text records are retrieved (images/PDFs sent to the model are on top); `budget_substituted` needs a budget skip; `left_out_record_ids` and `offer_expanded_window` follow from the skips as defined above.
-13. `suggested_followups` never names an excluded record ID; suggestions are model text, never findings, and never cite or carry evidence.
+13. `suggested_followups` never names an excluded record ID; suggestions are model text, never findings, and never cite or carry evidence. Like findings, a suggestion can still paraphrase what an excluded record said — the ID guard does not stop that.
 
 `starter/validate_fixture.py` implements cheap versions of checks 1 to 4, 7 to 9, 11 to 13 against the fixtures; CI runs them on every PR.
 
