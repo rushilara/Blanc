@@ -40,10 +40,13 @@ Return a single JSON object with answer, claims, graph (nodes and edges),
 timeline_events and unresolved_questions, using the corresponding field shapes
 in contracts/analysis_revision.schema.json. Each claim has id, text, evidence_ids
 and status. Each node has id, label and type (one of person, account, device,
-location, organization, document or other) and may have evidence_ids. Each edge
-has id, source, target, type, evidence_ids and status, and may have a
-description; source and target are node ids, and type is a short relationship
-label taken from the evidence. Each event has id, description, timestamp
+location, organization, document or other) and may have evidence_ids. Each edge has id, source, target, type, evidence_ids, status and a
+description. source and target are node ids. type is a short relationship
+label taken from the evidence, such as searched_location. description is one
+sentence of what those cited records show between the two nodes: name both
+ends and the specific act, place or statement in the records. Do not copy the
+type label into the description, and omit the edge when the records do not
+show how the two are connected. Each event has id, description, timestamp
 (null when unknown), evidence_ids and status, and may have timestamp_precision
 and timestamp_kind. Omit optional fields rather than setting them to null. The
 server supplies revision metadata and validates the complete revision
