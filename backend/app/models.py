@@ -200,6 +200,42 @@ event.listen(
 )
 
 
+class RevisionRestoreRow(Base):
+    """Marks a saved revision as a restore (BLA-35): it reuses the findings and evidence
+    state of ``restored_from_analysis_id``, an earlier revision in its lineage. Kept in its
+    own table so ``analysis_revisions`` needs no new column. Insert-only, like revisions."""
+
+    __tablename__ = "revision_restores"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["case_id", "analysis_id"],
+            ["analysis_revisions.case_id", "analysis_revisions.analysis_id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["case_id", "restored_from_analysis_id"],
+            ["analysis_revisions.case_id", "analysis_revisions.analysis_id"],
+        ),
+    )
+
+    case_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("cases.case_id", ondelete="CASCADE"), primary_key=True
+    )
+    analysis_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    restored_from_analysis_id: Mapped[str] = mapped_column(Text, nullable=False)
+    restored_record_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+
+
+event.listen(
+    RevisionRestoreRow.__table__,
+    "after_create",
+    DDL(
+        "CREATE TRIGGER revision_restores_immutable BEFORE UPDATE ON revision_restores "
+        "BEGIN SELECT RAISE(ABORT, 'revision restores are immutable'); END"
+    ).execute_if(dialect="sqlite"),
+)
+
+
 class BoardSnapshotRow(Base):
     """One append-only ``InvestigationBoard`` snapshot (BLA-31).
 
