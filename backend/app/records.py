@@ -110,6 +110,14 @@ def get_record_with_excerpt(
         raise InvalidExcerptError("char_start and char_end must be given together")
 
     row = _get_row(session, case_id, record_id)
+    if row.modality in ("image", "pdf") and (chunk_id is not None or has_span):
+        # A media record's content is its file: there are no character offsets to quote,
+        # and its only chunk is the search sidecar (filename / parent subject), which is not
+        # record content (BLA-71). Cite the record_id; the file is served by /media.
+        raise InvalidExcerptError(
+            f"record {record_id!r} is {row.modality} media and has no text excerpt; "
+            "fetch it without chunk_id/char_start/char_end"
+        )
     excerpt: Excerpt | None = None
     if chunk_id is not None:
         excerpt = chunk_excerpt(session, case_id, record_id, chunk_id)

@@ -59,9 +59,15 @@ ReviewStatus = Literal["unreviewed", "reviewed", "disputed"]
 BoardNoteKind = Literal["note", "correction"]
 ComparisonItemKind = Literal["claim", "edge", "event"]
 EvidenceWindow = Literal["standard", "expanded"]
-# "media": an image/PDF in the window that was not sent to the model (BLA-70; vision
-# analysis is BLA-71), including any beyond RETRIEVAL_MAX_MEDIA.
-SkipReason = Literal["budget", "record_limit", "media"]
+# Image/PDF records in the window that were not sent to the model (all need a modality):
+# "media_limit": over a media cap (RETRIEVAL_MAX_MEDIA, ANALYSIS_MAX_IMAGES / _PDFS, or the
+# total ANALYSIS_MAX_MEDIA_BYTES) — a larger cap or a narrower question could include it;
+# "media_too_large": the one file is over ANALYSIS_MAX_MEDIA_FILE_BYTES, so it cannot be
+# sent inline at all (BLA-71); "media": not sent for another reason (the stored file is
+# missing or fails its integrity check), and on revisions saved before vision analysis,
+# any retrieved media (BLA-70).
+SkipReason = Literal["budget", "record_limit", "media", "media_limit", "media_too_large"]
+MEDIA_SKIP_REASONS: frozenset[str] = frozenset({"media", "media_limit", "media_too_large"})
 MediaModality = Literal["image", "pdf"]
 SupportStatus = Literal[
     "still_supported", "weakened", "not_supported", "newly_supported", "unresolved"

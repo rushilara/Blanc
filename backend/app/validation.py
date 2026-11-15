@@ -27,6 +27,7 @@ from typing import Any
 from pydantic import BaseModel, ValidationError
 
 from app.contracts import (
+    MEDIA_SKIP_REASONS,
     AnalysisRevision,
     Claim,
     EvidenceRecord,
@@ -242,11 +243,18 @@ def validate_revision(records: Sequence[EvidenceRecord], analysis: AnalysisRevis
                 errors.append(f"edge {edge.id} {end} references unknown graph node {ref}")
 
     errors.extend(_timestamp_errors(analysis))
-    errors.extend(_coverage_errors(analysis, known))
+    media = {
+        r.record_id
+        for r in records
+        if r.case_id == analysis.case_id and r.modality in ("image", "pdf")
+    }
+    errors.extend(_coverage_errors(analysis, known, media))
     return errors
 
 
-def _coverage_errors(analysis: AnalysisRevision, known: set[str]) -> list[str]:
+def _coverage_errors(
+    analysis: AnalysisRevision, known: set[str], media: set[str] = frozenset()
+) -> list[str]:
     """``retrieval_coverage`` (BLA-64) is consistent with the revision: skipped records are
     real records of the case that were neither retrieved, excluded nor cited; ranks fit the
     window; and the left-out list and the offer follow from the skips."""
@@ -274,10 +282,13 @@ def _coverage_errors(analysis: AnalysisRevision, known: set[str]) -> list[str]:
         overlap = sorted(skipped & set(ids))
         if overlap:
             errors.append(f"{label} lists {name} records as skipped: {', '.join(overlap)}")
-    if len(analysis.retrieved_record_ids) > coverage.max_records:
+    # Images/PDFs sent to the model (BLA-71) sit on top of the text slots (BLA-70), so
+    # only text records count against max_records.
+    text_retrieved = [r for r in analysis.retrieved_record_ids if r not in media]
+    if len(text_retrieved) > coverage.max_records:
         errors.append(
             f"{label} max_records is {coverage.max_records} but "
-            f"{len(analysis.retrieved_record_ids)} records were retrieved"
+            f"{len(text_retrieved)} text records were retrieved"
         )
     # Text fills max_records slots; image/PDF records sit on top of them and never take one
     # (BLA-70). So a record-limit skip ranks past max_records, and a budget skip (inside the
@@ -294,7 +305,9 @@ def _coverage_errors(analysis: AnalysisRevision, known: set[str]) -> list[str]:
                 f"{label} skips {skip.record_id} for the budget at rank {skip.rank}, "
                 f"after the record limit cut the window at rank {first_cut}"
             )
-        if skip.reason == "media" and skip.modality is None:
+        # media / media_limit / media_too_large: an image or PDF in the window that was
+        # not sent to the model (BLA-70, BLA-71). Media has its own slots, so no rank bound.
+        if skip.reason in MEDIA_SKIP_REASONS and skip.modality is None:
             errors.append(f"{label} skips {skip.record_id} as media but gives no modality")
         if skip.reason == "budget" and skip.modality is not None:
             errors.append(

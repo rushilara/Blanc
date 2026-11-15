@@ -56,13 +56,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.analysis_llm import AnalysisLLM
+from app.analysis_media import AnalysisMediaConfig, select_media
 from app.analysis_retry import RevisionMetadata, analyze_with_retry
 from app.comparison import compare_revisions
 from app.contracts import AnalysisRevision, EvidenceWindow, RevisionComparison
 from app.db import utcnow
 from app.embeddings import Embedder
 from app.evidence_store import list_records
-from app.evidence_window import DEFAULT_WINDOW, coverage_of, text_only, window_of
+from app.evidence_window import DEFAULT_WINDOW, coverage_of, window_of
 from app.ids import new_id
 from app.models import AnalysisRevisionRow, Case, EvidenceRecordRow, RevisionRestoreRow
 from app.retrieval import RetrievalConfig, permitted_records, retrieve
@@ -394,6 +395,7 @@ def run_case_analysis(
     embedder: Embedder,
     *,
     retrieval_config: RetrievalConfig | None = None,
+    media_config: AnalysisMediaConfig | None = None,
     prior_analysis_id: str | None = None,
     evidence_window: EvidenceWindow | None = None,
     now: datetime | None = None,
@@ -432,6 +434,7 @@ def run_case_analysis(
         parent_id=parent_id,
         prior_text=prior_text,
         retrieval_config=retrieval_config,
+        media_config=media_config,
         window=window,
         now=now,
     )
@@ -446,6 +449,7 @@ def exclude_records(
     embedder: Embedder,
     *,
     retrieval_config: RetrievalConfig | None = None,
+    media_config: AnalysisMediaConfig | None = None,
     evidence_window: EvidenceWindow | None = None,
     now: datetime | None = None,
 ) -> AnalysisRevision:
@@ -495,6 +499,7 @@ def exclude_records(
         parent_id=base.analysis_id,
         prior_text=prior_findings_context(base, excluded),
         retrieval_config=retrieval_config,
+        media_config=media_config,
         window=evidence_window or window_of(base),
         now=now,
     )
@@ -509,6 +514,7 @@ def rerun_with_window(
     embedder: Embedder,
     *,
     retrieval_config: RetrievalConfig | None = None,
+    media_config: AnalysisMediaConfig | None = None,
     now: datetime | None = None,
 ) -> AnalysisRevision:
     """Rerun revision ``analysis_id``'s question with another evidence window (BLA-64).
@@ -539,6 +545,7 @@ def rerun_with_window(
         parent_id=base.analysis_id,
         prior_text=prior_findings_context(base, excluded),
         retrieval_config=retrieval_config,
+        media_config=media_config,
         window=evidence_window,
         now=now,
     )
@@ -626,6 +633,7 @@ def _analyze_and_save(
     parent_id: str | None,
     prior_text: str | None,
     retrieval_config: RetrievalConfig | None,
+    media_config: AnalysisMediaConfig | None = None,
     window: EvidenceWindow,
     now: datetime | None,
 ) -> AnalysisRevision:
@@ -642,9 +650,13 @@ def _analyze_and_save(
     )
     # Defense in depth before the LLM prompt; a leak is a bug upstream.
     permitted_records(retrieval, excluded)
-    # Images and PDFs are retrieved but not yet shown to the model (vision is BLA-71):
-    # the model must never cite a record it has not seen. Coverage lists them as skipped.
-    analyzed = text_only(retrieval)
+    records = list_records(session, case_id)
+    # Vision (BLA-71): retrieved images/PDFs within the media caps are sent inline; the
+    # rest are removed from what the model sees (so they cannot be cited) and listed in
+    # retrieval_coverage with their reason.
+    selection = select_media(
+        retrieval, records, excluded_record_ids=excluded, config=media_config
+    )
 
     moment = now or utcnow()
     metadata = RevisionMetadata(
@@ -652,15 +664,15 @@ def _analyze_and_save(
         created_at=moment,
         parent_analysis_id=parent_id,
     )
-    records = list_records(session, case_id)
     result = analyze_with_retry(
         llm,
-        analyzed,
+        selection.retrieval,
         records,
         metadata,
         session=session,
         excluded_record_ids=excluded,
         prior_analysis=prior_text,
+        media=selection.parts,
     )
     coverage = coverage_of(
         retrieval,
@@ -668,6 +680,7 @@ def _analyze_and_save(
         max_records=config.max_records,
         max_excerpt_chars=config.max_excerpt_chars,
         excluded_record_ids=excluded,
+        media_skips=selection.skipped,
     )
     revision = _reparsed(
         _contract_json(result.revision.model_copy(update={"retrieval_coverage": coverage}))

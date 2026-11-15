@@ -32,13 +32,17 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.analysis_media import MediaPart, media_inputs
 from app.config import Settings
 from app.contracts import Claim, ContractModel, Graph, TimelineEvent
 from app.models import EvidenceRecordRow
 from app.retrieval import RetrievalResult, RetrievedRecord
 from evidence_prompt import build_evidence_messages
 
-Message = Mapping[str, str]
+# ``content`` is a string, or (BLA-71, when images/PDFs are sent) a list of parts:
+# ``{"type": "text", "text": ...}`` and ``{"type": "media", "record_id", "mime_type",
+# "data": bytes}``; see ``evidence_prompt.build_evidence_messages``.
+Message = Mapping[str, Any]
 
 # Placed between two excerpts of the same record in the prompt ``content``: the text between
 # them was not retrieved, so the model must not read the excerpts as one continuous passage.
@@ -168,7 +172,9 @@ def _drop_null_branch(node: dict[str, Any]) -> dict[str, Any]:
 @runtime_checkable
 class AnalysisLLM(Protocol):
     """Turns prompt messages (``{"role": "system" | "user" | "assistant", "content": ...}``)
-    into a parsed ``AnalysisOutput``. One ``generate`` call is one model request."""
+    into a parsed ``AnalysisOutput``. One ``generate`` call is one model request. ``content``
+    may be a list of text and media parts (see ``Message``); an implementation must send
+    every part in order or fail, never drop one."""
 
     model: str
 
@@ -184,7 +190,10 @@ class GeminiAnalysisLLM:
     """Structured analysis from the Gemini API via ``google-genai``.
 
     System messages become ``system_instruction``; user and assistant messages become
-    ``user`` and ``model`` turns. The request sets ``response_mime_type="application/json"``
+    ``user`` and ``model`` turns. A list ``content`` becomes one part per item, in order:
+    text parts as text and media parts as inline bytes (``types.Part.from_bytes``, BLA-71;
+    the Files API is not used, so no file is uploaded to provider file storage). The
+    request sets ``response_mime_type="application/json"``
     and ``response_json_schema=gemini_response_schema()``, and the text is parsed with
     ``parse_analysis_output``. Rate limits (429) and transient server errors are retried by
     the SDK (``max_attempts`` per request); invalid output is not retried here. The client is
@@ -229,6 +238,8 @@ class GeminiAnalysisLLM:
 
         client = self._get_client()
         system = [m["content"] for m in messages if m["role"] == "system"]
+        if not all(isinstance(text, str) for text in system):
+            raise ValueError("system messages must be text")
         contents = []
         for message in messages:
             if message["role"] == "system":
@@ -238,7 +249,7 @@ class GeminiAnalysisLLM:
             contents.append(
                 types.Content(
                     role="model" if message["role"] == "assistant" else "user",
-                    parts=[types.Part(text=message["content"])],
+                    parts=_gemini_parts(types, message["content"]),
                 )
             )
         if not contents:
@@ -265,6 +276,20 @@ class GeminiAnalysisLLM:
         return parse_analysis_output(text)
 
 
+def _gemini_parts(types: Any, content: Any) -> list[Any]:
+    if isinstance(content, str):
+        return [types.Part(text=content)]
+    parts = []
+    for part in content:
+        if part.get("type") == "text":
+            parts.append(types.Part(text=part["text"]))
+        elif part.get("type") == "media":
+            parts.append(types.Part.from_bytes(data=part["data"], mime_type=part["mime_type"]))
+        else:
+            raise ValueError(f"unsupported prompt part type {part.get('type')!r}")
+    return parts
+
+
 def _finish_reason(response: Any) -> str:
     candidates = getattr(response, "candidates", None) or []
     reason = getattr(candidates[0], "finish_reason", None) if candidates else None
@@ -276,13 +301,14 @@ class FakeAnalysisLLM:
     """Offline LLM for tests. Each ``generate`` call pops the next scripted response, or
     repeats the last one; a response is an ``AnalysisOutput``, a dict, or raw text (parsed
     with ``parse_analysis_output``, so invalid text raises like the real model). Records the
-    messages of every call."""
+    messages of every call, including any image/PDF parts (vision-capable: see
+    ``media_parts``)."""
 
     responses: list[AnalysisOutput | dict[str, Any] | str] = field(
         default_factory=lambda: [EMPTY_OUTPUT]
     )
     model: str = "fake-analysis"
-    calls: list[list[dict[str, str]]] = field(default_factory=list)
+    calls: list[list[dict[str, Any]]] = field(default_factory=list)
 
     def generate(self, messages: Sequence[Message]) -> AnalysisOutput:
         self.calls.append([dict(m) for m in messages])
@@ -292,6 +318,17 @@ class FakeAnalysisLLM:
         return parse_analysis_output(
             response if isinstance(response, str) else json.dumps(response)
         )
+
+
+def media_parts(messages: Sequence[Message]) -> list[dict[str, Any]]:
+    """The image/PDF parts in ``messages``, in order (for tests and logging-free checks)."""
+    return [
+        part
+        for message in messages
+        if not isinstance(message["content"], str)
+        for part in message["content"]
+        if part.get("type") == "media"
+    ]
 
 
 EMPTY_OUTPUT = AnalysisOutput(
@@ -332,7 +369,9 @@ def prompt_record(
 
     ``content`` is the record's retrieved excerpts in document order, joined with
     ``EXCERPT_SEPARATOR``; the model sees only what retrieval selected, never the full
-    record. ``timestamp``/``timestamp_kind``/``metadata`` are included when present.
+    record. ``timestamp``/``timestamp_kind``/``metadata`` are included when present. An
+    image/PDF record has no excerpts (empty ``content``) and carries ``modality`` and
+    ``content_type``; its file is attached as a media part (BLA-71).
     """
     excerpts = sorted(record.excerpts, key=lambda e: e.char_start)
     source: dict[str, Any] = {
@@ -342,6 +381,10 @@ def prompt_record(
         "source_locator": record.source_locator,
         "content": EXCERPT_SEPARATOR.join(e.text for e in excerpts),
     }
+    if record.modality != "text":
+        source["modality"] = record.modality
+        if record.content_type is not None:
+            source["content_type"] = record.content_type
     if record.timestamp is not None:
         source["timestamp"] = record.timestamp
     if record.timestamp_kind is not None:
@@ -357,14 +400,24 @@ def build_analysis_messages(
     excluded_record_ids: Iterable[str] = (),
     prior_analysis: str | None = None,
     metadata_by_id: Mapping[str, dict[str, Any]] | None = None,
-) -> list[dict[str, str]]:
+    media: Mapping[str, MediaPart] | None = None,
+) -> list[dict[str, Any]]:
     """Prompt messages for ``retrieval``'s question and records. Records in
     ``excluded_record_ids`` or ``retrieval.excluded_record_ids`` are dropped again by
-    ``build_evidence_messages``."""
+    ``build_evidence_messages``, and so is their media.
+
+    ``media`` (BLA-71, from ``app.analysis_media.select_media``) holds the image/PDF parts
+    to send inline, by record ID; each follows its record's tag in the prompt. An image/PDF
+    record without a part is left out of the prompt entirely, so the model is never shown a
+    record whose file it cannot see (``sent_record_ids`` gives the records actually sent).
+    """
     metadata_by_id = metadata_by_id or {}
+    media = media or {}
+    sent = sent_record_ids(retrieval, media)
     records = [
         prompt_record(retrieval.case_id, r, metadata_by_id.get(r.record_id))
         for r in retrieval.records
+        if r.record_id in sent
     ]
     return build_evidence_messages(
         case_id=retrieval.case_id,
@@ -372,7 +425,19 @@ def build_analysis_messages(
         records=records,
         excluded_record_ids={*retrieval.excluded_record_ids, *excluded_record_ids},
         prior_analysis=prior_analysis,
+        media=media_inputs(media) if media else None,
     )
+
+
+def sent_record_ids(
+    retrieval: RetrievalResult, media: Mapping[str, MediaPart] | None = None
+) -> set[str]:
+    """Records of ``retrieval`` that reach the prompt: every text record, and image/PDF
+    records only with a media part in ``media``."""
+    media = media or {}
+    return {
+        r.record_id for r in retrieval.records if r.modality == "text" or r.record_id in media
+    }
 
 
 def run_analysis(
@@ -382,6 +447,7 @@ def run_analysis(
     session: Session | None = None,
     excluded_record_ids: Iterable[str] = (),
     prior_analysis: str | None = None,
+    media: Mapping[str, MediaPart] | None = None,
 ) -> AnalysisOutput:
     """Analyze ``retrieval.question`` over the retrieved evidence with exactly one LLM call.
 
@@ -401,5 +467,6 @@ def run_analysis(
         excluded_record_ids=excluded_record_ids,
         prior_analysis=prior_analysis,
         metadata_by_id=metadata_by_id,
+        media=media,
     )
     return llm.generate(messages)

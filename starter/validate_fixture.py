@@ -42,8 +42,13 @@ def validate_revision(records: list[dict], analysis: dict) -> list[str]:
     for edge in analysis['graph']['edges']:
         if edge['source'] not in nodes or edge['target'] not in nodes:
             errors.append(f"edge {edge['id']} references unknown graph node")
-    errors += _coverage_errors(analysis, known)
+    media = {r['record_id'] for r in records if r.get('modality') in ('image', 'pdf')}
+    errors += _coverage_errors(analysis, known, media)
     return errors
+
+
+# Image/PDF records in the window that were not sent to the model (BLA-70, BLA-71).
+MEDIA_REASONS = ('media', 'media_limit', 'media_too_large')
 
 
 def _left_out(skipped: list[dict], max_records: int) -> list[str]:
@@ -55,7 +60,7 @@ def _left_out(skipped: list[dict], max_records: int) -> list[str]:
     ]
 
 
-def _coverage_errors(analysis: dict, known: set[str]) -> list[str]:
+def _coverage_errors(analysis: dict, known: set[str], media: set[str] = frozenset()) -> list[str]:
     """Invariant 12: retrieval_coverage (BLA-64) agrees with the revision."""
     coverage = analysis.get('retrieval_coverage')
     if coverage is None:
@@ -76,7 +81,8 @@ def _coverage_errors(analysis: dict, known: set[str]) -> list[str]:
     if set(ids) & cited:
         errors.append('retrieval_coverage lists cited records as skipped')
     window = coverage['max_records']
-    if len(analysis['retrieved_record_ids']) > window:
+    # Images/PDFs sent to the model (BLA-71) sit on top of the text slots (BLA-70).
+    if len([r for r in analysis['retrieved_record_ids'] if r not in media]) > window:
         errors.append('retrieval_coverage max_records is below the retrieved count')
     # Media never takes a text slot (BLA-70): record-limit skips rank past the window, and
     # budget skips rank before the first record-limit skip.
@@ -86,7 +92,7 @@ def _coverage_errors(analysis: dict, known: set[str]) -> list[str]:
             errors.append(f"retrieval_coverage rank {s['rank']} does not fit reason {s['reason']}")
         if s['reason'] == 'budget' and cut is not None and s['rank'] > cut:
             errors.append(f"retrieval_coverage rank {s['rank']} does not fit reason {s['reason']}")
-        if (s['reason'] == 'media') != (s.get('modality') is not None) and s['reason'] != 'record_limit':
+        if (s['reason'] in MEDIA_REASONS) != (s.get('modality') is not None) and s['reason'] != 'record_limit':
             errors.append(f"retrieval_coverage {s['record_id']}: media skips need a modality, budget skips none")
     if coverage['budget_substituted'] and not any(s['reason'] == 'budget' for s in skipped):
         errors.append('retrieval_coverage budget_substituted without a budget skip')
