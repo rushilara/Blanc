@@ -1,18 +1,7 @@
 // Client for GET /cases/{case_id}/records/{record_id} (BLA-59 / BLA-40).
 
+import type { EvidenceRecord } from "@/lib/analysis";
 import { API_BASE_URL } from "@/lib/api";
-
-export type EvidenceRecord = {
-  record_id: string;
-  case_id: string;
-  source_file: string;
-  source_locator: string;
-  content: string;
-  timestamp?: string | null;
-  timestamp_kind?: string;
-  original_sha256?: string | null;
-  metadata?: Record<string, unknown>;
-};
 
 export type RecordExcerpt = {
   text: string;
