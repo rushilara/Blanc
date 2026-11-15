@@ -4,6 +4,7 @@ import { useEffect, useId, useMemo, useState } from "react";
 import type { EvidenceRecord } from "@/lib/analysis";
 import { groupTimeline, normalizeEvents, type NormalizedTimeline, type TimelineEvent, type TimelineItem } from "@/lib/timeline";
 import { collectEventTypes, filterTimeline } from "@/lib/timelineFilter";
+import { supportChanged, supportLabel, type SupportStatus } from "@/lib/comparison";
 import { SourceReferences } from "./SourceReferences";
 
 const PRECISION = { exact: "Exact time", day: "Day only", month: "Month only", approximate: "Approximate", unknown: "Undated / uncertain" };
@@ -15,6 +16,7 @@ export function TimelineView({
   excludedRecordIds,
   onExclude,
   onAnnotate,
+  eventSupport,
 }: {
   events: TimelineEvent[];
   caseId: string;
@@ -22,6 +24,7 @@ export function TimelineView({
   excludedRecordIds?: string[];
   onExclude?: (recordId: string) => void;
   onAnnotate?: (recordId: string) => void;
+  eventSupport?: Record<string, SupportStatus>;
 }) {
   const [result, setResult] = useState<{ input: TimelineEvent[]; data: NormalizedTimeline } | null>(null);
   const [failed, setFailed] = useState<TimelineEvent[] | null>(null);
@@ -52,8 +55,12 @@ export function TimelineView({
       <h3 id={id} className="text-sm font-semibold">{title} <span className="font-normal text-zinc-500">({items.length})</span></h3>
       {!items.length && <p className="text-xs text-zinc-500">{id === "dated-events" ? "No events with a sufficiently established date." : "No undated or uncertain events."}</p>}
       <ol className="space-y-4">
-        {items.map(({ event, time }) => <li key={event.id} data-event-id={event.id} className="space-y-2 border-l-2 border-zinc-300 pl-3 dark:border-zinc-700">
+        {items.map(({ event, time }) => {
+          const support = eventSupport?.[event.id];
+          const changed = support ? supportChanged(support) : false;
+          return <li key={event.id} data-event-id={event.id} data-support={support} className={`space-y-2 border-l-2 pl-3 ${changed ? "is-changed border-[#8a5a12]" : "border-zinc-300 dark:border-zinc-700"}`}>
           <p className="break-words font-mono text-xs">{time?.display ?? "Time not established"}</p>
+          {support && <p className={`blanc-support blanc-support-${support}`}>{supportLabel(support)}</p>}
           <div className="flex flex-wrap gap-1.5 text-xs">
             <span className="rounded border border-zinc-300 px-2 py-0.5 dark:border-zinc-700">{time ? PRECISION[time.precision] : "Not normalized"}</span>
             <span className="rounded border border-zinc-300 px-2 py-0.5 dark:border-zinc-700">{(event.timestamp_kind ?? "unknown").replaceAll("_", " ")}</span>
@@ -72,7 +79,8 @@ export function TimelineView({
             onAnnotate={onAnnotate}
           />
           <p className="break-all font-mono text-xs text-zinc-500">{[...new Set(event.evidence_ids)].join(" · ")}</p>
-        </li>)}
+        </li>;
+        })}
       </ol>
     </section>;
   }
