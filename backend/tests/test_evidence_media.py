@@ -157,6 +157,68 @@ def test_email_png_attachment_becomes_its_own_record(tmp_path: Path) -> None:
     assert_schema(image)
 
 
+def test_email_alternative_related_inline_png_becomes_media(tmp_path: Path) -> None:
+    """text/plain + multipart/related(HTML+cid PNG): prefer plain text, still promote PNG."""
+    import base64
+
+    html = (
+        b"<html><body><p>See the photo.</p>"
+        b'<img src="cid:dock@example.test" alt="dock"/></body></html>'
+    )
+    png_b64 = base64.b64encode(PNG_BYTES).decode("ascii")
+    raw = (
+        b"From: Alex <alex@example.test>\r\n"
+        b"To: Jordan <jordan@example.test>\r\n"
+        b"Date: Fri, 10 Apr 2026 09:15:00 -0400\r\n"
+        b"Subject: Inline photo\r\n"
+        b"Message-ID: <inline@example.test>\r\n"
+        b"MIME-Version: 1.0\r\n"
+        b'Content-Type: multipart/alternative; boundary="alt"\r\n'
+        b"\r\n"
+        b"--alt\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n"
+        b"Content-Transfer-Encoding: 7bit\r\n"
+        b"\r\n"
+        b"See the photo.\r\n"
+        b"--alt\r\n"
+        b'Content-Type: multipart/related; boundary="rel"\r\n'
+        b"\r\n"
+        b"--rel\r\n"
+        b"Content-Type: text/html; charset=utf-8\r\n"
+        b"Content-Transfer-Encoding: 7bit\r\n"
+        b"\r\n" + html + b"\r\n"
+        b"--rel\r\n"
+        b"Content-Type: image/png\r\n"
+        b"Content-Transfer-Encoding: base64\r\n"
+        b"Content-ID: <dock@example.test>\r\n"
+        b'Content-Disposition: inline; filename="dock.png"\r\n'
+        b"\r\n" + png_b64.encode("ascii") + b"\r\n"
+        b"--rel--\r\n"
+        b"--alt--\r\n"
+    )
+    path = write_bytes(tmp_path, "inline.eml", raw)
+    media_dir = tmp_path / "media"
+    records = {
+        r.source_locator: r
+        for r in import_file(path, "case-a", source_root=tmp_path, media_dir=media_dir)
+    }
+
+    # Prefer plain text (part 1); do not import the HTML twin; promote the cid PNG.
+    assert "part 1" in records
+    assert records["part 1"].content == "See the photo."
+    assert "part 2.1" not in records  # HTML under related, not preferred
+    image = records["part 2.2"]
+    assert image.modality == "image"
+    assert image.content_type == "image/png"
+    assert image.metadata["filename"] == "dock.png"
+    assert (media_dir / f"{image.record_id}.png").read_bytes() == PNG_BYTES
+    assert any(
+        a["locator"] == "part 2.2" and a["content_type"] == "image/png"
+        for a in records["headers"].metadata["attachments"]
+    )
+    assert_schema(image)
+
+
 def test_email_pdf_attachment_stays_metadata_only(tmp_path: Path) -> None:
     msg = EmailMessage()
     msg["From"] = "Alex <alex@example.test>"
@@ -189,9 +251,7 @@ def test_mislabeled_email_image_falls_back_to_metadata(tmp_path: Path) -> None:
     path = write_bytes(tmp_path, "mail.eml", msg.as_bytes())
     media_dir = tmp_path / "media"
     sink = ImportSink()
-    records = import_file(
-        path, "case-a", source_root=tmp_path, media_dir=media_dir, sink=sink
-    )
+    records = import_file(path, "case-a", source_root=tmp_path, media_dir=media_dir, sink=sink)
     assert [r.source_locator for r in records] == ["headers", "part 1"]
     assert records[1].content == "Body text must survive."
     assert records[0].metadata["attachments"][0]["filename"] == "lie.png"
@@ -429,7 +489,7 @@ def test_failed_eml_part_cleans_up_written_attachment(tmp_path: Path) -> None:
         b"Date: Fri, 10 Apr 2026 09:15:00 -0400\r\n"
         b"Subject: Partial fail\r\n"
         b"Message-ID: <partial@example.test>\r\n"
-        b'MIME-Version: 1.0\r\n'
+        b"MIME-Version: 1.0\r\n"
         b'Content-Type: multipart/mixed; boundary="bound"\r\n'
         b"\r\n"
         b"--bound\r\n"
@@ -467,6 +527,64 @@ def test_oversized_loose_media_rejected_before_read(tmp_path: Path, monkeypatch)
     media_dir = tmp_path / "media"
     with pytest.raises(EvidenceImportError, match="media limit"):
         import_file(path, "case-a", source_root=tmp_path, media_dir=media_dir)
+
+
+def test_oversized_email_image_rejected_before_decode(tmp_path: Path, monkeypatch) -> None:
+    """Email image size is gated on Content-Length / estimate before get_payload decode."""
+    import base64
+
+    from app.evidence import importer as importer_mod
+
+    monkeypatch.setattr(importer_mod, "MAX_MEDIA_BYTES", 10)
+    # Real PNG bytes would decode fine; Content-Length claims oversized so the gate
+    # must fire before decode. Spy get_payload to ensure decode=True is never used
+    # for the image part once the hint rejects it.
+    png_b64 = base64.b64encode(PNG_BYTES).decode("ascii")
+    raw = (
+        b"From: Alex <alex@example.test>\r\n"
+        b"To: Jordan <jordan@example.test>\r\n"
+        b"Date: Fri, 10 Apr 2026 09:15:00 -0400\r\n"
+        b"Subject: Huge\r\n"
+        b"Message-ID: <huge@example.test>\r\n"
+        b"MIME-Version: 1.0\r\n"
+        b'Content-Type: multipart/mixed; boundary="bound"\r\n'
+        b"\r\n"
+        b"--bound\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n"
+        b"\r\n"
+        b"Body survives.\r\n"
+        b"--bound\r\n"
+        b"Content-Type: image/png\r\n"
+        b"Content-Transfer-Encoding: base64\r\n"
+        b"Content-Length: 99999\r\n"
+        b'Content-Disposition: attachment; filename="huge.png"\r\n'
+        b"\r\n" + png_b64.encode("ascii") + b"\r\n"
+        b"--bound--\r\n"
+    )
+    path = write_bytes(tmp_path, "huge.eml", raw)
+    media_dir = tmp_path / "media"
+
+    decoded_image_calls = {"n": 0}
+    real_get_payload = EmailMessage.get_payload
+
+    def spied_get_payload(self, *args, **kwargs):  # noqa: ANN001
+        decode = kwargs.get("decode", args[0] if args else False)
+        if decode and self.get_content_type() == "image/png":
+            decoded_image_calls["n"] += 1
+        return real_get_payload(self, *args, **kwargs)
+
+    monkeypatch.setattr(EmailMessage, "get_payload", spied_get_payload)
+
+    sink = ImportSink()
+    records = import_file(path, "case-a", source_root=tmp_path, media_dir=media_dir, sink=sink)
+    assert [r.source_locator for r in records] == ["headers", "part 1"]
+    assert records[1].content == "Body survives."
+    assert records[0].metadata["attachments"][0]["filename"] == "huge.png"
+    assert records[0].metadata["attachments"][0]["size_bytes"] == 99999
+    assert sink.warnings
+    assert "media limit" in sink.warnings[0].reason
+    assert decoded_image_calls["n"] == 0
+    assert not media_dir.exists() or list(media_dir.iterdir()) == []
 
 
 def test_store_media_rejects_oversized_bytes(tmp_path: Path, monkeypatch) -> None:
@@ -604,7 +722,7 @@ def test_strict_store_cleans_media_from_earlier_files(tmp_path: Path) -> None:
         b"Date: Fri, 10 Apr 2026 09:15:00 -0400\r\n"
         b"Subject: Strict fail\r\n"
         b"Message-ID: <strict@example.test>\r\n"
-        b'MIME-Version: 1.0\r\n'
+        b"MIME-Version: 1.0\r\n"
         b'Content-Type: multipart/mixed; boundary="bound"\r\n'
         b"\r\n"
         b"--bound\r\n"
@@ -644,9 +762,7 @@ def test_strict_store_cleans_media_from_earlier_files(tmp_path: Path) -> None:
     assert leftover == []
 
 
-def test_import_path_unexpected_error_cleans_earlier_media(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_import_path_unexpected_error_cleans_earlier_media(tmp_path: Path, monkeypatch) -> None:
     """A non-EvidenceImportError abort must still drop earlier files' media."""
     from app.evidence import importer as imp
 
@@ -692,9 +808,7 @@ def test_media_build_failure_unlinks_written_file(tmp_path: Path, monkeypatch) -
     assert leftover == []
 
 
-def test_email_image_build_failure_falls_back_without_orphan(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_email_image_build_failure_falls_back_without_orphan(tmp_path: Path, monkeypatch) -> None:
     """Attachment build failure after write → metadata-only warning, no leftover file."""
     from app.evidence import importer as imp
 
@@ -720,9 +834,7 @@ def test_email_image_build_failure_falls_back_without_orphan(
 
     monkeypatch.setattr(imp._RecordBuilder, "build", boom)
     sink = ImportSink()
-    records = import_file(
-        path, "case-a", source_root=tmp_path, media_dir=media_dir, sink=sink
-    )
+    records = import_file(path, "case-a", source_root=tmp_path, media_dir=media_dir, sink=sink)
     assert [r.source_locator for r in records] == ["headers", "part 1"]
     assert sink.warnings
     assert "metadata only" in sink.warnings[0].reason

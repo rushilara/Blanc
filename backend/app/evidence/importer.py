@@ -18,12 +18,14 @@ Locator conventions:
   part like any other. PNG/JPEG attachments become their own media records (same
   part locator) with bytes under the case media directory; other binary
   attachments stay listed in the headers record's `metadata.attachments`, never
-  in its content. In a `multipart/alternative`, only the plain-text version is
-  kept (the HTML one if there is no plain text), so the same words are not
-  imported twice. A forwarded message (`message/rfc822`) at section 2 is read
-  like the file's own message: `part 2 headers`, then `part 2.1`, `part 2.2`,
-  ..., with its own Date as their timestamp. An empty `.eml` file gives no
-  records; a non-empty one with none of the usual email headers is an error.
+  in its content. In a `multipart/alternative`, only the preferred text version
+  is kept (plain text over HTML) so the same words are not imported twice; when
+  `promote_images` is on, image leaves under a non-preferred alternative (e.g.
+  `multipart/related` with cid inline PNGs) are still walked into media records.
+  A forwarded message (`message/rfc822`) at section 2 is read like the file's
+  own message: `part 2 headers`, then `part 2.1`, `part 2.2`, ..., with its own
+  Date as their timestamp. An empty `.eml` file gives no records; a non-empty
+  one with none of the usual email headers is an error.
 - PNG/JPEG/PDF: one record per file. Images and PDFs both use `entire file`
   as the locator (page counts wait on a real PDF parser). Bytes are written
   under `media_dir` as `media/{record_id}.{ext}` relative to the case directory
@@ -677,9 +679,7 @@ def _from_csv(text: str, builder: _RecordBuilder) -> Iterator[EvidenceRecord]:
             end_line = reader.line_num
             start_line = end_line - _newlines_in(row)
             locator = (
-                f"line {start_line}"
-                if start_line == end_line
-                else f"lines {start_line}-{end_line}"
+                f"line {start_line}" if start_line == end_line else f"lines {start_line}-{end_line}"
             )
             cells = {
                 key: value.strip()
@@ -723,9 +723,7 @@ def _newlines_in(row: Mapping[Any, Any]) -> int:
 # --- media (PNG / JPEG / PDF) -------------------------------------------------
 
 
-def _from_media_file(
-    raw: bytes, suffix: str, builder: _RecordBuilder
-) -> Iterator[EvidenceRecord]:
+def _from_media_file(raw: bytes, suffix: str, builder: _RecordBuilder) -> Iterator[EvidenceRecord]:
     """One record for a loose image or PDF; bytes written under ``media_dir``."""
     typed = media_type_for_suffix(suffix)
     if typed is None:
@@ -767,9 +765,7 @@ def _media_record(
     ext = extension.lower() if extension.startswith(".") else f".{extension.lower()}"
     try:
         verify_media_bytes(data, content_type)
-        media_path, media_sha, created = store_media_bytes(
-            media_dir, record_id, data, extension
-        )
+        media_path, media_sha, created = store_media_bytes(media_dir, record_id, data, extension)
     except MediaStoreError as error:
         raise EvidenceImportError(f"{builder.source_file} {locator}: {error}") from error
     dest = media_dir / f"{record_id}{ext}"
@@ -972,53 +968,123 @@ def _collect_parts(
     attachments: list[dict[str, Any]],
     *,
     promote_images: bool,
+    collect_text: bool = True,
 ) -> None:
     """Walk the MIME tree, numbering parts like IMAP sections (1, 1.2, ...). Text parts
     and forwarded messages go to ``entries`` in document order; other leaves are listed
     in ``attachments``. When ``promote_images`` is true, PNG/JPEG leaves also get a
-    media entry so they become real records."""
+    media entry so they become real records. ``collect_text`` is False when walking a
+    non-preferred ``multipart/alternative`` sibling so inline images are still found
+    without duplicating HTML/plain body text."""
     if part.get_content_type() == "message/rfc822":
         # A forwarded or attached message, expanded later like the file's own message.
         # (The email library reports it as multipart, so check it first.)
-        entries.append(("message", section or "1", part))
+        if collect_text:
+            entries.append(("message", section or "1", part))
         return
     if part.is_multipart():
         children = list(part.iter_parts())
         numbered = list(enumerate(children, 1))
         if part.get_content_subtype() == "alternative":
-            # The same message in several forms: keep one. A plain or HTML leaf wins;
-            # otherwise read the nested multiparts (e.g. multipart/related around HTML).
+            # Prefer one text form; still walk non-preferred multiparts for inline
+            # images (typical: text/plain + multipart/related with cid PNGs).
             preferred = _preferred_alternative(children)
-            numbered = [
-                (index, child)
-                for index, child in numbered
-                if child is preferred or (preferred is None and child.is_multipart())
-            ]
+            for index, child in numbered:
+                child_section = f"{section}.{index}" if section else str(index)
+                if child is preferred or (preferred is None and child.is_multipart()):
+                    _collect_parts(
+                        child,
+                        child_section,
+                        entries,
+                        attachments,
+                        promote_images=promote_images,
+                        collect_text=collect_text,
+                    )
+                elif promote_images and child.is_multipart():
+                    _collect_parts(
+                        child,
+                        child_section,
+                        entries,
+                        attachments,
+                        promote_images=True,
+                        collect_text=False,
+                    )
+            return
         for index, child in numbered:
             child_section = f"{section}.{index}" if section else str(index)
             _collect_parts(
-                child, child_section, entries, attachments, promote_images=promote_images
+                child,
+                child_section,
+                entries,
+                attachments,
+                promote_images=promote_images,
+                collect_text=collect_text,
             )
         return
 
     locator = f"part {section}" if section else "body"
     content_type = part.get_content_type()
     if content_type in ("text/plain", "text/html"):
-        entries.append(("text", locator, part))
+        if collect_text:
+            entries.append(("text", locator, part))
         return
-    payload = part.get_payload(decode=True) or b""
+    # Prefer an exact decoded length for attachments[]. When a size hint already
+    # exceeds the media cap, skip decode here (and again in _email_image_record)
+    # so huge email images match the loose-file st_size gate.
+    size_hint = _part_decoded_size_hint(part)
+    if size_hint is not None and size_hint > MAX_MEDIA_BYTES:
+        size_bytes = size_hint
+    else:
+        size_bytes = len(part.get_payload(decode=True) or b"")
     attachments.append(
         {
             "locator": locator,
             "filename": part.get_filename(),
             "content_type": content_type,
-            "size_bytes": len(payload),
+            "size_bytes": size_bytes,
         }
     )
     # PNG/JPEG attachments also become real media records (BLA-68) when a media_dir
     # is available; other binaries stay metadata-only in the attachments list above.
+    # Oversized parts still get a media entry so _email_image_record can reject with
+    # the same metadata-only warning path — but size is gated before decode there.
     if promote_images and content_type in EMAIL_IMAGE_TYPES:
         entries.append(("media", locator, part))
+
+
+def _part_decoded_size_hint(part: EmailMessage) -> int | None:
+    """Best-effort decoded payload size without decoding, or None if unknown.
+
+    Prefers Content-Length; otherwise estimates from the undecoded body and
+    Content-Transfer-Encoding (base64 ≈ 3/4 of non-whitespace length).
+    """
+    raw_length = part.get("Content-Length")
+    if raw_length is not None:
+        try:
+            return int(str(raw_length).strip())
+        except ValueError:
+            pass
+    payload = part.get_payload(decode=False)
+    if payload is None:
+        return 0
+    if isinstance(payload, list | EmailMessage):
+        return None
+    if isinstance(payload, str):
+        encoded_len = len(payload)
+        non_ws = sum(1 for char in payload if not char.isspace())
+    elif isinstance(payload, bytes | bytearray):
+        encoded_len = len(payload)
+        non_ws = sum(1 for byte in payload if byte not in b" \t\r\n")
+    else:
+        return None
+    cte = (part.get("Content-Transfer-Encoding") or "").strip().lower()
+    if cte == "base64":
+        return (non_ws * 3) // 4
+    if cte == "quoted-printable":
+        # QP is roughly 1:1 aside from soft line breaks and =XX escapes; encoded
+        # length is a safe upper bound for the gate.
+        return encoded_len
+    return encoded_len
 
 
 def _email_image_record(
@@ -1038,7 +1104,20 @@ def _email_image_record(
         raise EvidenceImportError(
             f"{builder.source_file} {locator}: unsupported image type {content_type}"
         )
+    # Gate on declared/estimated size before get_payload(decode=True), matching the
+    # loose-file st_size check so huge attachments never force a full decode.
+    size_hint = _part_decoded_size_hint(part)
+    if size_hint is not None and size_hint > MAX_MEDIA_BYTES:
+        raise EvidenceImportError(
+            f"{builder.source_file} {locator}: attachment is {size_hint} bytes; "
+            f"media limit is {MAX_MEDIA_BYTES} bytes"
+        )
     data = part.get_payload(decode=True) or b""
+    if len(data) > MAX_MEDIA_BYTES:
+        raise EvidenceImportError(
+            f"{builder.source_file} {locator}: attachment is {len(data)} bytes; "
+            f"media limit is {MAX_MEDIA_BYTES} bytes"
+        )
     details = {
         **base,
         "parent_locator": parent_locator,
