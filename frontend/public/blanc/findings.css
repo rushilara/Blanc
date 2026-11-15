@@ -314,6 +314,15 @@
   .blanc-investigation.has-source { grid-template-columns: minmax(0, 560px); }
 }
 
+/* Links in a source are only followed when the investigator clicks them. */
+.blanc-source-link { display: grid; gap: 2px; margin-top: 6px !important; }
+.blanc-source-link a { justify-self: start; color: #822b33; font: 600 12.5px/1.4 system-ui, sans-serif; text-decoration: underline; text-underline-offset: 3px; }
+.blanc-source-link a:hover { text-decoration-thickness: 2px; }
+.blanc-source-link small { font: 11px/1.4 system-ui, sans-serif; color: #8a7a68; }
+.blanc-source-derived { font-weight: 500; text-transform: none; letter-spacing: 0; color: #a3937f; }
+/* The panel heading takes focus when it opens (for screen readers) but shows no ring. */
+.blanc-source-panel h2:focus, .blanc-source-panel h2:focus-visible { outline: none; }
+
 /* Original images from local evidence, shown in the source panel. */
 .blanc-source-media { margin: 0 0 14px; }
 .blanc-source-media > button { display: block; width: 100%; padding: 6px; border: 1px solid #d3c7b2; border-radius: 6px; background: #fbf6ec; cursor: zoom-in; }

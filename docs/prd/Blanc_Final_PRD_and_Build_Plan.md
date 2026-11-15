@@ -108,6 +108,7 @@ Example illustrative questions (not claims about any particular dataset):
 | E7. Case evaluation + demo | P0 | At least one real case and verified multi-record question; no hardcoded answer; fresh-start test. |
 | E8. Cross-case portability + polish | P1 | Second case using same code; investigator annotations, exports, visual diff, search baseline. |
 | E9. Bounded agentic retrieval | P2 | Up to two retrieval expansions with guardrails and cost limits. |
+| E11. Multimodal evidence (images + PDFs) | P1 | Ingest email/loose images and PDFs; `gemini-embedding-2` for whole corpus; retrieve + vision analysis (BLA-67). |
 | E10. Model specialization | P2 | Fine-tuning and held-out benchmark after sufficient high-quality labels. |
 
 ### 8. Success criteria and non-goals
@@ -116,12 +117,14 @@ Example illustrative questions (not claims about any particular dataset):
 
 **Secondary validation:** Load a different case without changing parser-specific business logic, answer one independently verified question, and note which formats or extraction tasks still fail. This shows portability but does not prove universal investigator readiness.
 
-**Non-goals for the 15-hour prototype:** native image/RAM analysis, legal conclusions, guilt scores, automatically finding every relevant artifact, production-grade evidentiary admissibility, autonomous investigations, universal format compatibility, or claims of statistical generalization from two scenarios.
+**Non-goals for the 15-hour prototype:** native RAM/E01 disk analysis, legal conclusions, guilt scores, automatically finding every relevant artifact, production-grade evidentiary admissibility, autonomous investigations, universal format compatibility, or claims of statistical generalization from two scenarios.
+
+**MLP (E11):** image/PDF ingest, multimodal embeddings (`gemini-embedding-2` for the whole corpus), and vision analysis—Linear BLA-67–BLA-71.
 
 ### 9. Open engineering decisions (defaults recommended)
 
-- **Embedding baseline:** choose one pretrained model/service and lock it at kickoff. Avoid fine-tuning now.
-- **Storage:** Local SQLite for cases, source records and revision history; local vector index for embeddings. No Neo4j; no cloud evidence store for MVP. Gemini remains cloud compute for embeddings/LLM.
+- **Embedding baseline:** Gemini text embeddings for MVP; for E11 multimodal switch the whole corpus to `gemini-embedding-2` (one shared space; request dim 768 explicitly). Re-embed via `reembed_stale_chunks` and re-run retrieval evals. Avoid fine-tuning now.
+- **Storage:** Local SQLite for cases, source records and revision history; local vector index for embeddings. No Neo4j; no cloud evidence store for MVP. Gemini remains cloud compute for embeddings/LLM. E11 media bytes stay on disk; contract uses empty `content` plus `modality` / `media_path` / `content_type` (BLA-68).
 - **UI:** React graph library, simple event list/timeline; functionality before elaborate animation.
 - **Source granularity:** exclude at evidence-record level; optionally add document-level exclusion later.
 - **Merging follow-up findings:** match exact canonical IDs where available; otherwise ask user to confirm a merge and never silently equate similar names.
@@ -141,17 +144,19 @@ Uploaded documents are untrusted data and may contain instructions directed at t
 **Do not precompute the whole knowledge graph or event database during ingestion.** That can be an optimization later. In the first prototype, parse and embed records on import; **retrieve and construct a question-relevant reconstruction at runtime**.
 
 ```text
-USER CASE EVIDENCE (TXT, CSV, JSON; PDF/EML where supported)
+USER CASE EVIDENCE (TXT, CSV, JSON, EML; images + PDF in E11)
           |
-   Parse -> EvidenceRecord IDs + source locators -> chunk -> embedding & full-text index
+   Parse -> EvidenceRecord IDs + source locators
+          |         text: chunk -> embed
+          |         media (E11): store bytes on disk -> multimodal embed
           |
 Investigator question + optional previous workspace context
           |
 Case-filtered hybrid retrieval (excludes disallowed source record IDs)
           |
-Bounded set of evidence excerpts with immutable IDs
+Bounded evidence window (text excerpts + retrieved media refs)
           |
-One structured LLM analysis request
+One structured LLM analysis request (E11: vision parts for media)
           |
 Validate every source ID, normalize timestamps, mark inferences
           |

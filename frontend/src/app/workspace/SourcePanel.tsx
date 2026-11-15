@@ -6,6 +6,17 @@ import { fetchRecord, RecordFetchError } from "@/lib/records";
 import { presentSource } from "@/lib/source-presentation";
 import { localImageName, mediaUrl, remoteImageAttachments } from "@/lib/source-media";
 
+/** "Open in Google Maps" for Maps links, else "Open <host>". */
+function linkLabel(url: string): string {
+  try {
+    const { hostname, pathname } = new URL(url);
+    if (/(^|\.)google\./i.test(hostname) && pathname.startsWith("/maps")) return "Open in Google Maps";
+    return `Open ${hostname.replace(/^www\./, "")}`;
+  } catch {
+    return "Open link";
+  }
+}
+
 type Remote = { status: "loading" } | { status: "ready"; record: EvidenceRecord } | { status: "error"; message: string };
 
 /**
@@ -85,7 +96,14 @@ export function SourcePanel({ caseId, recordId, number, total, records, excluded
       })}
       {view?.message !== undefined && <blockquote className="blanc-source-message">{view.message || "(Empty message)"}</blockquote>}
       {view ? <dl className="blanc-source-fields">
-        {view.fields.map((field, index) => <div key={index}><dt>{field.label}</dt><dd>{field.value}</dd></div>)}
+        {view.fields.map((field, index) => <div key={index}>
+          <dt>{field.label}{field.derived && <span className="blanc-source-derived" title="Read from the URL above, not stored separately"> · from URL</span>}</dt>
+          <dd>{field.value}</dd>
+          {field.link && <dd className="blanc-source-link">
+            <a href={field.link} target="_blank" rel="noopener noreferrer">{linkLabel(field.link)} ↗</a>
+            <small>Opens the live site in a new tab, outside Blanc.</small>
+          </dd>}
+        </div>)}
       </dl> : <pre className="blanc-source-raw">{record.content}</pre>}
 
       <details className="blanc-source-details" open>
