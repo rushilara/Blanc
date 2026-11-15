@@ -69,7 +69,7 @@ make backend    # terminal 1: FastAPI with reload on http://localhost:8000 (BACK
 make frontend   # terminal 2: Next.js on http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000): the branded landing/sign-in page loads (placeholder auth until BLA-60). **Sign in** opens `/workspace`. Confirm the backend at [http://localhost:8000/health](http://localhost:8000/health) (`gemini_api_key_set` should be true once the key is set).
+Open [http://localhost:3000](http://localhost:3000): the branded landing/sign-in page loads. With `BLANC_AUTH_SECRET` empty, **Sign in** opens `/workspace`; set it and add a user to require a real sign-in ([`docs/06_DEPLOYMENT.md`](docs/06_DEPLOYMENT.md#sign-in-bla-60)). Confirm the backend at [http://localhost:8000/health](http://localhost:8000/health) (`gemini_api_key_set` should be true once the key is set).
 
 If `python3.12` is not on your PATH: `make backend PYTHON=/path/to/python3.12`. If you change the frontend origin/port, set `CORS_ORIGINS` in `.env` to that exact origin (default is `http://localhost:3000`). Relative `DATABASE_URL` paths resolve from `backend/`, where uvicorn runs.
 

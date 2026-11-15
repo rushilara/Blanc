@@ -63,7 +63,7 @@ export async function fetchRecord(
   try {
     response = await fetch(
       `${API_BASE_URL}/cases/${encodeURIComponent(caseId)}/records/${encodeURIComponent(recordId)}`,
-      { cache: "no-store", signal },
+      { cache: "no-store", signal, credentials: "include" },
     );
   } catch (err) {
     if (signal?.aborted) throw err;

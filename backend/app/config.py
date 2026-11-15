@@ -30,6 +30,9 @@ class Settings(BaseSettings):
 
     # Google Gemini API key, used for both the LLM and embeddings.
     GEMINI_API_KEY: SecretStr | None = None
+    # BLA-60: when set, the API needs the signed-in session cookie the frontend issues.
+    # Same value as the frontend reads (repo-root .env). At least 32 characters.
+    BLANC_AUTH_SECRET: SecretStr | None = None
     # LLM model. Override GEMINI_MODEL in .env to switch models.
     GEMINI_MODEL: str = "gemini-3.5-flash"
 
@@ -91,6 +94,15 @@ class Settings(BaseSettings):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
         return value
 
+    @field_validator("BLANC_AUTH_SECRET", mode="before")
+    @classmethod
+    def _auth_secret(cls, value: object) -> object:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        if isinstance(value, str) and len(value.strip()) < 32:
+            raise ValueError("BLANC_AUTH_SECRET must be at least 32 characters")
+        return value.strip() if isinstance(value, str) else value
+
     @field_validator("GEMINI_API_KEY", mode="before")
     @classmethod
     def _empty_key_is_none(cls, value: object) -> object:
@@ -115,6 +127,7 @@ class Settings(BaseSettings):
             "embedding_dim": self.EMBEDDING_DIM,
             "cases_dir": str(self.CASES_DIR),
             "cors_origins": self.CORS_ORIGINS,
+            "auth_required": self.BLANC_AUTH_SECRET is not None,
         }
 
 

@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.analysis_llm import make_analysis_llm
+from app.auth import require_session
 from app.config import Settings, get_settings
 from app.db import init_db, make_engine, make_session_factory
 from app.embeddings import make_embedder
@@ -37,6 +38,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             engine.dispose()
 
     app = FastAPI(title="Blanc API", version="0.1.0", lifespan=lifespan)
+
+    if settings.BLANC_AUTH_SECRET is not None:
+        # Added before CORS so CORS wraps it: a 401 still carries the CORS headers the
+        # browser needs to read it.
+        app.middleware("http")(require_session(settings.BLANC_AUTH_SECRET.get_secret_value()))
 
     app.add_middleware(
         CORSMiddleware,

@@ -89,12 +89,13 @@ button span{font:20px system-ui,sans-serif}
     </g>
   </svg></span></span>
 </div>
-<form id="signin" action="/workspace">
+<form id="signin" action="/api/auth/login" method="post">
+<input type="hidden" name="next" id="next" value="/workspace">
 <h1 id="heading">Sign in</h1>
 <label class="field" for="username"><span>Username</span>
-<input id="username" type="text" autocomplete="username" required></label>
+<input id="username" name="username" type="text" autocomplete="username" required></label>
 <label class="field" for="password"><span>Password</span>
-<input id="password" type="password" autocomplete="off" required></label>
+<input id="password" name="password" type="password" autocomplete="current-password" required></label>
 <button type="submit">Sign in <span aria-hidden="true">→</span></button>
 <p id="status" role="status"></p>
 </form>
@@ -108,6 +109,16 @@ logo.style.setProperty('--opening-offset', `${(form.offsetHeight + 28) / 2}px`);
 logo.style.setProperty('--initial-width', `${initial.getBoundingClientRect().width}px`);
 const offset = (logo.offsetWidth - initial.offsetWidth - 11) / 2;
 logo.style.setProperty('--center-offset', `${offset}px`);
+
+// BLA-61/60: the sign-in route sends people back here with ?next= (where they were
+// going) and ?error= (wrong credentials, or auth is misconfigured on this machine).
+const params = new URLSearchParams(location.search);
+if (params.get("next")) document.querySelector("#next").value = params.get("next");
+const messages = {
+  invalid: "That username and password did not match.",
+  config: "Sign-in is not set up correctly on this machine. See docs/06_DEPLOYMENT.md.",
+};
+if (messages[params.get("error")]) document.querySelector("#status").textContent = messages[params.get("error")];
 
 form.addEventListener("submit", () => {
   try {
