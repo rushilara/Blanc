@@ -558,3 +558,50 @@ def test_citations_are_validated_before_a_reconstruction_is_added(app, client, s
     body = patch(client, seeded.case_id, board_id, 422, add_reconstruction={"analysis_id": BASE_ID})
     assert any("cites evidence not in case" in error for error in body["detail"])
     assert client.get(url(seeded.case_id, board_id)).json()["items"] == []
+
+
+def test_a_long_but_valid_finding_id_can_be_pinned(app, client, seeded) -> None:
+    # Revision IDs have no length limit, so pinning must not apply a request-size limit
+    # to them (it used to crash bulk-add with a 500).
+    long_id = "claim-" + "x" * 201
+    revision = revision_in(seeded.case_id, "revision")
+    revision.claims[0] = revision.claims[0].model_copy(update={"id": long_id})
+    app.dependency_overrides[get_revision_lookup] = lambda: (
+        lambda session, case, ids: [revision] if BASE_ID in ids else []
+    )
+    board_id = create(client, seeded.case_id)["board_id"]
+    board = valid(
+        patch(
+            client,
+            seeded.case_id,
+            board_id,
+            add_reconstruction={"analysis_id": BASE_ID, "kinds": ["claim"]},
+        )
+    )
+    assert [i["ref_id"] for i in board["items"]] == [long_id, "claim-2"]
+    assert board["items"][0]["item_id"] == item_id_for(BASE_ID, "claim", long_id)
+
+    # A single pin of the same finding is the same item (deduplicated), not an error.
+    again = patch(client, seeded.case_id, board_id, pin=[pin("claim", long_id)])
+    assert again == board
+
+
+def test_a_long_but_valid_analysis_id_can_be_added_and_selected(app, client, seeded) -> None:
+    long_analysis = "analysis-" + "y" * 250
+    revision = revision_in(seeded.case_id, "revision").model_copy(
+        update={"analysis_id": long_analysis}
+    )
+    app.dependency_overrides[get_revision_lookup] = lambda: (
+        lambda session, case, ids: [revision] if long_analysis in ids else []
+    )
+    board = create(client, seeded.case_id, active_analysis_id=long_analysis)
+    added = valid(
+        patch(
+            client,
+            seeded.case_id,
+            board["board_id"],
+            add_reconstruction={"analysis_id": long_analysis, "kinds": ["event"]},
+        )
+    )
+    assert [i["source_analysis_id"] for i in added["items"]] == [long_analysis] * 2
+    assert added["active_analysis_id"] == long_analysis

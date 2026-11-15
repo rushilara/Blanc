@@ -11,6 +11,10 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 Title = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 Id = Annotated[str, StringConstraints(min_length=1, max_length=200)]
+# An ID that comes from a stored revision (an analysis ID, or a finding's ID inside one).
+# The contract sets no maximum length, so neither does a request that names one: a cap
+# here would make long, valid IDs impossible to pin or select.
+ContractId = Annotated[str, StringConstraints(min_length=1)]
 NoteText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=10000)]
 
 MAX_CHANGES = 200
@@ -25,7 +29,7 @@ class BoardCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     title: Title
-    active_analysis_id: Id | None = None
+    active_analysis_id: ContractId | None = None
 
 
 class PinRequest(BaseModel):
@@ -34,8 +38,8 @@ class PinRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     kind: FindingKind
-    source_analysis_id: Id
-    ref_id: Id
+    source_analysis_id: ContractId
+    ref_id: ContractId
 
 
 class AddReconstruction(BaseModel):
@@ -47,7 +51,7 @@ class AddReconstruction(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    analysis_id: Id
+    analysis_id: ContractId
     kinds: Annotated[list[FindingKind], Field(min_length=1)] = list(ALL_KINDS)
 
 
@@ -75,7 +79,7 @@ class BoardChange(BaseModel):
 
     expected_revision: Annotated[int, Field(ge=1)] | None = None
     title: Title | None = None
-    active_analysis_id: Id | None = None
+    active_analysis_id: ContractId | None = None
     add_reconstruction: AddReconstruction | None = None
     pin: Annotated[list[PinRequest], Field(max_length=MAX_CHANGES)] = []
     unpin: Annotated[list[Id], Field(max_length=MAX_CHANGES)] = []

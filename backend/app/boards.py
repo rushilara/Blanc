@@ -45,7 +45,7 @@ from app.contracts import AnalysisRevision, BoardItem, BoardNote, InvestigationB
 from app.db import utcnow
 from app.ids import new_id
 from app.models import BoardSnapshotRow, EvidenceRecordRow
-from app.schemas.boards import ALL_KINDS, BoardChange, NoteCreate, PinRequest
+from app.schemas.boards import ALL_KINDS, BoardChange, NoteCreate
 from app.validation import validate_board
 
 # Every note's author. Set by the server, never by the request: there are no user
@@ -80,6 +80,16 @@ class InvalidBoardChangeError(BoardError):
     def __init__(self, errors: list[str]) -> None:
         super().__init__("; ".join(errors))
         self.errors = errors
+
+
+@dataclass(frozen=True)
+class PinTarget:
+    """One finding to pin, by revision, kind and ID. Internal: built from a request pin or
+    from a saved revision's own findings, so no request-size limits apply to it."""
+
+    kind: str
+    source_analysis_id: str
+    ref_id: str
 
 
 @dataclass(frozen=True)
@@ -206,7 +216,9 @@ def update_board(
     errors: list[str] = []
 
     items = _unpin(current, change, errors)
-    pins = _reconstruction_pins(session, case_id, change, lookup, errors) + change.pin
+    pins = _reconstruction_pins(session, case_id, change, lookup, errors) + [
+        PinTarget(pin.kind, pin.source_analysis_id, pin.ref_id) for pin in change.pin
+    ]
     items = items + _pins(session, case_id, items, pins, lookup, moment, errors)
     notes = current.notes + _new_notes(change.notes, moment)
     if errors:
@@ -263,7 +275,7 @@ def _reconstruction_pins(
     change: BoardChange,
     lookup: RevisionLookup,
     errors: list[str],
-) -> list[PinRequest]:
+) -> list[PinTarget]:
     """One pin per finding of the requested revision, in kind order (claims, nodes, edges,
     events), skipping nodes that cite no evidence.
 
@@ -293,7 +305,7 @@ def _reconstruction_pins(
         "event": revision.timeline_events,
     }
     return [
-        PinRequest(kind=kind, source_analysis_id=revision.analysis_id, ref_id=finding.id)
+        PinTarget(kind, revision.analysis_id, finding.id)
         for kind in ALL_KINDS
         if kind in request.kinds
         for finding in findings[kind]
@@ -304,7 +316,7 @@ def _pins(
     session: Session,
     case_id: str,
     items: list[BoardItem],
-    pins: list[PinRequest],
+    pins: list[PinTarget],
     lookup: RevisionLookup,
     moment: datetime,
     errors: list[str],
