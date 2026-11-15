@@ -13,6 +13,10 @@ Local-first rules:
 - An ``artifact_manifest.jsonl`` in the root (one JSON object per line with
   ``source_path``, ``extracted_file`` and ``sha256``) maps original paths to extracted
   files. Without an entry, the file is looked up at its original relative path.
+- An entry may also list ``record_ids``: records shown to be about that file by
+  evidence recorded outside the app (e.g. a download row whose file was later moved,
+  matched by exact name and size). A record's own paths are tried first; a listed
+  ``record_ids`` link is used only when none of them resolves.
 - Only image types are served, and the file's leading bytes must match its type.
 - When the manifest records a SHA-256, the file must match it, so a changed or swapped
   file is refused rather than shown as evidence.
@@ -88,24 +92,43 @@ def media_source_paths(record: EvidenceRecord) -> list[str]:
     return out
 
 
-def _manifest(root: Path) -> dict[str, tuple[str, str | None]]:
-    """``source_path`` (case-folded) -> (``extracted_file``, ``sha256``)."""
+@dataclass(frozen=True)
+class _Entry:
+    source_path: str
+    extracted_file: str
+    sha256: str | None
+
+
+def _manifest(root: Path) -> tuple[dict[str, _Entry], dict[str, _Entry]]:
+    """Entries by case-folded ``source_path``, and by listed ``record_ids``. The first
+    entry naming a record wins, so a record never maps to two files."""
     path = root / MANIFEST_NAME
+    by_path: dict[str, _Entry] = {}
+    by_record: dict[str, _Entry] = {}
     if not path.is_file():
-        return {}
-    entries: dict[str, tuple[str, str | None]] = {}
+        return by_path, by_record
     for line in path.read_text(encoding="utf-8").splitlines():
         try:
             item = json.loads(line)
         except ValueError:
             continue
+        if not isinstance(item, dict):
+            continue
         source, extracted = item.get("source_path"), item.get("extracted_file")
-        if isinstance(source, str) and isinstance(extracted, str):
-            normalized = normalize_source_path(source)
-            sha = item.get("sha256") if isinstance(item.get("sha256"), str) else None
-            if normalized:
-                entries[normalized.casefold()] = (extracted, sha)
-    return entries
+        if not (isinstance(source, str) and isinstance(extracted, str)):
+            continue
+        normalized = normalize_source_path(source)
+        if not normalized:
+            continue
+        sha = item.get("sha256") if isinstance(item.get("sha256"), str) else None
+        entry = _Entry(normalized, extracted, sha)
+        by_path[normalized.casefold()] = entry
+        record_ids = item.get("record_ids")
+        if isinstance(record_ids, list):
+            for record_id in record_ids:
+                if isinstance(record_id, str) and record_id and record_id not in by_record:
+                    by_record[record_id] = entry
+    return by_path, by_record
 
 
 def _matches_type(data: bytes, media_type: str) -> bool:
@@ -143,21 +166,36 @@ def resolve_media(record: EvidenceRecord, evidence_root: Path | None) -> MediaFi
         root = evidence_root.expanduser().resolve(strict=True)
     except (FileNotFoundError, OSError) as exc:
         raise MediaNotFoundError("the local evidence folder does not exist") from exc
-    manifest = _manifest(root)
+    by_path, by_record = _manifest(root)
 
+    candidates: list[_Entry] = []
     for source_path in media_source_paths(record):
-        media_type = IMAGE_TYPES[Path(source_path).suffix.lower()]
-        extracted, expected = manifest.get(source_path.casefold(), (source_path, None))
-        path = _inside(root, extracted)
-        if path is None:
-            continue
-        if path.stat().st_size > MAX_MEDIA_BYTES:
-            raise MediaIntegrityError(f"{source_path} is larger than {MAX_MEDIA_BYTES} bytes")
-        data = path.read_bytes()
-        if not _matches_type(data, media_type):
-            raise MediaIntegrityError(f"{source_path} is not a valid {media_type} file")
-        digest = hashlib.sha256(data).hexdigest()
-        if expected is not None and digest != expected.lower():
-            raise MediaIntegrityError(f"{source_path} does not match its recorded SHA-256")
-        return MediaFile(data, media_type, source_path, digest, verified=expected is not None)
+        candidates.append(
+            by_path.get(source_path.casefold(), _Entry(source_path, source_path, None))
+        )
+    linked = by_record.get(record.record_id)
+    if linked is not None and Path(linked.source_path).suffix.lower() in IMAGE_TYPES:
+        candidates.append(linked)
+
+    for entry in candidates:
+        media = _load(root, entry)
+        if media is not None:
+            return media
     raise MediaNotFoundError("this record's image is not in the local evidence folder")
+
+
+def _load(root: Path, entry: _Entry) -> MediaFile | None:
+    """The checked image for ``entry``, or None if its file is not in ``root``."""
+    media_type = IMAGE_TYPES[Path(entry.source_path).suffix.lower()]
+    path = _inside(root, entry.extracted_file)
+    if path is None:
+        return None
+    if path.stat().st_size > MAX_MEDIA_BYTES:
+        raise MediaIntegrityError(f"{entry.source_path} is larger than {MAX_MEDIA_BYTES} bytes")
+    data = path.read_bytes()
+    if not _matches_type(data, media_type):
+        raise MediaIntegrityError(f"{entry.source_path} is not a valid {media_type} file")
+    digest = hashlib.sha256(data).hexdigest()
+    if entry.sha256 is not None and digest != entry.sha256.lower():
+        raise MediaIntegrityError(f"{entry.source_path} does not match its recorded SHA-256")
+    return MediaFile(data, media_type, entry.source_path, digest, verified=entry.sha256 is not None)

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { EvidenceRecord } from "@/lib/analysis";
 import { fetchRecord, RecordFetchError } from "@/lib/records";
 import { presentSource } from "@/lib/source-presentation";
@@ -72,9 +72,17 @@ export function SourcePanel({ caseId, recordId, number, total, records, excluded
 
     {record && <>
       {localImageName(record) && <SourceImage key={record.record_id} caseId={caseId} recordId={record.record_id} name={localImageName(record)!} />}
-      {remoteImageAttachments(record).map(attachment => <p key={attachment.filename} className="blanc-source-offline">
-        Attached image <strong>{attachment.filename}</strong> is stored on {attachment.host}, not in the local evidence, so it is not shown. Blanc never loads evidence from the network.
-      </p>)}
+      {/* A remote-only attachment may have a local copy linked to this record in the
+          evidence manifest (record_ids); the backend decides. Its URL is never loaded. */}
+      {!localImageName(record) && remoteImageAttachments(record).map((attachment, index) => {
+        const offline = <p key={attachment.filename} className="blanc-source-offline">
+          Attached image <strong>{attachment.filename}</strong> is stored on {attachment.host}, not in the local evidence, so it is not shown. Blanc never loads evidence from the network.
+        </p>;
+        return index === 0
+          ? <SourceImage key={`${record.record_id}-attachment`} caseId={caseId} recordId={record.record_id} name={attachment.filename}
+              caption={`Local copy of the attachment ${attachment.filename}, linked to this message in the evidence manifest`} missing={offline} />
+          : offline;
+      })}
       {view?.message !== undefined && <blockquote className="blanc-source-message">{view.message || "(Empty message)"}</blockquote>}
       {view ? <dl className="blanc-source-fields">
         {view.fields.map((field, index) => <div key={index}><dt>{field.label}</dt><dd>{field.value}</dd></div>)}
@@ -100,19 +108,25 @@ export function SourcePanel({ caseId, recordId, number, total, records, excluded
 
 /** The record's original image from the local evidence folder, with a larger view on
  *  click. Shows a plain note when the file is not available locally. */
-function SourceImage({ caseId, recordId, name }: { caseId: string; recordId: string; name: string }) {
+function SourceImage({ caseId, recordId, name, caption, missing }: {
+  caseId: string; recordId: string; name: string;
+  /** Overrides the default caption, e.g. for a linked local copy of an attachment. */
+  caption?: string;
+  /** What to show when no local image is available, instead of the default note. */
+  missing?: ReactNode;
+}) {
   const [state, setState] = useState<"loading" | "ready" | "missing">("loading");
   const viewer = useRef<HTMLDialogElement>(null);
   const src = mediaUrl(caseId, recordId);
   if (state === "missing") {
-    return <p className="blanc-source-offline">The original image <strong>{name}</strong> is not in the local evidence folder.</p>;
+    return missing ?? <p className="blanc-source-offline">The original image <strong>{name}</strong> is not in the local evidence folder.</p>;
   }
   return <figure className="blanc-source-media" data-state={state}>
     <button type="button" onClick={() => viewer.current?.showModal()} aria-label={`View ${name} larger`} disabled={state !== "ready"}>
       {/* eslint-disable-next-line @next/next/no-img-element -- local evidence served by the case API, not a static asset */}
       <img src={src} alt={`Original image ${name} from the evidence`} onLoad={() => setState("ready")} onError={() => setState("missing")} />
     </button>
-    <figcaption>{name} · original file from local evidence{state === "ready" ? " · click to enlarge" : ""}</figcaption>
+    <figcaption>{caption ?? `${name} · original file from local evidence`}{state === "ready" ? " · click to enlarge" : ""}</figcaption>
     <dialog ref={viewer} className="blanc-media-viewer" aria-label={`${name}, full size`} onClick={event => { if (event.target === event.currentTarget) viewer.current?.close(); }}>
       <button type="button" onClick={() => viewer.current?.close()}>Close</button>
       {/* eslint-disable-next-line @next/next/no-img-element */}

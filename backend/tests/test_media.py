@@ -13,7 +13,13 @@ from app.contracts import EvidenceRecord
 from app.embeddings import FakeEmbedder
 from app.evidence_store import store_records
 from app.main import create_app
-from app.media import media_source_paths, normalize_source_path
+from app.media import (
+    MediaIntegrityError,
+    MediaNotFoundError,
+    media_source_paths,
+    normalize_source_path,
+    resolve_media,
+)
 from app.models import Case
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
@@ -200,3 +206,132 @@ def test_a_blank_evidence_root_means_no_images(blank: str, monkeypatch: pytest.M
 
     monkeypatch.setenv("EVIDENCE_ROOT", blank)
     assert Settings(_env_file=None).EVIDENCE_ROOT is None
+
+
+def linked_root(tmp_path: Path, entries: list[dict[str, object]], files: dict[str, bytes]) -> Path:
+    root = tmp_path / "linked"
+    for relative, data in files.items():
+        write(root, relative, data)
+    (root / "artifact_manifest.jsonl").write_text(
+        "\n".join(json.dumps(e) for e in entries), "utf-8"
+    )
+    return root
+
+
+def test_record_ids_link_a_moved_file_to_its_download(tmp_path: Path) -> None:
+    root = linked_root(
+        tmp_path,
+        [
+            {
+                "source_path": "Users/Test/Downloads/Misc/BNE.png",
+                "extracted_file": "artifacts/a.png",
+                "sha256": hashlib.sha256(PNG).hexdigest(),
+                "record_ids": ["dl-6"],
+            }
+        ],
+        {"artifacts/a.png": PNG},
+    )
+    # The download row saved Downloads\BNE.png; the file was later moved to Downloads\Misc.
+    found = resolve_media(download("c", "dl-6", r"C:\Users\Test\Downloads\BNE.png"), root)
+    assert (found.data, found.source_path, found.verified) == (
+        PNG,
+        "Users/Test/Downloads/Misc/BNE.png",
+        True,
+    )
+    with pytest.raises(MediaNotFoundError):
+        resolve_media(download("c", "dl-7", r"C:\Users\Test\Downloads\BNE.png"), root)
+
+
+def test_a_records_own_path_wins_over_a_record_ids_link(tmp_path: Path) -> None:
+    root = linked_root(
+        tmp_path,
+        [
+            {
+                "source_path": "Users/Test/own.jpg",
+                "extracted_file": "artifacts/own.jpg",
+                "sha256": None,
+            },
+            {
+                "source_path": "Users/Test/other.png",
+                "extracted_file": "artifacts/other.png",
+                "sha256": None,
+                "record_ids": ["dl-1"],
+            },
+        ],
+        {"artifacts/own.jpg": JPEG, "artifacts/other.png": PNG},
+    )
+    assert resolve_media(download("c", "dl-1", r"C:\Users\Test\own.jpg"), root).data == JPEG
+
+
+def test_record_ids_links_keep_every_check(tmp_path: Path) -> None:
+    write(tmp_path, "outside.png", PNG)
+    root = linked_root(
+        tmp_path,
+        [
+            {
+                "source_path": "Users/Test/swapped.png",
+                "extracted_file": "artifacts/s.png",
+                "sha256": "0" * 64,
+                "record_ids": ["swapped"],
+            },
+            {
+                "source_path": "Users/Test/escape.png",
+                "extracted_file": "../outside.png",
+                "sha256": None,
+                "record_ids": ["escape"],
+            },
+            {
+                "source_path": "Users/Test/notes.txt",
+                "extracted_file": "artifacts/n.txt",
+                "sha256": None,
+                "record_ids": ["text"],
+            },
+            {
+                "source_path": "Users/Test/fake.png",
+                "extracted_file": "artifacts/f.png",
+                "sha256": None,
+                "record_ids": ["fake"],
+            },
+        ],
+        {"artifacts/s.png": PNG, "artifacts/n.txt": b"hello", "artifacts/f.png": b"nope"},
+    )
+    missing = r"C:\Users\Test\gone.png"
+    with pytest.raises(MediaIntegrityError):
+        resolve_media(download("c", "swapped", missing), root)
+    with pytest.raises(MediaIntegrityError):
+        resolve_media(download("c", "fake", missing), root)
+    for record_id in ("escape", "text"):
+        with pytest.raises(MediaNotFoundError):
+            resolve_media(download("c", record_id, missing), root)
+
+
+def test_the_first_entry_naming_a_record_wins_and_bad_lists_are_ignored(tmp_path: Path) -> None:
+    root = linked_root(
+        tmp_path,
+        [
+            {
+                "source_path": "Users/Test/first.png",
+                "extracted_file": "artifacts/1.png",
+                "sha256": None,
+                "record_ids": ["dl-1"],
+            },
+            {
+                "source_path": "Users/Test/second.jpg",
+                "extracted_file": "artifacts/2.jpg",
+                "sha256": None,
+                "record_ids": ["dl-1"],
+            },
+            {
+                "source_path": "Users/Test/third.jpg",
+                "extracted_file": "artifacts/2.jpg",
+                "sha256": None,
+                "record_ids": "dl-2",
+            },
+            ["not", "an", "object"],
+        ],
+        {"artifacts/1.png": PNG, "artifacts/2.jpg": JPEG},
+    )
+    missing = r"C:\Users\Test\gone.png"
+    assert resolve_media(download("c", "dl-1", missing), root).data == PNG
+    with pytest.raises(MediaNotFoundError):
+        resolve_media(download("c", "dl-2", missing), root)
