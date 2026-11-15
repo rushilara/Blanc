@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import revision from "../../fixtures/synthetic_analysis_revision.json";
 import records from "../../fixtures/synthetic_records.json";
 import comparison from "../../fixtures/synthetic_revision_comparison.json";
-import { analyzeCase, ApiError, askFollowUp, excludeRecords, getComparison, getSource, listCases, parseRevision, restoreRecords, searchCase } from "../src/lib/live-api";
+import { analyzeCase, ApiError, askFollowUp, excludeRecords, getComparison, getSource, listCases, listRevisions, parseRevision, rerunWithWindow, restoreRecords, searchCase } from "../src/lib/live-api";
 import type { AnalysisRevision } from "../src/lib/analysis";
 
 const originalFetch = globalThis.fetch;
@@ -142,6 +142,8 @@ test("follow-up posts the question and hides provider text", async () => {
   assert.equal(child.question, "What happened next?");
   assert.match(url, /\/analyses\/analysis-1\/follow-up$/);
   assert.equal(body, JSON.stringify({ question: "What happened next?", board_id: "board-1" }));
+  await askFollowUp(revision.case_id, "analysis-1", "What happened next?", null, undefined, "standard");
+  assert.equal(body, JSON.stringify({ question: "What happened next?", evidence_window: "standard" }));
   globalThis.fetch = async () => Response.json({ detail: "provider secret" }, { status: 422 });
   await assert.rejects(askFollowUp(revision.case_id, "analysis-1", "???"), (error: unknown) => {
     assert.ok(error instanceof ApiError);
@@ -149,6 +151,35 @@ test("follow-up posts the question and hides provider text", async () => {
     assert.doesNotMatch(error.message, /provider secret/);
     return true;
   });
+});
+
+test("an expanded rerun posts the window and hides provider text", async () => {
+  let url = "";
+  let body = "";
+  globalThis.fetch = async (input, init) => {
+    url = String(input);
+    body = String(init?.body ?? "");
+    return Response.json({ ...revision, analysis_id: "analysis-2", parent_analysis_id: revision.analysis_id });
+  };
+  const child = await rerunWithWindow(revision.case_id, revision.analysis_id, "expanded");
+  assert.equal(child.analysis_id, "analysis-2");
+  assert.match(url, new RegExp(`/analyses/${revision.analysis_id}/rerun$`));
+  assert.equal(body, JSON.stringify({ evidence_window: "expanded" }));
+  globalThis.fetch = async () => Response.json({ detail: "provider secret" }, { status: 409 });
+  await assert.rejects(rerunWithWindow(revision.case_id, revision.analysis_id, "expanded"), (error: unknown) => {
+    assert.ok(error instanceof ApiError);
+    assert.match(error.message, /already used that evidence window/);
+    assert.doesNotMatch(error.message, /provider secret/);
+    return true;
+  });
+});
+
+test("history accepts a window label and rejects an unknown window", async () => {
+  const item = { analysis_id: "root", parent_analysis_id: null, question: "Who?", created_at: "2026-11-14T12:00:00Z", needs_review: false, excluded_record_ids: [], restored_from_analysis_id: null, evidence_window: "expanded", max_records: 24 };
+  reply([item]);
+  assert.equal((await listRevisions("case-a"))[0].evidence_window, "expanded");
+  reply([{ ...item, evidence_window: "huge" }]);
+  await assert.rejects(listRevisions("case-a"), ApiError);
 });
 
 test("case-list corruption and invalid JSON produce errors, not empty success states", async () => {

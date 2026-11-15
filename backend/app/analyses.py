@@ -122,6 +122,9 @@ class RevisionSummary:
     excluded_record_ids: list[str]
     # Set when this revision is a restore: the earlier revision whose state it reuses.
     restored_from_analysis_id: str | None = None
+    # BLA-65. Taken from retrieval_coverage; revisions saved before it existed are standard.
+    evidence_window: EvidenceWindow = DEFAULT_WINDOW
+    max_records: int | None = None
 
 
 @dataclass(frozen=True)
@@ -354,7 +357,23 @@ def _restored_from(session: Session, case_id: str, analysis_ids: list[str]) -> d
     return {row.analysis_id: row.restored_from_analysis_id for row in rows}
 
 
+def _window_fields(revision: dict) -> tuple[EvidenceWindow, int | None]:
+    """The evidence window and its record cap, from stored coverage. Missing coverage is
+    the standard window with no known cap."""
+    coverage = revision.get("retrieval_coverage")
+    if not isinstance(coverage, dict):
+        return DEFAULT_WINDOW, None
+    window = coverage.get("evidence_window")
+    if window not in ("standard", "expanded"):
+        window = DEFAULT_WINDOW
+    max_records = coverage.get("max_records")
+    if isinstance(max_records, bool) or not isinstance(max_records, int) or max_records < 1:
+        max_records = None
+    return window, max_records
+
+
 def _summary(row: AnalysisRevisionRow, restored_from: str | None = None) -> RevisionSummary:
+    window, max_records = _window_fields(row.revision)
     return RevisionSummary(
         analysis_id=row.analysis_id,
         parent_analysis_id=row.parent_analysis_id,
@@ -363,6 +382,8 @@ def _summary(row: AnalysisRevisionRow, restored_from: str | None = None) -> Revi
         created_at=row.created_at,
         excluded_record_ids=list(row.revision.get("excluded_record_ids", [])),
         restored_from_analysis_id=restored_from,
+        evidence_window=window,
+        max_records=max_records,
     )
 
 
