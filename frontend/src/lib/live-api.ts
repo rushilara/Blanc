@@ -5,11 +5,16 @@ import recordSchema from "../../../contracts/evidence_record.schema.json";
 import { API_BASE_URL } from "./api";
 import type { AnalysisRevision, EvidenceRecord } from "./analysis";
 import { citedRecordIds } from "./citations";
+import comparisonSchema from "../../../contracts/revision_comparison.schema.json";
+import type { RevisionComparison } from "./comparison";
 
 const ajv = new Ajv2020({ allErrors: true });
 addFormats(ajv);
 const validRevision = ajv.compile<AnalysisRevision>(revisionSchema);
 const validRecord = ajv.compile<EvidenceRecord>(recordSchema);
+const comparisonAjv = new Ajv2020({ allErrors: true, strict: false });
+addFormats(comparisonAjv);
+const validComparison = comparisonAjv.compile<RevisionComparison>(comparisonSchema);
 
 /** Shown when the backend refuses a request without a valid sign-in (BLA-60). */
 export const SIGNED_OUT = "Your sign-in has expired. Sign in again to continue.";
@@ -162,6 +167,49 @@ export async function getRevision(caseId: string, analysisId: string, signal?: A
     throw new ApiError("The saved version does not match the requested revision.");
   }
   return parseRevision(data, caseId, data.question);
+}
+
+function revisionError(status: number): ApiError {
+  if (status === 503) return new ApiError("The analysis service is not ready. Please try again later.", 503);
+  if (status === 409) return new ApiError("There is no earlier revision that already had this record restored. This revision is unchanged.", 409);
+  if (status === 422) return new ApiError("This record cannot be changed from here. It may already be excluded, or it is not part of this case.", 422);
+  return new ApiError(`The request failed (HTTP ${status}).`, status);
+}
+
+async function postRevision(url: string, body: unknown, signal?: AbortSignal): Promise<AnalysisRevision> {
+  const response = await fetch(`${API_BASE_URL}${url}`, {
+    method: "POST",
+    cache: "no-store",
+    signal,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw revisionError(response.status);
+  let data: unknown;
+  try { data = await response.json(); }
+  catch { throw new ApiError("The backend returned invalid JSON."); }
+  if (!object(data) || !text(data.case_id) || !text(data.question)) {
+    throw new ApiError("The analysis response does not match the shared contract.");
+  }
+  return parseRevision(data, data.case_id, data.question);
+}
+
+/** Exclude records and rerun this revision's question. Returns the new child revision. */
+export function excludeRecords(caseId: string, analysisId: string, recordIds: string[], signal?: AbortSignal): Promise<AnalysisRevision> {
+  return postRevision(`${path(caseId)}/analyses/${encodeURIComponent(analysisId)}/exclude`, { record_ids: recordIds }, signal);
+}
+
+/** Bring excluded records back by reusing an earlier revision with that evidence set. */
+export function restoreRecords(caseId: string, analysisId: string, recordIds: string[], signal?: AbortSignal): Promise<AnalysisRevision> {
+  return postRevision(`${path(caseId)}/analyses/${encodeURIComponent(analysisId)}/restore`, { record_ids: recordIds }, signal);
+}
+
+export async function getComparison(caseId: string, analysisId: string, signal?: AbortSignal): Promise<RevisionComparison> {
+  const data = await request(`${path(caseId)}/analyses/${encodeURIComponent(analysisId)}/comparison`, signal);
+  if (!validComparison(data) || data.case_id !== caseId || data.compared_analysis_id !== analysisId) {
+    throw new ApiError("The comparison response does not match the shared contract or this revision.");
+  }
+  return data;
 }
 
 export async function loadRevisionSources(revision: AnalysisRevision, signal?: AbortSignal): Promise<EvidenceRecord[]> {

@@ -425,3 +425,32 @@
 .blanc-media-viewer img { display: block; max-width: 100%; max-height: calc(92vh - 90px); margin: 0 auto; object-fit: contain; }
 .blanc-media-viewer button { float: right; margin-bottom: 8px; color: #822b33; text-decoration: underline; cursor: pointer; font: 600 12px system-ui, sans-serif; }
 .blanc-media-viewer p { clear: both; margin: 8px 0 0; font: 12px system-ui, sans-serif; color: #7a6a5a; text-align: center; }
+
+.blanc-support { display: inline-block; margin-right: 8px; padding: 0 6px; border-radius: 3px; font: 600 10px/1.6 system-ui, sans-serif; letter-spacing: .04em; text-transform: uppercase; vertical-align: 2px; }
+.blanc-support-still_supported { color: #2f5d3a; background: #e4efe4; }
+.blanc-support-weakened { color: #8a5a12; background: #f3e6cf; }
+.blanc-support-not_supported, .blanc-support-unresolved { color: #822b33; background: #f3e4e2; }
+.blanc-support-newly_supported { color: #3b4f7a; background: #e4e8f2; }
+.blanc-reading p.is-changed, .blanc-comparison li.is-changed, .blanc-map-link.is-changed { margin-left: -10px; padding-left: 8px; border-left: 3px solid #8a5a12; }
+.blanc-possible { display: block; margin-top: 4px; color: #5c4a3a; font: italic 13px/1.4 Georgia, serif; }
+.blanc-revision-switch { margin: 0 0 18px; }
+.blanc-revision-switch button, .blanc-source-actions button { color: #822b33; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; font: 600 13px/1.3 system-ui, sans-serif; }
+.blanc-revision-switch button:disabled, .blanc-source-actions button:disabled { opacity: .45; cursor: default; }
+.blanc-source-actions { margin-top: 18px; padding-top: 14px; border-top: 1px solid #d3c7b2; }
+.blanc-source-actions small { display: block; margin-top: 6px; color: #7a6a5a; font: 12px/1.4 system-ui, sans-serif; }
+.blanc-case-rail li.is-excluded .blanc-rail-toggle > span:nth-child(2) { color: #8a5a12; }
+.blanc-excluded-link { margin-right: 10px; color: #822b33; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; font: inherit; }
+.blanc-comparison { list-style: none; margin: 12px 0 0; padding: 0; }
+.blanc-comparison li { margin: 0 0 14px; }
+.blanc-comparison li p { margin: 4px 0 0; }
+
+/* Spatial map uses the full investigation width, with the original source panel. */
+.blanc-investigation.has-connections { width: min(calc(100% - 44px), 1560px); grid-template-columns: 170px minmax(0, 1fr); }
+.blanc-investigation.has-connections.has-source { grid-template-columns: 150px minmax(0, 1fr) minmax(300px, 370px); }
+.blanc-spatial-frame { display: block; width: 100%; height: 720px; border: 0; background: transparent; }
+.blanc-spatial-list { font: 12px/1.6 var(--blanc-sans); }
+.blanc-spatial-list summary { color: #822b33; cursor: pointer; }
+.blanc-spatial-list > div { padding: 12px 0; border-bottom: 1px solid #b8ac97; }
+.blanc-spatial-list button { display: block; color: #822b33; text-decoration: underline; cursor: pointer; overflow-wrap: anywhere; }
+@media (max-width: 1100px) { .blanc-investigation.has-connections.has-source { grid-template-columns: 150px minmax(0, 1fr); } .has-connections .blanc-source-panel { position: fixed; top: 12px; right: 12px; bottom: 12px; width: min(400px, calc(100vw - 24px)); z-index: 20; max-height: none; } }
+@media (max-width: 700px) { .blanc-investigation.has-connections, .blanc-investigation.has-connections.has-source { grid-template-columns: minmax(0, 1fr); } .blanc-spatial-frame { height: 690px; } }

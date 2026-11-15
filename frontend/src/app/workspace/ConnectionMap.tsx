@@ -3,6 +3,7 @@
 import { Component, useMemo, useRef, useState, type ReactNode } from "react";
 import type { EvidenceRecord } from "@/lib/analysis";
 import { readNodeConnections, type MissedNote } from "@/lib/connection-reading";
+import { supportChanged, supportLabel, type SupportStatus } from "@/lib/comparison";
 import { Canvas } from "@react-three/fiber";
 import { Billboard, Line, OrbitControls, Text } from "@react-three/drei";
 import type { ThreeEvent } from "@react-three/fiber";
@@ -136,6 +137,7 @@ function Scene({
   positions,
   selected,
   neighbors,
+  changed,
   onSelect,
 }: {
   nodes: MapNode[];
@@ -143,6 +145,7 @@ function Scene({
   positions: Map<string, Vec>;
   selected: string | null;
   neighbors: Set<string>;
+  changed: Set<string>;
   onSelect: (id: string | null) => void;
 }) {
   const degree = useMemo(() => {
@@ -164,13 +167,14 @@ function Scene({
       const to = positions.get(edge.target);
       if (!from || !to) return null;
       const active = !selected || edge.source === selected || edge.target === selected;
+      const marked = changed.has(edge.id);
       return <Line
         key={edge.id}
         points={[from, to]}
-        color={active && selected ? BURGUNDY : "#8d7b68"}
-        lineWidth={active && selected ? 2.2 : 1}
+        color={marked ? "#8a5a12" : active && selected ? BURGUNDY : "#8d7b68"}
+        lineWidth={marked || (active && selected) ? 2.6 : 1}
         transparent
-        opacity={active ? 0.9 : 0.16}
+        opacity={active ? 0.95 : 0.16}
       />;
     })}
     {nodes.map(node => {
@@ -212,6 +216,7 @@ export function ConnectionMap({
   events,
   questions,
   cite,
+  edgeSupport,
 }: {
   nodes: MapNode[];
   edges: MapEdge[];
@@ -220,10 +225,12 @@ export function ConnectionMap({
   events: { id: string; description: string; status: string; evidence_ids: string[] }[];
   questions: string[];
   cite: (id: string) => ReactNode;
+  edgeSupport?: Record<string, SupportStatus>;
 }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const drag = useRef({ x: 0, y: 0, moved: false });
+  const changed = useMemo(() => new Set(Object.entries(edgeSupport ?? {}).filter(([, status]) => supportChanged(status)).map(([id]) => id)), [edgeSupport]);
   const positions = useMemo(() => arrange(nodes, edges), [nodes, edges]);
   const labels = useMemo(() => new Map(nodes.map(node => [node.id, node.label])), [nodes]);
   const neighbors = useMemo(() => {
@@ -268,7 +275,7 @@ export function ConnectionMap({
           }}
           onPointerMissed={() => { if (!drag.current.moved) setSelected(null); }}
         >
-          <Scene nodes={nodes} edges={edges} positions={positions} selected={selected} neighbors={neighbors} onSelect={setSelected} />
+          <Scene nodes={nodes} edges={edges} positions={positions} selected={selected} neighbors={neighbors} changed={changed} onSelect={setSelected} />
         </Canvas>
       </MapBoundary>
     </div>
@@ -277,16 +284,20 @@ export function ConnectionMap({
         <h2>{chosen.label}</h2>
         <p className="blanc-map-role">{chosen.type}</p>
         {reading.connections.length === 0 && <p>Nothing else in this revision connects to {chosen.label}.</p>}
-        {reading.connections.map(item => <div key={item.edgeId} className="blanc-map-link">
+        {reading.connections.map(item => {
+          const support = edgeSupport?.[item.edgeId];
+          return <div key={item.edgeId} className={`blanc-map-link${support && supportChanged(support) ? " is-changed" : ""}`}>
           <p>
             <span className={`blanc-status blanc-status-${item.status}`}>{item.status.replaceAll("_", " ")}</span>
+            {support && <span className={`blanc-support blanc-support-${support}`}>{supportLabel(support)}</span>}
             {item.otherLabel}
           </p>
           {item.stated && <p className="blanc-map-fact">{item.stated}</p>}
           {item.facts.map(fact => <p key={fact.line} className="blanc-map-fact">{fact.line}{" "}
             {fact.evidenceIds.length > 0 && <sup>{fact.evidenceIds.map(id => cite(id))}</sup>}
           </p>)}
-        </div>)}
+        </div>;
+        })}
         {(reading.missed.length > 0 || reading.hiddenSources > 0) && <div className="blanc-map-missed">
           <h3>Not drawn from {chosen.label}</h3>
           <p className="blanc-map-note">These mention {chosen.label} and are not a line on the map.</p>
