@@ -2,7 +2,8 @@ import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import revision from "../../fixtures/synthetic_analysis_revision.json";
 import records from "../../fixtures/synthetic_records.json";
-import { analyzeCase, ApiError, getSource, listCases, parseRevision, searchCase } from "../src/lib/live-api";
+import comparison from "../../fixtures/synthetic_revision_comparison.json";
+import { analyzeCase, ApiError, excludeRecords, getComparison, getSource, listCases, parseRevision, restoreRecords, searchCase } from "../src/lib/live-api";
 import type { AnalysisRevision } from "../src/lib/analysis";
 
 const originalFetch = globalThis.fetch;
@@ -83,6 +84,38 @@ test("missing analysis endpoint gives an actionable message without exposing ser
     assert.ok(error instanceof ApiError);
     assert.match(error.message, /not available/);
     assert.doesNotMatch(error.message, /internal provider/);
+    return true;
+  });
+});
+
+test("accepts a comparison for this revision and rejects a mismatched one", async () => {
+  reply(comparison);
+  const parsed = await getComparison(comparison.case_id, comparison.compared_analysis_id);
+  assert.equal(parsed.items.length, comparison.items.length);
+  await assert.rejects(getComparison("other-case", comparison.compared_analysis_id), ApiError);
+  reply({ ...comparison, items: [{ ...comparison.items[0], support_status: "maybe" }] });
+  await assert.rejects(getComparison(comparison.case_id, comparison.compared_analysis_id), ApiError);
+});
+
+test("exclude and restore return the new revision and keep provider text out of errors", async () => {
+  let url = "";
+  let body = "";
+  globalThis.fetch = async (input, init) => {
+    url = String(input);
+    body = String(init?.body ?? "");
+    return Response.json(revision);
+  };
+  const excluded = await excludeRecords(revision.case_id, "analysis-1", ["rec-02"]);
+  assert.equal(excluded.analysis_id, revision.analysis_id);
+  assert.match(url, /\/analyses\/analysis-1\/exclude$/);
+  assert.equal(body, JSON.stringify({ record_ids: ["rec-02"] }));
+  await restoreRecords(revision.case_id, "analysis-1", ["rec-02"]);
+  assert.match(url, /\/restore$/);
+  globalThis.fetch = async () => Response.json({ detail: "provider secret" }, { status: 409 });
+  await assert.rejects(restoreRecords(revision.case_id, "analysis-1", ["rec-02"]), (error: unknown) => {
+    assert.ok(error instanceof ApiError);
+    assert.match(error.message, /earlier revision/);
+    assert.doesNotMatch(error.message, /provider secret/);
     return true;
   });
 });

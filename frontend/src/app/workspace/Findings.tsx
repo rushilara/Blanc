@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic";
 import Link from "next/link";
+import { SpatialConnections } from "@/components/SpatialConnections";
 import { presentSource } from "@/lib/source-presentation";
 import { SourcePanel } from "./SourcePanel";
 import { TimelineView } from "@/components/TimelineView";
@@ -9,7 +10,8 @@ import { Component, useEffect, useRef, useSyncExternalStore, useState, type Reac
 import type { AnalysisRevision, EvidenceRecord } from "@/lib/analysis";
 import { citedRecordIds } from "@/lib/citations";
 import { anchorCitations, splitCitations, type Anchor } from "@/lib/inline-citations";
-import { analyzeCase, ApiError, listCaseRecordsPage, listCases, loadRevisionSources, type CaseSummary } from "@/lib/live-api";
+import { itemFor, sameFindingNote, sourcesInOrder, supportChanged, supportLabel, type ComparisonItem, type ComparisonKind, type RevisionComparison, type SupportStatus } from "@/lib/comparison";
+import { analyzeCase, ApiError, excludeRecords, getComparison, getRevision, listCaseRecordsPage, listCases, loadRevisionSources, restoreRecords, type CaseSummary } from "@/lib/live-api";
 
 /** Thrown by the dynamic() catch fallback when the map chunk fails to import. */
 const MAP_LOAD_ERROR = "Connection map failed to load.";
@@ -46,6 +48,10 @@ function localGreeting() {
 export function Findings() {
   const greeting = useSyncExternalStore(subscribeToGreeting, localGreeting, () => "");
   const [revision, setRevision] = useState<AnalysisRevision | null>(null);
+  const [previous, setPrevious] = useState<AnalysisRevision | null>(null);
+  const [comparison, setComparison] = useState<RevisionComparison | null>(null);
+  const [showingPrevious, setShowingPrevious] = useState(false);
+  const [working, setWorking] = useState("");
   const [records, setRecords] = useState<EvidenceRecord[]>([]);
   const [cases, setCases] = useState<CaseSummary[] | null>(null);
   const [caseId, setCaseId] = useState("");
@@ -88,6 +94,7 @@ export function Findings() {
   const [open, setOpen] = useState<string>();
   const [expandedSource, setExpandedSource] = useState<string>();
   const [sourceHover, setSourceHover] = useState<{ id: string; top: number; left: number } | null>(null);
+  const shown = showingPrevious && previous ? previous : revision;
   const sources = records;
 
   useEffect(() => {
@@ -96,13 +103,14 @@ export function Findings() {
   }, [loading, askFailed]);
   // Record IDs the model wrote into its prose become numbered citations too. Numbering
   // follows citation order, then any loaded source mentioned only in prose.
-  const knownIds = revision ? [...citedRecordIds(revision), ...records.map(record => record.record_id)] : [];
+  const knownIds = shown ? [...citedRecordIds(shown), ...records.map(record => record.record_id)] : [];
   const prose = (text: string) => splitCitations(text, knownIds);
-  const proseIds = revision
-    ? [revision.answer, ...revision.claims.map(claim => claim.text), ...revision.unresolved_questions, ...revision.graph.edges.map(edge => edge.description ?? "")]
+  const proseIds = shown
+    ? [shown.answer, ...shown.claims.map(claim => claim.text), ...shown.unresolved_questions, ...shown.graph.edges.map(edge => edge.description ?? "")]
       .flatMap(text => prose(text).flatMap(part => "ids" in part ? part.ids : []))
     : [];
-  const citedOrder = [...new Set([...(revision ? citedRecordIds(revision) : []), ...proseIds])];
+  const citedOrder = [...new Set([...(shown ? citedRecordIds(shown) : []), ...proseIds])];
+  const sourceOrder = sourcesInOrder(citedOrder, shown?.excluded_record_ids ?? []);
 
   // Exact words from each cited record (search phrase, file name, sender), so the
   // answer can carry a citation right where it mentions them.
@@ -156,6 +164,9 @@ export function Findings() {
       if (controller.signal.aborted) return;
       setRecords(loaded);
       setRevision(result);
+      setPrevious(null);
+      setComparison(null);
+      setShowingPrevious(false);
       const expected = new Set([...citedRecordIds(result), ...result.excluded_record_ids]).size;
       if (loaded.length < expected) {
         setFeedback("Some original sources could not be loaded. Open a citation to retry.");
@@ -209,15 +220,119 @@ export function Findings() {
   }
 
   function stepSource(direction: -1 | 1) {
-    const index = citedOrder.indexOf(open ?? "");
-    const next = citedOrder[index + direction];
+    const index = sourceOrder.indexOf(open ?? "");
+    const next = sourceOrder[index + direction];
     if (next) setOpen(next);
+  }
+
+  function wording(kind: ComparisonKind, id: string | null, side: "base" | "compared"): string | undefined {
+    const rev = side === "base" ? previous : revision;
+    if (!rev || !id) return undefined;
+    if (kind === "claim") return rev.claims.find(claim => claim.id === id)?.text;
+    if (kind === "event") return rev.timeline_events.find(event => event.id === id)?.description;
+    const edge = rev.graph.edges.find(item => item.id === id);
+    if (!edge) return undefined;
+    const name = (nodeId: string) => rev.graph.nodes.find(node => node.id === nodeId)?.label ?? nodeId;
+    return edge.description || `${name(edge.source)} → ${name(edge.target)}`;
+  }
+
+  function comparisonWording(item: ComparisonItem): string {
+    return wording(item.kind, item.compared_ref_id, "compared")
+      ?? wording(item.kind, item.base_ref_id, "base")
+      ?? item.kind;
+  }
+
+  function supportOf(kind: ComparisonKind, id: string) {
+    if (!comparison || !revision || !previous) return undefined;
+    if (comparison.compared_analysis_id !== revision.analysis_id || comparison.base_analysis_id !== previous.analysis_id) return undefined;
+    return itemFor(comparison.items, kind, id, showingPrevious ? "base" : "compared");
+  }
+
+  function supportMap(kind: "edge" | "event"): Record<string, SupportStatus> | undefined {
+    if (!comparison || !revision || comparison.compared_analysis_id !== revision.analysis_id) return undefined;
+    const key = showingPrevious ? "base_ref_id" : "compared_ref_id";
+    const marks: Record<string, SupportStatus> = {};
+    for (const item of comparison.items) {
+      if (item.kind !== kind) continue;
+      const id = item[key];
+      if (id) marks[id] = item.support_status;
+    }
+    return marks;
+  }
+
+  const lostClaims = !showingPrevious && comparison && comparison.compared_analysis_id === revision?.analysis_id
+    ? comparison.items.filter(item => item.kind === "claim" && !item.compared_ref_id)
+    : [];
+
+  function remember(loaded: EvidenceRecord[]) {
+    setRecords(current => {
+      const byId = new Map(current.map(record => [record.record_id, record]));
+      for (const record of loaded) byId.set(record.record_id, record);
+      return [...byId.values()];
+    });
+  }
+
+  async function changeEvidence(action: "exclude" | "restore") {
+    if (!shown || !open || working) return;
+    setWorking(action === "exclude" ? "Rerunning the analysis without this record…" : "Restoring this record from an earlier revision…");
+    setFeedback("");
+    try {
+      const child = action === "exclude"
+        ? await excludeRecords(shown.case_id, shown.analysis_id, [open])
+        : await restoreRecords(shown.case_id, shown.analysis_id, [open]);
+      let diff: RevisionComparison | null = null;
+      try {
+        diff = await getComparison(child.case_id, child.analysis_id);
+      } catch {
+        setFeedback("The new revision is saved. Its comparison could not be loaded.");
+      }
+      remember(await loadRevisionSources(child));
+      setPrevious(shown);
+      setRevision(child);
+      setComparison(diff);
+      setShowingPrevious(false);
+      setView("Revisions");
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : "The revision could not be saved.");
+    } finally {
+      setWorking("");
+    }
+  }
+
+  async function togglePrevious() {
+    if (!revision || working) return;
+    if (showingPrevious) {
+      setShowingPrevious(false);
+      return;
+    }
+    if (!revision.parent_analysis_id) return;
+    if (previous?.analysis_id === revision.parent_analysis_id) {
+      setShowingPrevious(true);
+      return;
+    }
+    setWorking("Opening the previous revision…");
+    setFeedback("");
+    try {
+      const parent = await getRevision(revision.case_id, revision.parent_analysis_id);
+      remember(await loadRevisionSources(parent));
+      setPrevious(parent);
+      setShowingPrevious(true);
+      try {
+        setComparison(await getComparison(revision.case_id, revision.analysis_id));
+      } catch {
+        setComparison(null);
+      }
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : "The previous revision could not be opened.");
+    } finally {
+      setWorking("");
+    }
   }
 
   return <div className="blanc-workspace">
     {/* The static sheet avoids the missing workspace styles in the CSS pipeline. */}
     {/* eslint-disable-next-line @next/next/no-css-tags */}
-    <link rel="stylesheet" href="/blanc/findings.css?v=connection-map-13-bla-52" precedence="blanc" />
+    <link rel="stylesheet" href="/blanc/findings.css?v=spatial-map-1" precedence="blanc" />
     <header className="blanc-header">
       <Link href="/" aria-label="Blanc home"><svg width="92" height="37" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="210 168 1460 570"><defs>
     <filter id="ink-alpha" colorInterpolationFilters="sRGB">
@@ -235,13 +350,14 @@ export function Findings() {
       )}</nav>}
     </header>
 
-    {revision ? <div className={`blanc-investigation${open ? " has-source" : ""}${view === "Connections" ? " is-map" : ""}`}>
+    {shown ? <div className={`blanc-investigation${open ? " has-source" : ""}${view === "Connections" ? " is-map" : ""}`}>
       <aside className="blanc-case-rail" aria-label="Current case and sources">
         <small>Current case</small>
         <h2>{caseTitle}</h2>
-        <section className="blanc-rail-sources"><h3>Sources</h3><ol>{citedOrder.map((id, i) => {
+        <section className="blanc-rail-sources"><h3>Sources</h3><ol>{sourceOrder.map((id, i) => {
           const expanded = expandedSource === id;
-          return <li key={id} className={expanded ? "is-open" : undefined}
+          const excluded = shown.excluded_record_ids.includes(id);
+          return <li key={id} className={[expanded ? "is-open" : "", excluded ? "is-excluded" : ""].filter(Boolean).join(" ") || undefined}
             onMouseEnter={event => {
               if (expanded) return;
               const rect = event.currentTarget.getBoundingClientRect();
@@ -254,43 +370,90 @@ export function Findings() {
               <span className="blanc-rail-chevron" aria-hidden="true" />
             </button>
             <div id={`blanc-rail-detail-${i}`} className="blanc-rail-detail" hidden={!expanded}>
-              <small>{citationKind(id)}</small>
+              <small>{excluded ? "Excluded · " : ""}{citationKind(id)}</small>
               <button type="button" aria-pressed={open === id} onClick={() => setOpen(open === id ? undefined : id)}>{open === id ? "Close source" : "Open source"}</button>
             </div>
           </li>;
         })}</ol></section>
       </aside>
-      <main className="blanc-reading blanc-report" key={revision.analysis_id}>
-      <p className="blanc-meta">{caseTitle}</p>
+      <main className="blanc-reading blanc-report" key={shown.analysis_id}>
+      <p className="blanc-meta">{caseTitle}{showingPrevious ? " · previous revision" : ""}</p>
       <div className="blanc-sent">
         <p>You</p>
-        <h1>{revision.question}</h1>
+        <h1>{shown.question}</h1>
       </div>
-      {feedback && <p role="status">{feedback}</p>}
-      {revision.needs_review && <p>This analysis needs investigator review.</p>}
+      {(working || feedback) && <p role="status">{working || feedback}</p>}
+      {shown.needs_review && <p>This analysis needs investigator review.</p>}
+      {revision?.parent_analysis_id && <p className="blanc-revision-switch">
+        <button type="button" onClick={() => void togglePrevious()} disabled={!!working}>
+          {showingPrevious ? "Show the revision after the change" : "Show the previous revision"}
+        </button>
+      </p>}
       {view === "Findings" && <>
         <h2>Finding</h2>
-        <p>{revision.answer ? withCitations(revision.answer, [], true) : "No answer in this revision."}</p>
+        <p>{shown.answer ? withCitations(shown.answer, [], true) : "No answer in this revision."}</p>
         <h2>Why</h2>
-        {revision.claims.map(claim => <p key={claim.id}><StatusLabel value={claim.status} />{withCitations(claim.text, claim.evidence_ids)}</p>)}
-        {revision.unresolved_questions.length > 0 && <><h2>What remains unresolved</h2>{revision.unresolved_questions.map((question, index) => <p key={`${index}-${question}`}>{withCitations(question)}</p>)}</>}
+        {shown.claims.map(claim => {
+          const item = supportOf("claim", claim.id);
+          const note = sameFindingNote(item?.possible_matches);
+          return <p key={claim.id} className={item && supportChanged(item.support_status) ? "is-changed" : undefined}>
+            <StatusLabel value={claim.status} />
+            {item && <span className={`blanc-support blanc-support-${item.support_status}`}>{supportLabel(item.support_status)}</span>}
+            {withCitations(claim.text, claim.evidence_ids)}
+            {note && <small className="blanc-possible">{note}</small>}
+          </p>;
+        })}
+        {lostClaims.map(item => {
+          const note = sameFindingNote(item.possible_matches);
+          return <p key={`lost-${item.base_ref_id}`} className="is-changed">
+            <span className={`blanc-support blanc-support-${item.support_status}`}>{supportLabel(item.support_status)}</span>
+            {withCitations(comparisonWording(item), item.base_evidence_ids)}
+            {note && <small className="blanc-possible">{note}</small>}
+          </p>;
+        })}
+        {shown.unresolved_questions.length > 0 && <><h2>What remains unresolved</h2>{shown.unresolved_questions.map((question, index) => <p key={`${index}-${question}`}>{withCitations(question)}</p>)}</>}
       </>}
-      {view === "Connections" && <ConnectionMapPane
-        nodes={revision.graph.nodes}
-        edges={revision.graph.edges}
+      {view === "Connections" && <>
+      <SpatialConnections graph={shown.graph} excludedRecordIds={shown.excluded_record_ids} onOpenSource={setOpen} />
+      <details><summary>Relationship review and comparison</summary><ConnectionMapPane
+        nodes={shown.graph.nodes}
+        edges={shown.graph.edges}
         records={sources}
-        claims={revision.claims}
-        events={revision.timeline_events}
-        questions={revision.unresolved_questions}
+        claims={shown.claims}
+        events={shown.timeline_events}
+        questions={shown.unresolved_questions}
         cite={id => citation(id)}
-      />}
-      {view === "Timeline" && <><h2>Timeline</h2><TimelineView key={revision.analysis_id} events={revision.timeline_events} caseId={revision.case_id} records={sources} excludedRecordIds={revision.excluded_record_ids} /></>}
-      {view === "Revisions" && <><h2>Current revision</h2><p>{revision.analysis_id}</p><p>Excluded records: {revision.excluded_record_ids.join(", ") || "None"}</p></>}
+        edgeSupport={supportMap("edge")}
+      /></details></>}
+      {view === "Timeline" && <><h2>Timeline</h2><TimelineView key={shown.analysis_id} events={shown.timeline_events} caseId={shown.case_id} records={sources} excludedRecordIds={shown.excluded_record_ids} eventSupport={supportMap("event")} /></>}
+      {view === "Revisions" && <>
+        <h2>{showingPrevious ? "Previous revision" : "This revision"}</h2>
+        <p className="blanc-meta">{shown.analysis_id}</p>
+        <p>Excluded records: {shown.excluded_record_ids.length === 0 ? "None" : shown.excluded_record_ids.map(id => <button key={id} type="button" className="blanc-excluded-link" onClick={() => setOpen(id)}>{citationTitle(id)}</button>)}</p>
+        {comparison && comparison.compared_analysis_id === revision?.analysis_id && <>
+          <h2>What changed</h2>
+          <p>An exclusion changes what this analysis can conclude. It does not change what happened.</p>
+          <ul className="blanc-comparison">
+            {comparison.items.map((item, index) => {
+              const note = sameFindingNote(item.possible_matches);
+              return <li key={`${item.kind}-${item.base_ref_id ?? "new"}-${item.compared_ref_id ?? "gone"}-${index}`} className={supportChanged(item.support_status) ? "is-changed" : undefined}>
+                <span className={`blanc-support blanc-support-${item.support_status}`}>{supportLabel(item.support_status)}</span>
+                <span>{comparisonWording(item)}</span>
+                {item.explanation && <p>{item.explanation}</p>}
+                {note && <p className="blanc-possible">{note}</p>}
+              </li>;
+            })}
+          </ul>
+        </>}
+      </>}
       {view === "Findings" && <section className="blanc-ruled"><h3>Follow-ups</h3><input aria-label="Ask a follow-up" placeholder="Ask a follow-up…" disabled /><small>Follow-up analysis is not connected yet.</small></section>}
     </main>
-      {open && <SourcePanel key={open} caseId={revision.case_id} recordId={open} records={sources}
-        number={citedOrder.indexOf(open) + 1 || citedOrder.length} total={citedOrder.length}
-        excluded={revision.excluded_record_ids.includes(open)}
+      {open && <SourcePanel key={open} caseId={shown.case_id} recordId={open} records={sources}
+        number={sourceOrder.indexOf(open) + 1 || sourceOrder.length} total={sourceOrder.length}
+        excluded={shown.excluded_record_ids.includes(open)}
+        busy={!!working}
+        onExclude={() => void changeEvidence("exclude")}
+        onRestore={() => void changeEvidence("restore")}
         onClose={() => setOpen(undefined)} onStep={stepSource} />}
     </div> : <main className="blanc-reading blanc-entry">
       <h1 aria-label={greeting || undefined}><TypedGreeting key={greeting} text={greeting} /></h1>
@@ -325,7 +488,7 @@ export function Findings() {
         </div>)}
       </section>
     </main>}
-    {sourceHover && citedOrder.includes(sourceHover.id) && <div className="blanc-rail-float" style={{ top: sourceHover.top, left: sourceHover.left }}>
+    {sourceHover && sourceOrder.includes(sourceHover.id) && <div className="blanc-rail-float" style={{ top: sourceHover.top, left: sourceHover.left }}>
       <small>{citedOrder.indexOf(sourceHover.id) + 1} · {citationKind(sourceHover.id)}</small>
       <strong>{citationTitle(sourceHover.id)}</strong>
       <span>{citationSnippet(sourceHover.id)}</span>
@@ -457,6 +620,7 @@ function ConnectionMapPane(props: {
   events: AnalysisRevision["timeline_events"];
   questions: string[];
   cite: (id: string) => ReactNode;
+  edgeSupport?: Record<string, SupportStatus>;
 }) {
   const [loadFailed, setLoadFailed] = useState(false);
   if (loadFailed) {

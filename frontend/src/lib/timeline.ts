@@ -36,7 +36,7 @@ export function parseTimeline(data: unknown, events: TimelineEvent[]): Normalize
 export async function normalizeEvents(events: TimelineEvent[], signal?: AbortSignal): Promise<NormalizedTimeline> {
   const response = await fetch(`${API_BASE_URL}/timeline/normalize`, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ events }), cache: "no-store", signal,
+    body: JSON.stringify({ events }), cache: "no-store", signal, credentials: "include",
   });
   if (!response.ok) throw new Error("Timestamp normalization is unavailable.");
   return parseTimeline(await response.json(), events);

@@ -2,7 +2,7 @@ import Ajv2020 from "ajv/dist/2020";
 import addFormats from "ajv-formats";
 import boardSchema from "../../../contracts/investigation_board.schema.json";
 import { API_BASE_URL } from "./api";
-import { ApiError } from "./live-api";
+import { ApiError, SIGNED_OUT } from "./live-api";
 
 const ajv = new Ajv2020({ allErrors: true });
 addFormats(ajv);
@@ -62,6 +62,7 @@ export function boardErrorMessage(status: number, detail: unknown): string {
   if (status === 422) {
     return "Notes must be removed before unpinning this entity.";
   }
+  if (status === 401) return SIGNED_OUT;
   return `The board request failed (HTTP ${status}).`;
 }
 
@@ -89,6 +90,7 @@ async function boardRequest(
   const response = await fetch(`${API_BASE_URL}${url}`, {
     method: init.method,
     cache: "no-store",
+    credentials: "include",
     signal: init.signal,
     ...(init.body === undefined
       ? {}
