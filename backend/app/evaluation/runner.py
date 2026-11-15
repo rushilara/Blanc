@@ -143,6 +143,9 @@ def evaluate_question(
             detail += f"; missing {', '.join(missing)}"
         add("retrieval", not missing, detail)
 
+    if question.expected_locators:
+        add("locators", *_locators(question, records, case_id))
+
     add("grounding", *_grounding(records, base))
 
     if question.expected_findings:
@@ -217,6 +220,30 @@ def _matching(
     """Findings of this kind that cite every one of the given records."""
     wanted = set(evidence_ids)
     return [item for item in _items(revision, kind) if wanted <= set(item.evidence_ids)]
+
+
+def _locators(
+    question: Question, records: Sequence[EvidenceRecord], case_id: str
+) -> tuple[bool, str]:
+    """The answer key still names the same source rows: a re-import that reassigned a
+    record ID would otherwise make every later check compare against the wrong evidence."""
+    by_id = {r.record_id: r for r in records if r.case_id == case_id}
+    wrong = []
+    for record_id, where in question.expected_locators.items():
+        record = by_id.get(record_id)
+        if record is None:
+            wrong.append(f"{record_id} not in the case")
+        elif (record.source_file, record.source_locator) != (
+            where.source_file,
+            where.source_locator,
+        ):
+            wrong.append(
+                f"{record_id} is {record.source_file} {record.source_locator}, "
+                f"key says {where.source_file} {where.source_locator}"
+            )
+    total = len(question.expected_locators)
+    detail = f"{total - len(wrong)}/{total} expected records at their source locators"
+    return not wrong, detail + (f"; {'; '.join(wrong)}" if wrong else "")
 
 
 def _grounding(records: Sequence[EvidenceRecord], revision: AnalysisRevision) -> tuple[bool, str]:

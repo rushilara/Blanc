@@ -63,6 +63,7 @@ def test_the_fixtures_pass_every_check(question_set, records, tmp_path, base, ch
     assert set(grouped) == {
         "result",
         "retrieval",
+        "locators",
         "grounding",
         "findings",
         "safety",
@@ -72,6 +73,7 @@ def test_the_fixtures_pass_every_check(question_set, records, tmp_path, base, ch
         "exclusion.safety",
     }
     assert grouped["retrieval"][0].detail == "2/2 expected records retrieved"
+    assert grouped["locators"][0].detail == "2/2 expected records at their source locators"
     assert "6/6 findings cite valid, permitted records" in grouped["grounding"][0].detail
     assert len(grouped["exclusion.effect"]) == 3
 
@@ -83,6 +85,34 @@ def test_a_missing_expected_record_fails_retrieval(
     grouped = run(question_set, records, tmp_path, base, child)
     assert failed(grouped) == ["retrieval"]
     assert "missing rec-99" in grouped["retrieval"][0].detail
+
+
+def test_a_reassigned_record_id_fails_the_locator_check(
+    question_set, records, tmp_path, base, child
+) -> None:
+    # A re-import gave rec-02 to a different source row: the key no longer means it.
+    records = [
+        r.model_copy(update={"source_locator": "messages[8]"}) if r.record_id == "rec-02" else r
+        for r in records
+    ]
+    grouped = run(question_set, records, tmp_path, base, child)
+    assert "locators" in failed(grouped)
+    assert grouped["locators"][0].detail == (
+        "1/2 expected records at their source locators; rec-02 is chat.json messages[8], "
+        "key says chat.json messages[7]"
+    )
+
+
+def test_locators_must_name_expected_records(tmp_path: Path) -> None:
+    data = json.loads(QUESTION_SET_PATH.read_text(encoding="utf-8"))
+    data["questions"][0]["expected_locators"]["rec-77"] = {
+        "source_file": "x.txt",
+        "source_locator": "line 1",
+    }
+    path = tmp_path / "questions.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ValueError, match="records not expected: rec-77"):
+        load_question_set(path)
 
 
 def test_top_k_only_counts_the_first_k_retrieved(
@@ -235,8 +265,7 @@ def test_a_second_exclusion_must_not_restore_an_earlier_one(
     grouped = run(question_set, records, tmp_path, parent, regressed)
     assert failed(grouped) == ["exclusion.applied"]
     assert grouped["exclusion.applied"][0].detail == (
-        "previously excluded records restored: rec-02; still retrieved: rec-02; "
-        "still cited: rec-02"
+        "previously excluded records restored: rec-02; still retrieved: rec-02; still cited: rec-02"
     )
 
     # A child that keeps both exclusions passes.
@@ -309,9 +338,9 @@ def test_cli_prints_a_summary_and_exits_zero_when_everything_passes(
     assert main([*cli_args(tmp_path, base, child), "--json", str(out_json)]) == 0
     output = capsys.readouterr().out
     assert "PASS  q1-connection  retrieval: 2/2 expected records retrieved" in output
-    assert output.strip().endswith("OK: 1/1 questions passed (11/11 checks)")
+    assert output.strip().endswith("OK: 1/1 questions passed (12/12 checks)")
     report = json.loads(out_json.read_text(encoding="utf-8"))
-    assert len(report) == 11 and all(item["passed"] for item in report)
+    assert len(report) == 12 and all(item["passed"] for item in report)
 
 
 def test_cli_exits_one_when_a_check_fails(tmp_path, base, child, capsys) -> None:
