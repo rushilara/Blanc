@@ -62,7 +62,7 @@ make test              # backend ruff + pytest, frontend lint
 Check the backend at http://localhost:8000/health (also shown in the workspace header). Run `make backend` and `make frontend` in separate terminals. If `python3.12` is not on your PATH, pass it explicitly, e.g. `make backend PYTHON=/path/to/python3.12`.
 
 - LLM: Google Gemini API (`GEMINI_API_KEY`, `GEMINI_MODEL`).
-- Embeddings: OpenAI embeddings API (`OPENAI_API_KEY`, `EMBEDDING_MODEL`).
+- Embeddings: Gemini embeddings API (`GEMINI_API_KEY`, `EMBEDDING_MODEL`, `EMBEDDING_DIM`), stored in SQLite with sqlite-vec.
 
 ## Suggested kickoff
 
