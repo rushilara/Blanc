@@ -145,6 +145,7 @@ export async function patchBoard(
     active_analysis_id?: string | null;
     pin?: PinRequest[];
     unpin?: string[];
+    add_reconstruction?: { analysis_id: string };
   },
   signal?: AbortSignal,
 ): Promise<InvestigationBoard> {
@@ -166,6 +167,25 @@ export function otherVersionNodePinCount(board: InvestigationBoard, analysisId: 
   return board.items.filter(
     (item) => item.kind === "node" && item.source_analysis_id !== analysisId,
   ).length;
+}
+
+/** Pin every finding of a revision onto the board ("add this reconstruction"). */
+export async function addReconstruction(
+  caseId: string,
+  board: InvestigationBoard,
+  analysisId: string,
+  signal?: AbortSignal,
+): Promise<InvestigationBoard> {
+  return patchBoard(
+    caseId,
+    board.board_id,
+    {
+      expected_revision: board.revision,
+      active_analysis_id: analysisId,
+      add_reconstruction: { analysis_id: analysisId },
+    },
+    signal,
+  );
 }
 
 /**
