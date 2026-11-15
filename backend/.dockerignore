@@ -1,0 +1,16 @@
+# Never bake evidence, databases, secrets or local tooling into the image.
+data/
+*.db
+*.db-*
+.env
+.env.*
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+tests/
