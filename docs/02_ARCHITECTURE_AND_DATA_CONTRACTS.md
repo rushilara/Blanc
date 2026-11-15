@@ -44,7 +44,7 @@ Save board / follow-up query / exclude evidence -> NEW AnalysisRevision
 2. Create semantic query embedding; retrieve top-k chunks from this case; retrieve lexical matches from this case; fuse/deduplicate and optionally rerank.
 3. Resolve chunks back to source records and attach exact excerpts/locators.
 4. Remove every chunk whose parent record is excluded **before ranking and again before building the LLM prompt**.
-5. Limit the LLM evidence window (e.g., top 12–20 relevant excerpts and a prompt-token ceiling; configurable).
+5. Limit the LLM evidence window (e.g., top 12–20 relevant excerpts and a prompt-token ceiling; configurable). Two named windows (BLA-64): `standard` (16 records) and `expanded` (24 records, same character budget). Every revision records in `retrieval_coverage` what the window left out (IDs and ranks only). When a record that the vector or keyword search alone ranked inside the standard window lost its place in fusion, the revision offers the expanded window ("Want more evidence?"); accepting reruns the same question as a new child revision. One step only.
 6. Ask the LLM for one strict structured output with answer, claims, nodes, edges, events, unresolved findings. Validate IDs and schema on the server.
 7. Save immutable revision, return it to frontend; render all three outputs from this one response.
 
@@ -78,7 +78,7 @@ If an edge has two independent supporting records, excluding only one should not
 
 ## 6. Asking follow-up questions and saving graphs/timelines
 
-A follow-up can use the existing investigation's topic, pinned entities, and unresolved questions to refine search. It **must** pull fresh source records. The resulting revision may contain a new edge or event. To "Add to board," validate citations and then append/deduplicate by stable IDs. Where names are ambiguous, do not automatically merge two nodes because their embedding similarity is high; prompt for manual alias confirmation or retain both.
+A follow-up can use the existing investigation's topic, pinned entities, and unresolved questions to refine search. It **must** pull fresh source records. It inherits the parent's exclusions and evidence window (`standard` or `expanded`); the request can set the window back to `standard`. The resulting revision may contain a new edge or event. To "Add to board," validate citations and then append/deduplicate by stable IDs. Where names are ambiguous, do not automatically merge two nodes because their embedding similarity is high; prompt for manual alias confirmation or retain both.
 
 The board stores: user-pinned claim IDs, graph nodes/edges, timeline events, notes, provenance, originating revision IDs and status. Saving a board is not the same as asserting an inference is true.
 
@@ -95,6 +95,7 @@ The board stores: user-pinned claim IDs, graph nodes/edges, timeline events, not
 | `GET /cases/{case_id}/analyses/{analysis_id}` | Fetch saved revision. |
 | `POST /cases/{case_id}/analyses/{analysis_id}/follow-up` | New question with parent context; creates new revision. |
 | `POST /cases/{case_id}/analyses/{analysis_id}/exclude` | Recompute with additional excluded record IDs. |
+| `POST /cases/{case_id}/analyses/{analysis_id}/rerun` | Same question and exclusions in another evidence window (`{"evidence_window": "expanded"}`); creates a new child revision. |
 | `POST /cases/{case_id}/boards` | Save board/workspace. |
 | `PATCH /cases/{case_id}/boards/{board_id}` | Pin/unpin findings; add notes. |
 

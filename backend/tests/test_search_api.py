@@ -72,7 +72,16 @@ def test_search_limit_and_empty_question(client: TestClient) -> None:
     assert skipped["rank"] == 2
     assert skipped["record_id"] in {"rec-1", "rec-2"}
     assert skipped["excerpt_chars"] is None
-    assert set(skipped) == {"record_id", "rank", "score", "reason", "excerpt_chars"}  # no text
+    # IDs, ranks and sizes only, never text.
+    assert set(skipped) == {
+        "record_id",
+        "rank",
+        "score",
+        "reason",
+        "excerpt_chars",
+        "vector_rank",
+        "keyword_rank",
+    }
 
     full = client.post(f"/cases/{a}/search", json={"question": "key"}).json()
     assert (full["skipped"], full["budget_substituted"]) == ([], False)

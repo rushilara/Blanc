@@ -36,6 +36,7 @@ from app.contracts import (
     TimelineEvent,
     parse_datetime,
 )
+from app.evidence_window import left_out, offers_expanded
 
 __all__ = [
     "parse_datetime",
@@ -240,7 +241,79 @@ def validate_revision(records: Sequence[EvidenceRecord], analysis: AnalysisRevis
                 errors.append(f"edge {edge.id} {end} references unknown graph node {ref}")
 
     errors.extend(_timestamp_errors(analysis))
+    errors.extend(_coverage_errors(analysis, known))
     return errors
+
+
+def _coverage_errors(analysis: AnalysisRevision, known: set[str]) -> list[str]:
+    """``retrieval_coverage`` (BLA-64) is consistent with the revision: skipped records are
+    real records of the case that were neither retrieved, excluded nor cited; ranks fit the
+    window; and the left-out list and the offer follow from the skips."""
+    coverage = analysis.retrieval_coverage
+    if coverage is None:
+        return []
+    errors: list[str] = []
+    label = "retrieval_coverage"
+    skipped_ids = [s.record_id for s in coverage.skipped]
+    dupes = _duplicates(skipped_ids)
+    if dupes:
+        errors.append(f"{label} skips {_fmt(dupes)} more than once")
+    ranks = _duplicates(str(s.rank) for s in coverage.skipped)
+    if ranks:
+        errors.append(f"{label} repeats skipped rank(s) {', '.join(sorted(ranks))}")
+    skipped = set(skipped_ids)
+    unknown = sorted(skipped - known)
+    if unknown:
+        errors.append(f"{label} skips records not in this case: {', '.join(unknown)}")
+    for name, ids in (
+        ("retrieved", analysis.retrieved_record_ids),
+        ("excluded", analysis.excluded_record_ids),
+        ("cited", sorted(_cited_ids(analysis))),
+    ):
+        overlap = sorted(skipped & set(ids))
+        if overlap:
+            errors.append(f"{label} lists {name} records as skipped: {', '.join(overlap)}")
+    if len(analysis.retrieved_record_ids) > coverage.max_records:
+        errors.append(
+            f"{label} max_records is {coverage.max_records} but "
+            f"{len(analysis.retrieved_record_ids)} records were retrieved"
+        )
+    for skip in coverage.skipped:
+        if skip.reason == "record_limit" and skip.rank <= coverage.max_records:
+            errors.append(
+                f"{label} skips {skip.record_id} for the record limit at rank {skip.rank}, "
+                f"inside the {coverage.max_records}-record window"
+            )
+        if skip.reason == "budget" and skip.rank > coverage.max_records:
+            errors.append(
+                f"{label} skips {skip.record_id} for the budget at rank {skip.rank}, "
+                f"outside the {coverage.max_records}-record window"
+            )
+    if coverage.budget_substituted and not any(s.reason == "budget" for s in coverage.skipped):
+        errors.append(f"{label} budget_substituted is set but no record was skipped for budget")
+    expected = left_out(coverage.skipped, coverage.max_records)
+    if coverage.left_out_record_ids != expected:
+        errors.append(
+            f"{label} left_out_record_ids must be the record-limit skips ranked within "
+            f"{coverage.max_records} by the vector or keyword search, in rank order: "
+            f"expected {expected}"
+        )
+    if coverage.offer_expanded_window != offers_expanded(coverage.evidence_window, expected):
+        errors.append(
+            f"{label} offer_expanded_window must be true exactly when the window is standard "
+            "and a record was left out"
+        )
+    return errors
+
+
+def _cited_ids(analysis: AnalysisRevision) -> set[str]:
+    findings = [
+        *analysis.claims,
+        *analysis.graph.nodes,
+        *analysis.graph.edges,
+        *analysis.timeline_events,
+    ]
+    return {rid for finding in findings for rid in (finding.evidence_ids or [])}
 
 
 # --- InvestigationBoard ---------------------------------------------------------------

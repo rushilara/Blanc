@@ -1,4 +1,5 @@
-"""Saved analysis revisions: create (BLA-20), history/lineage (BLA-28), restore (BLA-35).
+"""Saved analysis revisions: create (BLA-20), history/lineage (BLA-28), restore (BLA-35),
+exclude (BLA-33), follow-up (BLA-29) and evidence-window rerun (BLA-64).
 
 ``POST /cases/{case_id}/analyses`` runs retrieval + validated LLM analysis and saves through
 ``app.analyses.save_revision``. GET routes reload history; restore reuses an earlier evidence
@@ -16,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from app.analyses import (
     ComparisonNotApplicableError,
     InvalidExclusionError,
+    InvalidRerunError,
     InvalidRestoreError,
     NoPriorStateError,
     RevisionConflictError,
@@ -25,18 +27,19 @@ from app.analyses import (
     exclude_records,
     get_revision,
     list_revisions,
+    rerun_with_window,
     restore_records,
     revision_lineage,
     run_case_analysis,
 )
 from app.analysis_llm import AnalysisLLMError
 from app.boards import BoardNotFoundError
-from app.contracts import AnalysisRevision, RevisionComparison
+from app.contracts import AnalysisRevision, EvidenceWindow, RevisionComparison
 from app.deps import AnalysisLLMDep, CaseDep, EmbedderDep, SessionDep
 from app.follow_up import ask_follow_up
 from app.retrieval import ExcludedRecordLeakError, RetrievalConfig
 from app.routers.search import get_retrieval_config
-from app.schemas.analyses import AnalysisCreate, FollowUpCreate
+from app.schemas.analyses import AnalysisCreate, FollowUpCreate, RerunCreate
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +76,8 @@ def create_case_analysis(
 ) -> Any:
     """Retrieve evidence for ``question``, run structured analysis, save and return the
     revision. Optional ``analysis_id`` is a prior revision of this case (parent context);
-    its exclusions are inherited.
+    its exclusions and evidence window are inherited. Optional ``evidence_window``
+    (``standard`` or ``expanded``, BLA-64) overrides the window.
 
     201 with AnalysisRevision contract JSON. 404 unknown case or prior analysis. 422 when
     the question has no letters or digits (same rule as ``POST /search``). 503 when the LLM
@@ -88,6 +92,7 @@ def create_case_analysis(
             embedder,
             retrieval_config=config,
             prior_analysis_id=body.analysis_id,
+            evidence_window=body.evidence_window,
         )
     except RevisionNotFoundError as error:
         raise HTTPException(
@@ -183,6 +188,8 @@ class ExcludeRequest(BaseModel):
     record_ids: Annotated[
         list[Annotated[str, StringConstraints(min_length=1)]], Field(min_length=1, max_length=200)
     ]
+    # BLA-64. Omitted: the base revision's window.
+    evidence_window: EvidenceWindow | None = None
 
 
 @router.post(
@@ -204,7 +211,8 @@ def exclude_analysis_records(
     Retrieval filters every chunk of the excluded records; the new revision is generated
     from permitted evidence only, saved as a child of ``analysis_id`` and returned (201).
     The excluded records stay in the corpus. ``GET .../{new_id}/comparison`` gives the
-    support diff against this revision.
+    support diff against this revision. The base's evidence window is kept unless
+    ``evidence_window`` overrides it.
 
     404 for an unknown revision; 422 if a record is not in this case, none is given, or all
     are already excluded; 503 when the LLM is unavailable.
@@ -218,6 +226,7 @@ def exclude_analysis_records(
             llm,
             embedder,
             retrieval_config=config,
+            evidence_window=body.evidence_window,
         )
     except RevisionNotFoundError as error:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Analysis not found") from error
@@ -271,7 +280,9 @@ def follow_up_analysis(
     Fresh retrieval over the case corpus for the new question, with the parent's exclusions
     inherited; the parent's question, answer, claims and unresolved questions, and the
     optional board's topic and pinned findings (never its notes), are passed as "prior
-    analysis — not evidence". Returns the new child revision (201); the parent is unchanged.
+    analysis — not evidence". The parent's evidence window is inherited unless
+    ``evidence_window`` overrides it. Returns the new child revision (201); the parent is
+    unchanged.
 
     404 for an unknown revision or board; 422 for a question with no letters or digits;
     503 when the LLM is unavailable.
@@ -286,11 +297,62 @@ def follow_up_analysis(
             embedder,
             board_id=body.board_id,
             retrieval_config=config,
+            evidence_window=body.evidence_window,
         )
     except RevisionNotFoundError as error:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Analysis not found") from error
     except BoardNotFoundError as error:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Board not found") from error
+    except AnalysisLLMError as error:
+        logger.warning("analysis LLM unavailable for case %s: %s", case.case_id, error)
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=LLM_UNAVAILABLE) from error
+    except ExcludedRecordLeakError:
+        logger.exception(
+            "excluded record leaked into analysis for case %s; this is a server bug",
+            case.case_id,
+        )
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error"
+        ) from None
+    return JSONResponse(revision.to_contract_json(), status_code=status.HTTP_201_CREATED)
+
+
+@router.post(
+    "/{analysis_id}/rerun",
+    status_code=status.HTTP_201_CREATED,
+    responses={201: {"model": AnalysisRevision}},
+)
+def rerun_analysis(
+    analysis_id: str,
+    body: RerunCreate,
+    case: CaseDep,
+    session: SessionDep,
+    embedder: EmbedderDep,
+    llm: AnalysisLLMDep,
+    config: RetrievalConfigDep,
+) -> Any:
+    """"Want more evidence?" (BLA-64): rerun this revision's question, with its exclusions,
+    in another evidence window, usually ``expanded``. The result is a new child revision
+    (201); this revision is unchanged. ``GET .../{new_id}/comparison`` shows what changed.
+
+    404 for an unknown revision; 409 if the revision already used that window; 422 for an
+    unknown window; 503 when the LLM is unavailable.
+    """
+    window: EvidenceWindow = body.evidence_window
+    try:
+        revision = rerun_with_window(
+            session,
+            case.case_id,
+            analysis_id,
+            window,
+            llm,
+            embedder,
+            retrieval_config=config,
+        )
+    except RevisionNotFoundError as error:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Analysis not found") from error
+    except InvalidRerunError as error:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
     except AnalysisLLMError as error:
         logger.warning("analysis LLM unavailable for case %s: %s", case.case_id, error)
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=LLM_UNAVAILABLE) from error
