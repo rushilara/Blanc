@@ -18,8 +18,12 @@ export class ApiError extends Error {
 export type CaseSummary = { case_id: string; title: string; import_status: string };
 export type SearchRecord = {
   record_id: string; source_file: string; source_locator: string;
+  // Text records always have excerpts. Image/PDF records (BLA-70) have none: their
+  // content is the file, shown through the media endpoint, never as text.
   excerpts: { text: string; char_start: number; char_end: number; truncated?: boolean }[];
+  modality?: "text" | "image" | "pdf";
 };
+const media = (r: Record<string, unknown>) => r.modality === "image" || r.modality === "pdf";
 export type SearchResult = {
   case_id: string; question: string; records: SearchRecord[];
   dropped_by_limit: number; dropped_by_budget: number;
@@ -55,7 +59,9 @@ export async function searchCase(caseId: string, question: string, signal?: Abor
   if (!object(data) || data.case_id !== caseId || data.question !== question || !Array.isArray(data.records)
     || !nonnegative(data.dropped_by_limit) || !nonnegative(data.dropped_by_budget)
     || !data.records.every(r => object(r) && text(r.record_id) && text(r.source_file) && text(r.source_locator)
-      && Array.isArray(r.excerpts) && r.excerpts.length > 0 && r.excerpts.every(e => object(e)
+      && (r.modality === undefined || r.modality === "text" || media(r))
+      && Array.isArray(r.excerpts) && (media(r) ? r.excerpts.length === 0 : r.excerpts.length > 0)
+      && r.excerpts.every(e => object(e)
         && text(e.text) && nonnegative(e.char_start) && nonnegative(e.char_end) && e.char_end > e.char_start))) {
     throw new ApiError("The search response is invalid or belongs to a different case/question.");
   }

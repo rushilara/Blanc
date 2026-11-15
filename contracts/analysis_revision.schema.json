@@ -338,8 +338,10 @@
                 "type": "string",
                 "enum": [
                   "budget",
-                  "record_limit"
-                ]
+                  "record_limit",
+                  "media"
+                ],
+                "description": "budget: did not fit the character budget. record_limit: ranked past max_records. media: an image/PDF record in the window that was not sent to the model (vision analysis is a later step), including any beyond the media cap."
               },
               "vector_rank": {
                 "type": "integer",
@@ -348,8 +350,54 @@
               "keyword_rank": {
                 "type": "integer",
                 "minimum": 1
+              },
+              "modality": {
+                "type": "string",
+                "enum": [
+                  "image",
+                  "pdf"
+                ],
+                "description": "Set for image/PDF records; absent means text."
               }
-            }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "reason": {
+                      "const": "media"
+                    }
+                  },
+                  "required": [
+                    "reason"
+                  ]
+                },
+                "then": {
+                  "required": [
+                    "modality"
+                  ]
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "reason": {
+                      "const": "budget"
+                    }
+                  },
+                  "required": [
+                    "reason"
+                  ]
+                },
+                "then": {
+                  "not": {
+                    "required": [
+                      "modality"
+                    ]
+                  }
+                }
+              }
+            ]
           }
         },
         "budget_substituted": {
@@ -358,7 +406,7 @@
         "left_out_record_ids": {
           "type": "array",
           "uniqueItems": true,
-          "description": "record_limit skips that the vector or keyword search alone ranked within max_records, in rank order.",
+          "description": "Text record_limit skips that the vector or keyword search alone ranked within max_records, in rank order. Image/PDF skips never count.",
           "items": {
             "type": "string",
             "minLength": 1

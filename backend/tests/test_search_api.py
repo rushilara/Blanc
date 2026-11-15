@@ -81,6 +81,7 @@ def test_search_limit_and_empty_question(client: TestClient) -> None:
         "excerpt_chars",
         "vector_rank",
         "keyword_rank",
+        "modality",
     }
 
     full = client.post(f"/cases/{a}/search", json={"question": "key"}).json()

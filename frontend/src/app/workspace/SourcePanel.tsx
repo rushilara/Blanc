@@ -5,6 +5,7 @@ import type { EvidenceRecord } from "@/lib/analysis";
 import { fetchRecord, RecordFetchError } from "@/lib/records";
 import { presentSource } from "@/lib/source-presentation";
 import {
+  importedPdfName,
   interpretMediaResponse,
   localImageName,
   mediaCaption,
@@ -89,6 +90,11 @@ export function SourcePanel({ caseId, recordId, number, total, records, excluded
 
     {record && <>
       {localImageName(record) && <SourceImage key={record.record_id} caseId={caseId} recordId={record.record_id} name={localImageName(record)!} />}
+      {importedPdfName(record) && <p className="blanc-source-pdf">
+        PDF document <strong>{importedPdfName(record)}</strong>, stored with this case.{" "}
+        <a href={mediaUrl(caseId, record.record_id)} download={importedPdfName(record)!}>Download the original PDF</a>
+        <small> It is not shown as text here; its pages are not part of the analysis yet.</small>
+      </p>}
       {/* A remote-only attachment may have a local copy linked to this record in the
           evidence manifest (record_ids); the backend decides. Its URL is never loaded. */}
       {!localImageName(record) && (() => {

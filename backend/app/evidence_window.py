@@ -47,18 +47,43 @@ def window_of(revision: AnalysisRevision) -> EvidenceWindow:
 
 
 def left_out(skipped: Sequence[SkippedEvidence], max_records: int) -> list[str]:
-    """Record-limit skips that the vector or keyword search alone ranked within
-    ``max_records``, in fused rank order."""
+    """Text record-limit skips that the vector or keyword search alone ranked within
+    ``max_records``, in fused rank order. Image/PDF skips never count: the model cannot
+    see them yet, so offering a larger window for them would not help."""
     return [
         skip.record_id
         for skip in sorted(skipped, key=lambda s: s.rank)
         if skip.reason == "record_limit"
+        and skip.modality is None  # an expanded rerun could not analyze an image (BLA-70)
         and any(r is not None and r <= max_records for r in (skip.vector_rank, skip.keyword_rank))
     ]
 
 
 def offers_expanded(window: EvidenceWindow, left_out_ids: Sequence[str]) -> bool:
     return window == "standard" and bool(left_out_ids)
+
+
+def _skip(
+    record_id: str,
+    rank: int,
+    reason: str,
+    *,
+    vector_rank: int | None,
+    keyword_rank: int | None,
+    modality: str,
+) -> SkippedEvidence:
+    # Optional fields are omitted, never null: a retriever that did not find the record,
+    # or a text record (no modality).
+    optional = {
+        name: value
+        for name, value in (
+            ("vector_rank", vector_rank),
+            ("keyword_rank", keyword_rank),
+            ("modality", None if modality == "text" else modality),
+        )
+        if value is not None
+    }
+    return SkippedEvidence(record_id=record_id, rank=rank, reason=reason, **optional)
 
 
 def coverage_of(
@@ -69,27 +94,38 @@ def coverage_of(
     max_excerpt_chars: int,
     excluded_record_ids: Sequence[str] = (),
 ) -> RetrievalCoverage:
-    """``retrieval_coverage`` for a revision built from ``retrieval``. Excluded records are
-    filtered by retrieval already; they are dropped here too so they can never be listed."""
+    """``retrieval_coverage`` for a revision built from ``retrieval``.
+
+    Image/PDF records that retrieval put in the window are listed as skipped with reason
+    ``media`` (BLA-70): the analysis does not send them to the model until vision analysis
+    (BLA-71). Media retrieval left out over the media cap (``media_limit``) is listed the
+    same way. Excluded records are filtered by retrieval already; they are dropped here
+    too so they can never be listed."""
     excluded = set(excluded_record_ids)
     skipped = [
-        SkippedEvidence(
-            record_id=skip.record_id,
-            rank=skip.rank,
-            reason=skip.reason,
-            # Omitted, never null, when a retriever did not find the record.
-            **{
-                name: value
-                for name, value in (
-                    ("vector_rank", skip.vector_rank),
-                    ("keyword_rank", skip.keyword_rank),
-                )
-                if value is not None
-            },
+        _skip(
+            skip.record_id,
+            skip.rank,
+            "media" if skip.reason == "media_limit" else skip.reason,
+            vector_rank=skip.vector_rank,
+            keyword_rank=skip.keyword_rank,
+            modality=skip.modality,
         )
         for skip in retrieval.skipped
         if skip.record_id not in excluded
+    ] + [
+        _skip(
+            record.record_id,
+            record.rank or 0,
+            "media",
+            vector_rank=record.vector.rank if record.vector else None,
+            keyword_rank=record.keyword.rank if record.keyword else None,
+            modality=record.modality,
+        )
+        for record in retrieval.records
+        if record.modality != "text" and record.record_id not in excluded
     ]
+    skipped.sort(key=lambda skip: skip.rank)
     ids = left_out(skipped, max_records)
     return RetrievalCoverage(
         evidence_window=window,
@@ -99,4 +135,14 @@ def coverage_of(
         budget_substituted=retrieval.budget_substituted,
         left_out_record_ids=ids,
         offer_expanded_window=offers_expanded(window, ids),
+    )
+
+
+def text_only(retrieval: RetrievalResult) -> RetrievalResult:
+    """``retrieval`` without its image/PDF records: what the analysis model is given until
+    vision analysis (BLA-71). They stay in ``retrieval_coverage`` as ``media`` skips."""
+    if all(record.modality == "text" for record in retrieval.records):
+        return retrieval
+    return retrieval.model_copy(
+        update={"records": [r for r in retrieval.records if r.modality == "text"]}
     )

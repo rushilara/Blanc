@@ -290,6 +290,18 @@ def _coverage_errors(analysis: AnalysisRevision, known: set[str]) -> list[str]:
                 f"{label} skips {skip.record_id} for the budget at rank {skip.rank}, "
                 f"outside the {coverage.max_records}-record window"
             )
+        if skip.reason == "media" and skip.rank > coverage.max_records:
+            errors.append(
+                f"{label} skips {skip.record_id} as unanalyzed media at rank {skip.rank}, "
+                f"outside the {coverage.max_records}-record window"
+            )
+        if skip.reason == "media" and skip.modality is None:
+            errors.append(f"{label} skips {skip.record_id} as media but gives no modality")
+        if skip.reason == "budget" and skip.modality is not None:
+            errors.append(
+                f"{label} skips {skip.record_id} for the character budget, but it is "
+                f"{skip.modality} media, which uses no character budget"
+            )
     if coverage.budget_substituted and not any(s.reason == "budget" for s in coverage.skipped):
         errors.append(f"{label} budget_substituted is set but no record was skipped for budget")
     expected = left_out(coverage.skipped, coverage.max_records)
