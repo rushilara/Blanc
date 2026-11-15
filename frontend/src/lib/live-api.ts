@@ -171,6 +171,7 @@ export async function getRevision(caseId: string, analysisId: string, signal?: A
 
 function revisionError(status: number): ApiError {
   if (status === 503) return new ApiError("The analysis service is not ready. Please try again later.", 503);
+  if (status === 401) return new ApiError(SIGNED_OUT, 401);
   if (status === 409) return new ApiError("There is no earlier revision that already had this record restored. This revision is unchanged.", 409);
   if (status === 422) return new ApiError("This record cannot be changed from here. It may already be excluded, or it is not part of this case.", 422);
   return new ApiError(`The request failed (HTTP ${status}).`, status);
@@ -181,6 +182,7 @@ async function postRevision(url: string, body: unknown, signal?: AbortSignal): P
     method: "POST",
     cache: "no-store",
     signal,
+    credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
