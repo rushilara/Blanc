@@ -123,8 +123,8 @@ Example illustrative questions (not claims about any particular dataset):
 
 ### 9. Open engineering decisions (defaults recommended)
 
-- **Embedding baseline:** Gemini text embeddings for MVP; for E11 multimodal switch the whole corpus to `gemini-embedding-2` (one shared space). Avoid fine-tuning now.
-- **Storage:** Local SQLite for cases, source records and revision history; local vector index for embeddings. No Neo4j; no cloud evidence store for MVP. Gemini remains cloud compute for embeddings/LLM. E11 media bytes stay on disk under the case directory.
+- **Embedding baseline:** Gemini text embeddings for MVP; for E11 multimodal switch the whole corpus to `gemini-embedding-2` (one shared space; request dim 768 explicitly). Re-embed via `reembed_stale_chunks` and re-run retrieval evals. Avoid fine-tuning now.
+- **Storage:** Local SQLite for cases, source records and revision history; local vector index for embeddings. No Neo4j; no cloud evidence store for MVP. Gemini remains cloud compute for embeddings/LLM. E11 media bytes stay on disk; contract uses empty `content` plus `modality` / `media_path` / `content_type` (BLA-68).
 - **UI:** React graph library, simple event list/timeline; functionality before elaborate animation.
 - **Source granularity:** exclude at evidence-record level; optionally add document-level exclusion later.
 - **Merging follow-up findings:** match exact canonical IDs where available; otherwise ask user to confirm a merge and never silently equate similar names.

@@ -116,8 +116,8 @@ Example illustrative questions (not claims about any particular dataset):
 
 ## 9. Open engineering decisions (defaults recommended)
 
-- **Embedding baseline:** Gemini embeddings for MVP (`gemini-embedding-001` text-only). For E11 multimodal, switch the **whole corpus** to `gemini-embedding-2` (one shared space for text + images + PDFs; do not mix models in one index). Lock dimension (prefer 768 for sqlite-vec). Avoid fine-tuning now.
-- **Storage:** SQLite on the local machine for cases, source records and revision history; local sqlite-vec + FTS5 indexes. No Neo4j; no cloud object store for MVP evidence. For E11 media, keep **bytes on disk** under the case directory; DB holds path, hash, locator and content type.
+- **Embedding baseline:** Gemini embeddings for MVP (`gemini-embedding-001` text-only). For E11 multimodal, switch the **whole corpus** to `gemini-embedding-2` (one shared space; do not mix models in one index). Request `output_dimensionality=768` explicitly (model default is 3072). Changing the model marks chunks stale → `reembed_stale_chunks` (re-sends every record to Gemini); re-run Owl / baseline / “want more evidence?” measurements after the switch. Avoid fine-tuning now.
+- **Storage:** SQLite on the local machine for cases, source records and revision history; local sqlite-vec + FTS5 indexes. No Neo4j; no cloud object store for MVP evidence. For E11 media, keep **bytes on disk** under the case directory; DB holds `media_path`, hash, locator, `modality`, `content_type`. Media `content` is `""` (contract still requires the field); FTS needs a lexical sidecar (filename / parent email subject) or images stay vector-only in RRF.
 - **Runtime:** FastAPI + Next.js on localhost for the hackathon demo. Optional static landing host is fine; do not host the case DB for MVP.
 - **UI:** React graph library, simple event list/timeline; functionality before elaborate animation.
 - **Source granularity:** exclude at evidence-record level; optionally add document-level exclusion later.

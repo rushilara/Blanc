@@ -38,7 +38,7 @@ blanc/
 **Task B3:** Implement one structured LLM analysis output; Pydantic validate claims, edges, events and source IDs.  
 **Task B4:** Create a follow-up endpoint; create a new revision using previous board as context (never as evidence).  
 **Task B5:** Implement evidence-exclusion endpoint that reruns retrieval and LLM analysis and saves a child revision.  
-**Task B6 (E11 / BLA-69–71):** Switch corpus to `gemini-embedding-2`; embed media; retrieve media into the evidence window; pass vision parts into analysis and validate non-text citations.  
+**Task B6 (E11 / BLA-69–71):** Switch corpus to `gemini-embedding-2` (explicit dim 768; `reembed_stale_chunks`; re-run Owl/baseline evals); embed media; give media an FTS sidecar (filename / parent email subject) so RRF is not vector-only; retrieve into the evidence window; pass vision parts into analysis; never send excluded media as parts; citations without fake char offsets.  
 **Done when:** `POST analyses` and `POST exclude` produce valid, source-traceable and meaningfully different revision objects. (E11 multimodal path is BLA-67.)
 
 ## Owner C — Investigator workspace tasks

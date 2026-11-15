@@ -40,13 +40,18 @@ Save board / follow-up query / exclude evidence -> NEW AnalysisRevision
 
 ### Multimodal media (E11 / BLA-67)
 
-Text-only MVP stays as above. For images and PDFs:
+Text-only MVP stays as above. For images and PDFs (BLA-68 ingest; BLA-69–71 embed / retrieve / vision):
 
-- **On disk:** case-local media files (e.g. `data/cases/{case_id}/media/...`); SQLite stores relative path, content hash, content type / modality, and locator—not blobs.
-- **Sources:** PNG/JPEG from `.eml` attachments, loose `.png`/`.jpg`, and `.pdf` files.
-- **Embeddings:** one shared model (`gemini-embedding-2`) for **all** text and media vectors. Do not mix with `gemini-embedding-001` in the same index (cosine ranking would be meaningless). Prefer output dim **768** unless migrating sqlite-vec.
+- **On disk:** case-local media files under `data/cases/{case_id}/media/{record_id}.{ext}`; SQLite stores relative `media_path`, content hash, `content_type`, `modality`, and locator—not blobs.
+- **Sources:** PNG/JPEG from `.eml` attachments, loose `.png`/`.jpg`/`.jpeg`, and `.pdf` files.
+- **`EvidenceRecord` contract:** `content` remains **required** (schema unchanged on that point). For media records `content` is the empty string (no text chunks until multimodal embedding). Optional fields: `modality` (`text` | `image` | `pdf`), `media_path` (relative path under the case dir), `content_type` (e.g. `image/png`). Email image records may set `metadata.parent_locator` to the parent headers record. `contracts/evidence_record.schema.json`, `contracts/README.md`, and the Pydantic model stay the source of truth and are updated with those fields (BLA-68).
+- **PDF granularity:** **one record per PDF file** (not one per page). Locator is `page 1`, `pages 1-N` when a page count is practical, else `entire file`. Gemini Embedding 2 accepts only a few PDF pages per request (~6); long PDFs must be split or truncated at embed time (BLA-69)—ingest still stores the whole file on disk.
+- **Embeddings:** one shared model (`gemini-embedding-2`) for **all** text and media vectors. Do not mix with `gemini-embedding-001` in the same index. Request **`output_dimensionality=768` explicitly** (the model default is 3072); keep sqlite-vec at 768 unless deliberately migrating.
+- **Re-embed / eval invalidation:** changing `EMBEDDING_MODEL` (or dim) marks chunks stale; run `reembed_stale_chunks(session, case_id, embedder)` per case. That **re-sends every re-embedded record to Gemini**. Owl retrieval numbers, the keyword baseline, and “Want more evidence?” thresholds measured on `gemini-embedding-001` are **void after the switch** and must be re-run.
+- **Keyword / FTS side:** FTS5 cannot search pixels. Media records with empty `content` are **vector-only** in RRF unless BLA-69 indexes a lexical sidecar (filename, and for email attachments the parent subject/headers). Without that sidecar, images systematically rank below text that gets even a weak keyword hit (same failure mode as Owl q2 vector ranks 10/16 → fused 17/19). Document and implement the sidecar in BLA-69; do not pretend FTS matches image bytes.
 - **Citations:** media findings cite `record_id` + locator; they do **not** invent `char_start`/`char_end` on binary content.
-- **Analysis:** retrieved media is passed into the Gemini vision/generate call as image or document parts alongside text excerpts. Media remains untrusted evidence, not instructions.
+- **Analysis / exclusion:** retrieved media is passed into the Gemini vision/generate call as image or document parts alongside text excerpts. **Invariant 2 applies to vision parts too:** an excluded image or PDF must never be sent as a part, retrieved, or cited. Media remains untrusted evidence, not instructions.
+- **EXIF / metadata:** v1 sends **bytes as stored on disk**; JPEG EXIF (including GPS) is **not stripped** at import unless a later ticket adds stripping. Treat that as part of the cloud-AI honesty caveat.
 - **Honest limit:** media bytes used for embed/analyze still leave the machine via Gemini (same local-first + cloud-compute posture as text).
 
 **Versioning semantics:** The default question creates a revision. A follow-up creates a child revision and can append sourced findings to the board. Evidence exclusion creates a separate child revision. The older revision stays inspectable; restoring an exclusion reuses the prior inclusion state rather than rewriting history.
@@ -134,5 +139,7 @@ The board stores: user-pinned claim IDs, graph nodes/edges, timeline events, not
 | Uploaded content injects instructions | Isolate source text from system instructions, escape display, validate output schema. |
 | Data leaks between cases | Mandatory case filters in every retrieval and source-ID lookup. |
 | Mistaking local-first for offline privacy | Document that Gemini still processes evidence text (and E11 media bytes); use public/synthetic data for demos; offline models are post-MVP. |
-| Mixing embedding models in one index | After E11, re-embed the whole corpus with `gemini-embedding-2`; never rank `001` and multimodal vectors together. |
+| Mixing embedding models in one index | After E11, re-embed the whole corpus with `gemini-embedding-2` via `reembed_stale_chunks`; never rank `001` and multimodal vectors together; re-run measured retrieval evals. |
+| Media lose RRF to keyword-only text | Index filename (+ parent email subject) as FTS text for media in BLA-69; empty `content` alone makes images vector-only. |
+| Excluded media leak via vision parts | Apply invariant 2 to generate_content parts: excluded image/PDF IDs never leave as parts. |
 | Hosting the case DB “for convenience” | Keep MVP demos on localhost; only host marketing/static pages if needed. |
