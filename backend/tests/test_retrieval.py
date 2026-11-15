@@ -24,10 +24,12 @@ from app.models import Case
 from app.retrieval import RetrievalConfig, fuse, retrieve, rrf_term
 from app.search_index import (
     FTS_TABLE,
+    FTS_TOKENIZE,
     MAX_FTS_TERMS,
     VEC_TABLE,
     KeywordHit,
     VectorHit,
+    keyword_index_tokenizer,
     keyword_search,
     to_fts_query,
 )
@@ -206,6 +208,7 @@ def test_hybrid_hit_ranks_first_with_exact_excerpt_and_locator(session, cases, e
     top = result.records[0]
     assert top.record_id == "rec-chat"
     assert top.matched_by == "both"
+    assert (result.skipped, result.budget_substituted) == ([], False)  # nothing left out
     assert (top.vector.rank, top.keyword.rank) == (1, 1)
     assert top.vector.score == pytest.approx(0.0, abs=1e-5)
     assert top.score == pytest.approx(2 / 61)
@@ -329,6 +332,17 @@ def test_evidence_window_record_cap(session, embedder):
     assert result.fused_records == 25
     assert (result.dropped_by_limit, result.dropped_by_budget) == (9, 0)
     assert all(r.matched_by == "both" for r in result.records)
+    # The 9 records past the cap are listed in rank order, without content.
+    assert [s.reason for s in result.skipped] == ["record_limit"] * 9
+    assert [s.rank for s in result.skipped] == list(range(17, 26))
+    assert [s.excerpt_chars for s in result.skipped] == [None] * 9
+    scores = [r.score for r in result.records] + [s.score for s in result.skipped]
+    assert scores == sorted(scores, reverse=True)
+    assert {s.record_id for s in result.skipped}.isdisjoint(ids(result))
+    assert {s.record_id for s in result.skipped} | set(ids(result)) == {
+        r.record_id for r in records
+    }
+    assert result.budget_substituted is False
 
     assert len(retrieve(session, case.case_id, "ferry", embedder, limit=3).records) == 3
     config = RetrievalConfig(max_records=5)
@@ -354,6 +368,9 @@ def test_evidence_window_character_budget(session, cases, embedder):
         full.records
     )
     assert not any(e.truncated for r in capped.records for e in r.excerpts)
+    budget_skips = [s for s in capped.skipped if s.reason == "budget"]
+    assert len(budget_skips) == capped.dropped_by_budget
+    assert all(s.excerpt_chars and s.excerpt_chars > 0 for s in budget_skips)
 
     # A budget smaller than the best excerpt still returns it, cut to fit.
     tiny = retrieve(session, a, question, embedder, max_excerpt_chars=10)
@@ -364,6 +381,138 @@ def test_evidence_window_character_budget(session, cases, embedder):
 
     config = RetrievalConfig(max_excerpt_chars=budget)
     assert retrieve(session, a, question, embedder, config=config).excerpt_chars <= budget
+
+
+def test_budget_skip_is_listed_and_lower_ranked_record_fills_in(session, embedder):
+    case = Case(title="Budget")
+    session.add(case)
+    session.flush()
+    big = "The ferry left. " + " ".join(f"filler{i:03d}" for i in range(140))
+    assert 1000 < len(big) <= 1600  # one chunk
+    contents = {
+        "r-top": "Ferry ferry timetable.",
+        "r-big": big,
+        "r-mid": "The ferry was late.",
+        "r-tail": "Unrelated note about lunch.",
+    }
+    store_records(
+        session, case.case_id, [record(case.case_id, k, v) for k, v in contents.items()], embedder
+    )
+    session.commit()
+    question = "ferry"
+    embedder.queries[question] = contents["r-top"]  # r-top: vector rank 1 and keyword hit
+
+    full = retrieve(session, case.case_id, question, embedder)
+    order = ids(full)
+    assert order[0] == "r-top" and order[-1] == "r-tail"  # tail has no keyword hit
+    big_rank = order.index("r-big") + 1
+    assert 1 < big_rank < len(order)
+
+    budget = full.excerpt_chars - len(big)  # everything except r-big fits exactly
+    capped = retrieve(session, case.case_id, question, embedder, max_excerpt_chars=budget)
+    assert ids(capped) == [r for r in order if r != "r-big"]
+    [skip] = capped.skipped
+    assert skip.model_dump() == {
+        "record_id": "r-big",
+        "rank": big_rank,
+        "score": pytest.approx(by_id(full, "r-big").score),
+        "reason": "budget",
+        "excerpt_chars": len(big),
+    }
+    assert capped.dropped_by_budget == 1
+    assert capped.budget_substituted is True
+    assert capped.excerpt_chars == budget
+
+    # The skipped record was last in the window: nothing lower-ranked filled in.
+    tail_only = retrieve(
+        session, case.case_id, question, embedder, limit=big_rank,
+        max_excerpt_chars=sum(len(contents[r]) for r in order[: big_rank - 1]),
+    )
+    assert [s.record_id for s in tail_only.skipped][0] == "r-big"
+    assert tail_only.budget_substituted is False
+
+
+@pytest.mark.parametrize(
+    ("question", "content"),
+    [
+        ("who was delivering", "Alex delivered the parcel."),
+        ("who was delivering", "Alex delivers parcels."),
+        ("delivered", "Alex will deliver it."),
+        ("saying", "Jordan says nothing."),
+        ("meetings", "There may be a meeting."),
+        ("CONNECTED", "We connect at noon."),
+    ],
+)
+def test_keyword_search_matches_stemmed_variants(session, embedder, question, content):
+    case = Case(title="Stems")
+    session.add(case)
+    session.flush()
+    store_records(session, case.case_id, [record(case.case_id, "rec-1", content)], embedder)
+    session.commit()
+    hits = keyword_search(session, case.case_id, to_fts_query(question))
+    assert [h.record_id for h in hits] == ["rec-1"]
+    assert by_id(retrieve(session, case.case_id, question, embedder), "rec-1").keyword
+
+
+def test_old_tokenizer_index_is_rebuilt_at_startup(tmp_path, caplog):
+    db = f"sqlite:///{tmp_path / 'old.db'}"
+    embedder = FakeEmbedder()
+    engine = make_engine(db)
+    init_db(engine, embedder.dim)
+    with make_session_factory(engine)() as session:
+        a, b = Case(title="A"), Case(title="B")
+        session.add_all([a, b])
+        session.flush()
+        a_id, b_id = a.case_id, b.case_id
+        store_records(session, a_id, [record(a_id, "rec-1", "Alex delivered it."),
+                                      record(a_id, "rec-2", LONG_A)], embedder)
+        store_records(session, b_id, [record(b_id, "rec-1", "Morgan delivers.")], embedder)
+        session.commit()
+    # Simulate a database created before porter stemming (BLA-12's tokenizer).
+    with engine.begin() as conn:
+        conn.execute(text(f"DROP TABLE {FTS_TABLE}"))
+        conn.execute(text(
+            f"CREATE VIRTUAL TABLE {FTS_TABLE} USING fts5(text, chunk_id UNINDEXED, "
+            "case_id UNINDEXED, record_id UNINDEXED, tokenize = 'unicode61 remove_diacritics 2')"
+        ))
+        conn.execute(text(
+            f"INSERT INTO {FTS_TABLE} (text, chunk_id, case_id, record_id) "
+            "SELECT text, chunk_id, case_id, record_id FROM evidence_chunks"
+        ))
+    with make_session_factory(engine)() as session:
+        assert keyword_index_tokenizer(session) == "unicode61 remove_diacritics 2"
+        assert keyword_search(session, a_id, '"delivering"') == []  # no stemming yet
+    engine.dispose()
+
+    engine = make_engine(db)
+    try:
+        with caplog.at_level("WARNING", logger="app.search_index"):
+            init_db(engine, embedder.dim)
+        assert "tokenizer changed" in caplog.text
+        with make_session_factory(engine)() as session:
+            assert keyword_index_tokenizer(session) == FTS_TOKENIZE
+            chunks = session.execute(text("SELECT count(*) FROM evidence_chunks")).scalar_one()
+            assert session.execute(text(f"SELECT count(*) FROM {FTS_TABLE}")).scalar_one() == (
+                chunks
+            )
+            assert [h.record_id for h in keyword_search(session, a_id, '"delivering"')] == [
+                "rec-1"
+            ]
+            assert [h.record_id for h in keyword_search(session, b_id, '"delivering"')] == [
+                "rec-1"
+            ]
+            assert keyword_search(session, a_id, '"harbour"')[0].record_id == "rec-2"
+            # The delete trigger still keeps the rebuilt index in sync.
+            session.execute(text("DELETE FROM evidence_records WHERE record_id = 'rec-2'"))
+            session.commit()
+            assert keyword_search(session, a_id, '"harbour"') == []
+        caplog.clear()
+        init_db(engine, embedder.dim)  # already current: no rebuild, no duplicate rows
+        assert "tokenizer changed" not in caplog.text
+        with make_session_factory(engine)() as session:
+            assert len(keyword_search(session, a_id, '"delivering"')) == 1
+    finally:
+        engine.dispose()
 
 
 def test_excluded_records_are_never_returned(session, cases, embedder):

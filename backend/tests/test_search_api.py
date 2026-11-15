@@ -1,10 +1,12 @@
 """BLA-13: POST /cases/{case_id}/search (debug view of hybrid retrieval)."""
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.contracts import EvidenceRecord
 from app.embeddings import FakeEmbedder
 from app.evidence_store import store_records
+from app.routers.search import EMPTY_QUESTION
 
 
 def seed(client: TestClient) -> tuple[str, str]:
@@ -64,9 +66,24 @@ def test_search_limit_and_empty_question(client: TestClient) -> None:
     limited = client.post(f"/cases/{a}/search", json={"question": "key", "limit": 1}).json()
     assert len(limited["records"]) == 1
     assert limited["dropped_by_limit"] == 1
-    empty = client.post(f"/cases/{a}/search", json={"question": "  ?? "})
-    assert empty.status_code == 200
-    assert empty.json()["records"] == []
+    assert limited["budget_substituted"] is False
+    [skipped] = limited["skipped"]
+    assert skipped["reason"] == "record_limit"
+    assert skipped["rank"] == 2
+    assert skipped["record_id"] in {"rec-1", "rec-2"}
+    assert skipped["excerpt_chars"] is None
+    assert set(skipped) == {"record_id", "rank", "score", "reason", "excerpt_chars"}  # no text
+
+    full = client.post(f"/cases/{a}/search", json={"question": "key"}).json()
+    assert (full["skipped"], full["budget_substituted"]) == ([], False)
+
+
+@pytest.mark.parametrize("question", ["", "   ", "  ?? ", "*:()", '""'])
+def test_search_rejects_empty_or_punctuation_only_question(client: TestClient, question) -> None:
+    a, _ = seed(client)
+    response = client.post(f"/cases/{a}/search", json={"question": question})
+    assert response.status_code == 422
+    assert EMPTY_QUESTION in response.json()["detail"][0]["msg"]
 
 
 def test_search_unknown_case_and_bad_body(client: TestClient) -> None:

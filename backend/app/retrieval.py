@@ -123,6 +123,18 @@ class RetrievedRecord(BaseModel):
     excerpts: list[Excerpt]  # best first; never empty
 
 
+class SkippedRecord(BaseModel):
+    """A fused candidate the evidence window left out. IDs and metadata only, never content,
+    so it can be shown to the investigator ("these records were not considered")."""
+
+    record_id: str
+    rank: int  # 1-based fused rank among all candidates
+    score: float  # fused RRF score
+    reason: Literal["budget", "record_limit"]
+    # budget skips: size of the record's best excerpt, which did not fit; else None
+    excerpt_chars: int | None = None
+
+
 class RetrievalResult(BaseModel):
     case_id: str
     question: str
@@ -135,6 +147,11 @@ class RetrievalResult(BaseModel):
     dropped_by_budget: int  # records within max_records left out by the character budget
     excerpt_chars: int  # total excerpt characters returned (<= max_excerpt_chars)
     excluded_record_ids: list[str]  # sorted; see ``retrieve``
+    # Every fused candidate not in ``records``, in rank order (budget and record_limit
+    # entries match dropped_by_budget / dropped_by_limit).
+    skipped: list[SkippedRecord] = []
+    # True when a record was included after a higher-ranked one was skipped for budget.
+    budget_substituted: bool = False
 
 
 # --- Fusion -----------------------------------------------------------------------------
@@ -281,6 +298,10 @@ def retrieve(
     but not ``NOT IN``; FTS5 can take ``record_id NOT IN (...)`` before ``LIMIT``), and own
     the exclusion semantics (revision excluded sets, re-check before prompt building).
 
+    There is no relevance threshold: the vector KNN always returns its ``k`` nearest chunks,
+    so in a small case every record can land in the window, ranked low.
+    TODO: add a maximum cosine distance setting if analysis sees noise from weak matches.
+
     An empty question, or one with no letters or digits, returns no records without calling
     the embedder. Raises ``CaseNotFoundError`` for an unknown case and
     ``EmbeddingIndexMismatchError`` if the embedder's dimension does not match the index.
@@ -346,14 +367,17 @@ def retrieve(
     }
 
     records: list[RetrievedRecord] = []
+    skipped: list[SkippedRecord] = []
     remaining = budget
     dropped_by_budget = 0
-    for f in window:
+    budget_substituted = False
+    for rank, f in enumerate(window, start=1):
         row = rows.get(f.record_id)
         if row is None:  # pragma: no cover - index and tables are kept consistent
             continue
         excerpts: list[Excerpt] = []
-        for span in _excerpt_spans(f.chunk_scores, spans, cfg.max_excerpts_per_record):
+        candidate_spans = _excerpt_spans(f.chunk_scores, spans, cfg.max_excerpts_per_record)
+        for span in candidate_spans:
             length = span.end - span.start
             truncated = False
             if length > remaining:
@@ -376,7 +400,19 @@ def retrieve(
             remaining -= length
         if not excerpts:
             dropped_by_budget += 1
+            best = candidate_spans[0] if candidate_spans else None
+            skipped.append(
+                SkippedRecord(
+                    record_id=f.record_id,
+                    rank=rank,
+                    score=f.score,
+                    reason="budget",
+                    excerpt_chars=best.end - best.start if best else None,
+                )
+            )
             continue
+        if dropped_by_budget:
+            budget_substituted = True
         records.append(
             RetrievedRecord(
                 record_id=row.record_id,
@@ -392,9 +428,15 @@ def retrieve(
             )
         )
 
+    skipped.extend(
+        SkippedRecord(record_id=f.record_id, rank=rank, score=f.score, reason="record_limit")
+        for rank, f in enumerate(fused[max_records:], start=max_records + 1)
+    )
     return empty.model_copy(
         update={
             "records": records,
+            "skipped": skipped,
+            "budget_substituted": budget_substituted,
             "vector_candidates": len(vector_hits),
             "keyword_candidates": len(keyword_hits),
             "fused_records": len(fused),

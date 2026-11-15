@@ -74,10 +74,21 @@ def _vec_table_ddl(dim: int) -> str:
     )
 
 
+# Porter stemming over unicode61 (diacritics removed): "delivering", "delivered" and
+# "delivers" all index as "deliv". Query terms are stemmed the same way, quoted or not.
+# Irregular forms are not related by a stemmer ("said" is not "say").
+FTS_TOKENIZE = "porter unicode61 remove_diacritics 2"
+
 _FTS_DDL = (
     f"CREATE VIRTUAL TABLE IF NOT EXISTS {FTS_TABLE} USING fts5("
     "text, chunk_id UNINDEXED, case_id UNINDEXED, record_id UNINDEXED, "
-    "tokenize = 'unicode61 remove_diacritics 2')"
+    f"tokenize = '{FTS_TOKENIZE}')"
+)
+
+# Refill the keyword index from its source of truth (after a tokenizer change).
+_FTS_REBUILD = (
+    f"INSERT INTO {FTS_TABLE} (text, chunk_id, case_id, record_id) "
+    "SELECT text, chunk_id, case_id, record_id FROM evidence_chunks"
 )
 
 _TRIGGER_DDL = f"""
@@ -92,12 +103,29 @@ END
 _DIM_RE = re.compile(r"embedding\s+float\[(\d+)\]", re.IGNORECASE)
 
 
+_TOKENIZE_RE = re.compile(r"tokenize\s*=\s*'([^']*)'", re.IGNORECASE)
+
+
+def _table_sql(conn: Connection | Session, name: str) -> str | None:
+    return conn.execute(
+        text("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = :name"),
+        {"name": name},
+    ).scalar_one_or_none()
+
+
+def keyword_index_tokenizer(conn: Connection | Session) -> str | None:
+    """The ``tokenize`` option of the existing FTS5 table ("" if it has none), or None if
+    the table does not exist."""
+    sql = _table_sql(conn, FTS_TABLE)
+    if sql is None:
+        return None
+    match = _TOKENIZE_RE.search(sql)
+    return " ".join(match.group(1).split()) if match else ""
+
+
 def vector_index_dim(conn: Connection | Session) -> int | None:
     """Dimension of the existing vec0 table, or None if it does not exist."""
-    sql = conn.execute(
-        text("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = :name"),
-        {"name": VEC_TABLE},
-    ).scalar_one_or_none()
+    sql = _table_sql(conn, VEC_TABLE)
     if sql is None:
         return None
     match = _DIM_RE.search(sql)
@@ -110,7 +138,21 @@ def ensure_search_index(conn: Connection, dim: int) -> None:
     If the vec0 table exists with a different dimension (``EMBEDDING_DIM`` changed), it is
     dropped and recreated empty. Chunk rows are kept, so every chunk then counts as stale
     and ``app.evidence_store.reembed_stale_chunks`` rebuilds the vectors.
+
+    If the FTS5 table exists with a different tokenizer (e.g. a database created before
+    porter stemming), it is dropped, recreated and refilled from ``evidence_chunks`` right
+    away (no API calls needed), with a warning.
     """
+    tokenizer = keyword_index_tokenizer(conn)
+    rebuild_keywords = tokenizer is not None and tokenizer != FTS_TOKENIZE
+    if rebuild_keywords:
+        logger.warning(
+            "Keyword index tokenizer changed (%r -> %r): rebuilding %s from evidence_chunks.",
+            tokenizer,
+            FTS_TOKENIZE,
+            FTS_TABLE,
+        )
+        conn.execute(text(f"DROP TABLE {FTS_TABLE}"))
     existing = vector_index_dim(conn)
     if existing is not None and existing != dim:
         logger.warning(
@@ -123,6 +165,8 @@ def ensure_search_index(conn: Connection, dim: int) -> None:
         conn.execute(text(f"DROP TABLE {VEC_TABLE}"))
     conn.execute(text(_vec_table_ddl(dim)))
     conn.execute(text(_FTS_DDL))
+    if rebuild_keywords:
+        conn.execute(text(_FTS_REBUILD))
     conn.execute(text(_TRIGGER_DDL))
 
 
@@ -239,6 +283,8 @@ def keyword_search(session: Session, case_id: str, match: str, k: int = 10) -> l
 
 # Words as the unicode61 tokenizer sees them: runs of letters/digits. This is ``\w`` minus
 # ``_``, because unicode61 treats underscore (like all other punctuation) as a separator.
+# Terms are left unstemmed: FTS5 runs quoted query strings through the same porter
+# tokenizer as the indexed text, so "delivering" in a question matches "delivered".
 _WORD_RE = re.compile(r"[^\W_]+")
 
 # Very common English words that only add noise to an OR query. They are dropped unless the
