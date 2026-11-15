@@ -1,0 +1,237 @@
+.blanc-workspace {
+  min-height: 100svh;
+  background: #e0d9c8;
+  color: #372416;
+  font: 15px/1.55 Georgia, serif;
+}
+.blanc-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 20px; padding: 16px clamp(18px, 3vw, 42px); }
+.blanc-header nav { display: flex; flex-wrap: wrap; gap: 8px 20px; }
+.blanc-header button, .blanc-citation button, .blanc-source button { cursor: pointer; font: inherit; }
+.blanc-header button[aria-current] { border-bottom: 1px solid #8c3038; }
+.blanc-reading { width: min(560px, calc(100% - 44px)); margin: 14px auto 0; padding-bottom: 56px; }
+.blanc-meta, .blanc-reading small { font: 12px/1.5 ui-monospace, monospace; }
+.blanc-reading h1 { font: 400 clamp(25px, 4vw, 34px)/1.12 Georgia, serif; margin: 6px 0 22px; overflow-wrap: anywhere; }
+.blanc-reading h2 { font-size: 15px; font-style: italic; margin-top: 17px; }
+.blanc-reading h3 { font-size: 20px; margin: 0 0 12px; }
+.blanc-ruled { border-top: 1px solid #a99e89; margin-top: 22px; padding-top: 16px; }
+.blanc-ruled li { display: flex; gap: 16px; align-items: baseline; margin: 5px 0; }
+.blanc-ruled li > span:first-child, .blanc-citation { color: #822b33; }
+.blanc-citation { position: relative; display: inline-block; margin-right: .35em; }
+.blanc-citation button { text-decoration: underline; text-underline-offset: 3px; text-align: left; }
+.blanc-preview { display: none; position: absolute; z-index: 1; left: 0; top: 100%; width: min(19rem, 65vw); padding: 12px; background: #f5eddf; color: #372416; border: 1px solid #a99e89; font: 13px/1.4 Georgia, serif; overflow-wrap: anywhere; }
+.blanc-citation:hover .blanc-preview, .blanc-citation:focus-within .blanc-preview { display: grid; gap: 4px; }
+.blanc-source { margin-top: 14px; padding: 16px; border: 1px solid #a99e89; background: #f5eddf; overflow-wrap: anywhere; }
+.blanc-source button { float: right; color: #822b33; text-decoration: underline; }
+.blanc-source p { margin-top: 10px; white-space: pre-wrap; }
+.blanc-ruled input { display: block; width: 100%; color: inherit; font: italic 15px Georgia, serif; border: 1px solid #a99e89; padding: 12px; margin-bottom: 5px; }
+.blanc-workspace button:focus-visible { outline: 2px solid #822b33; outline-offset: 3px; }
+
+.blanc-header svg { display: block; width: 72px; height: auto; }
+
+.blanc-entry { width: min(460px, calc(100% - 44px)); margin: clamp(64px, 23vh, 220px) auto 0; }
+.blanc-entry h1 { font-family: Baskerville, "Baskerville Old Face", Georgia, serif; letter-spacing: -.015em; font-size: clamp(26px, 4vw, 36px); text-align: center; margin-bottom: 18px; }
+.blanc-entry form {
+  display: flex;
+  align-items: end;
+  gap: 12px;
+  border: 1px solid #a99e89;
+  border-radius: 4px;
+  padding: 10px 12px;
+  background: transparent;
+}
+.blanc-entry form:focus-within { border-color: #372416; }
+.blanc-entry textarea { flex: 1; min-width: 0; resize: vertical; background: transparent; font: inherit; font-size: 14px; }
+.blanc-entry textarea:focus { outline: none; }
+.blanc-entry form button { border-radius: 4px; padding: 3px 11px; color: #822b33; background: transparent; font-size: 21px; }
+.blanc-entry form button:disabled { opacity: .55; }
+.blanc-entry [role="status"] { margin-top: 12px; }
+
+.blanc-case-list { margin-top: 28px; }
+.blanc-case-list h2 { margin: 0 0 8px; font-style: normal; }
+.blanc-case-option {
+  display: flex; justify-content: space-between; align-items: center;
+  width: 100%; padding: 11px 0; border-block: 1px solid #a99e89;
+  text-align: left; cursor: pointer;
+}
+.blanc-case-option:hover { color: #822b33; }
+.blanc-case-option strong, .blanc-case-option small { display: block; }
+.blanc-case-option small { margin-top: 2px; }
+
+.blanc-case-list h2 { font-size: 13px; }
+.blanc-case-option strong { font-size: 14px; }
+.blanc-case-option small { font-size: 11px; }
+.blanc-case-files {
+  margin: 8px 0 0;
+  padding-left: 16px;
+  list-style: disc;
+  color: #584536;
+  font: 11px/1.7 ui-monospace, monospace;
+  overflow-wrap: anywhere;
+}
+
+.blanc-case-files { padding-left: 0; list-style: none; }
+.blanc-case-files summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  width: fit-content;
+  list-style: none;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.blanc-case-files summary::-webkit-details-marker { display: none; }
+.blanc-case-files summary::before {
+  content: "";
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-right: 1px solid #74604f;
+  border-bottom: 1px solid #74604f;
+  transform: rotate(-45deg);
+}
+.blanc-case-files details[open] > summary::before { transform: rotate(45deg); }
+.blanc-case-files summary:focus-visible { outline: 2px solid #822b33; outline-offset: 3px; }
+.blanc-case-file-record { margin: 5px 0 10px 14px; }
+.blanc-case-file-record p { white-space: pre-wrap; font: 14px/1.5 Georgia, serif; }
+
+.blanc-investigation {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 560px) minmax(0, 1fr);
+  justify-content: center;
+  align-items: start;
+  gap: clamp(24px, 5vw, 60px);
+  width: min(calc(100% - 44px), 1160px);
+  margin: 32px auto 0;
+}
+.blanc-investigation .blanc-reading { width: 100%; margin: 0; }
+.blanc-case-rail {
+  min-width: 0;
+  width: min(calc(100% - 24px), 170px);
+  margin-left: min(24px, 12%);
+  padding: 0 18px 12px 0;
+  border-right: 1px solid #b8ac97;
+  overflow-wrap: anywhere;
+}
+.blanc-case-rail small { display: block; font: 11px/1.5 system-ui, sans-serif; color: #665548; }
+.blanc-case-rail h2 { margin: 4px 0 18px; font-size: 17px; line-height: 1.25; }
+.blanc-rail-sources { border-top: 1px solid #b8ac97; padding-top: 10px; }
+.blanc-rail-sources h3 { margin-bottom: 6px; font-size: 12px; }
+.blanc-rail-sources li { display: grid; grid-template-columns: 1ch minmax(0, 1fr); gap: 8px; margin-bottom: 7px; font-size: 12px; }
+.blanc-rail-sources li > span:first-child { color: #822b33; }
+.blanc-rail-sources .blanc-citation { margin: 0; }
+@media (max-width: 900px) {
+  .blanc-investigation { grid-template-columns: minmax(0, 560px); gap: 20px; }
+  .blanc-case-rail { width: 100%; margin-left: 0; border-right: 0; border-bottom: 1px solid #b8ac97; }
+}
+
+.blanc-case-list > div + div .blanc-case-option { border-top: 0; }
+.blanc-case-chevron {
+  width: 6px;
+  height: 6px;
+  margin-right: 4px;
+  border-right: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
+  transform: rotate(-45deg);
+}
+.blanc-case-option[aria-expanded="true"] .blanc-case-chevron { transform: rotate(45deg); }
+.blanc-case-files-wrap > .blanc-case-files {
+  margin: 10px 0 14px 7px;
+  max-height: min(270px, 36vh);
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
+  padding: 3px 8px 3px 3px;
+}
+
+.blanc-file-path { display: block; margin: 5px 0 8px 14px; overflow-wrap: anywhere; }
+.blanc-case-file-record pre {
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 6px 0;
+  padding: 9px;
+  background: #f5eddf;
+  font: 11px/1.6 ui-monospace, monospace;
+}
+
+.blanc-typed-greeting { position: relative; display: inline-block; max-width: 100%; text-align: left; }
+.blanc-greeting-space { visibility: hidden; }
+.blanc-greeting-ink { position: absolute; inset: 0; }
+.blanc-greeting-letter { animation: blanc-letter-in 60ms ease-out both; }
+@keyframes blanc-letter-in { from { opacity: .2; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .blanc-greeting-space { visibility: visible; }
+  .blanc-greeting-ink { display: none; }
+}
+
+.blanc-greeting-caret {
+  display: inline-block;
+  position: relative;
+  width: 0;
+  height: .8em;
+  vertical-align: -.04em;
+}
+.blanc-greeting-caret::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 2px;
+  width: 2px;
+  background: currentColor;
+  animation: blanc-caret-blink .8s step-end infinite;
+}
+@keyframes blanc-caret-blink { 50% { opacity: 0; } }
+
+.blanc-evidence-viewer {
+  margin: auto;
+  width: min(600px, calc(100% - 32px));
+  max-height: 80vh;
+  overflow: auto;
+  padding: 24px;
+  background: #f5eddf;
+  color: #372416;
+  border: 1px solid #a99e89;
+  border-radius: 5px;
+  overflow-wrap: anywhere;
+}
+.blanc-evidence-viewer::backdrop { background: #201b1860; }
+.blanc-evidence-viewer > button { float: right; color: #822b33; text-decoration: underline; cursor: pointer; }
+.blanc-evidence-viewer h2 { font: 24px Georgia, serif; margin: 0 0 16px; }
+.blanc-evidence-viewer dl { margin: 12px 0 16px; }
+.blanc-evidence-viewer dl > div { border-top: 1px solid #c7bba7; padding: 7px 0; }
+.blanc-evidence-viewer dt { font: 11px system-ui, sans-serif; text-transform: capitalize; }
+.blanc-evidence-viewer pre { white-space: pre-wrap; font: 12px/1.5 ui-monospace, monospace; margin-top: 10px; }
+.blanc-evidence-viewer summary { color: #822b33; cursor: pointer; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .blanc-investigation .blanc-case-rail,
+  .blanc-report > :not(dialog) {
+    animation: blanc-report-in 360ms ease-out both;
+  }
+  .blanc-report > :nth-child(2) { animation-delay: 65ms; }
+  .blanc-report > :nth-child(3) { animation-delay: 130ms; }
+  .blanc-report > :nth-child(4) { animation-delay: 195ms; }
+  .blanc-report > :nth-child(5) { animation-delay: 260ms; }
+  .blanc-report > :nth-child(6) { animation-delay: 325ms; }
+  .blanc-report > :nth-child(n+7) { animation-delay: 390ms; }
+}
+@keyframes blanc-report-in {
+  from { opacity: 0; translate: 0 5px; }
+  to { opacity: 1; translate: 0 0; }
+}
+
+/* Evidence status: keeps a reported or inferred finding from reading as fact. */
+.blanc-status { display: inline-block; margin-right: 8px; padding: 0 6px; border: 1px solid currentColor; border-radius: 3px; font: 600 10px/1.6 system-ui, sans-serif; letter-spacing: .04em; text-transform: uppercase; vertical-align: 2px; color: #665548; }
+.blanc-status-observed { color: #2f5d3a; }
+.blanc-status-reported { color: #3b4f7a; }
+.blanc-status-inferred { color: #8a5a12; }
+.blanc-status-unresolved { color: #822b33; }
+
+/* Case files load a page at a time; the count and button sit under the list. */
+.blanc-case-files-wrap { margin: 0 0 14px 7px; }
+.blanc-case-files-wrap > .blanc-case-files { margin: 10px 0 6px; }
+.blanc-case-files-count { margin: 0; color: #665548; font: 11px/1.6 ui-monospace, monospace; }
+.blanc-show-more { margin-top: 4px; padding: 0; border: 0; background: transparent; color: #822b33; font: 600 12px Georgia, serif; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.blanc-show-more:disabled { opacity: .55; cursor: default; }
+.blanc-show-more:focus-visible { outline: 2px solid #822b33; outline-offset: 3px; }
