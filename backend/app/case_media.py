@@ -12,7 +12,9 @@ import io
 import logging
 import os
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +105,35 @@ def pdf_locator(data: bytes) -> str:
     return "entire file"
 
 
-def truncate_pdf_for_embedding(data: bytes, *, max_pages: int = GEMINI_PDF_MAX_PAGES) -> bytes:
+@dataclass(frozen=True)
+class PdfEmbeddingPrep:
+    """Result of preparing a PDF for ``embed_media``.
+
+    ``truncated`` is True when pages beyond ``embedding_pages`` were dropped. ``page_count``
+    is the source page count when parsing succeeded; both page fields are None when the
+    PDF could not be parsed and the original bytes are embedded unchanged.
+    """
+
+    data: bytes
+    truncated: bool
+    page_count: int | None = None
+    embedding_pages: int | None = None
+
+    def coverage_metadata(self) -> dict[str, Any] | None:
+        """Record ``metadata`` keys when the embed does not cover the whole PDF, else None."""
+        if not self.truncated:
+            return None
+        meta: dict[str, Any] = {"embedding_truncated": True}
+        if self.embedding_pages is not None:
+            meta["embedding_pages"] = self.embedding_pages
+        if self.page_count is not None:
+            meta["embedding_page_count"] = self.page_count
+        return meta
+
+
+def truncate_pdf_for_embedding(
+    data: bytes, *, max_pages: int = GEMINI_PDF_MAX_PAGES
+) -> PdfEmbeddingPrep:
     """Return a PDF of at most ``max_pages`` (Gemini embedding-2 limit), else ``data``.
 
     Uses pypdf. Corrupt or unreadable PDFs are returned unchanged so the embed call can
@@ -121,7 +151,9 @@ def truncate_pdf_for_embedding(data: bytes, *, max_pages: int = GEMINI_PDF_MAX_P
         reader = PdfReader(io.BytesIO(data))
         total = len(reader.pages)
         if total <= max_pages:
-            return data
+            return PdfEmbeddingPrep(
+                data=data, truncated=False, page_count=total, embedding_pages=total
+            )
         writer = PdfWriter()
         for index in range(max_pages):
             writer.add_page(reader.pages[index])
@@ -134,20 +166,32 @@ def truncate_pdf_for_embedding(data: bytes, *, max_pages: int = GEMINI_PDF_MAX_P
             total,
             max_pages + 1,
         )
-        return out.getvalue()
+        return PdfEmbeddingPrep(
+            data=out.getvalue(),
+            truncated=True,
+            page_count=total,
+            embedding_pages=max_pages,
+        )
     except Exception as exc:
         logger.warning(
             "PDF truncation failed (%s); embedding original bytes unchanged",
             exc,
         )
-        return data
+        return PdfEmbeddingPrep(data=data, truncated=False)
 
 
-def prepare_media_for_embedding(data: bytes, mime_type: str) -> tuple[bytes, str]:
-    """Bytes + MIME ready for ``Embedder.embed_media`` (PDF page truncation applied)."""
+def prepare_media_for_embedding(
+    data: bytes, mime_type: str
+) -> tuple[bytes, str, dict[str, Any] | None]:
+    """Bytes + MIME ready for ``Embedder.embed_media`` (PDF page truncation applied).
+
+    The optional third value is coverage ``metadata`` to merge onto the record when a PDF
+    was truncated (``embedding_truncated`` / page counts). Images always return ``None``.
+    """
     if mime_type == "application/pdf":
-        return truncate_pdf_for_embedding(data), mime_type
-    return data, mime_type
+        prep = truncate_pdf_for_embedding(data)
+        return prep.data, mime_type, prep.coverage_metadata()
+    return data, mime_type, None
 
 
 def store_media_bytes(

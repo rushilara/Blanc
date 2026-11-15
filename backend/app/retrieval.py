@@ -32,6 +32,11 @@ Record exclusion (BLA-14) happens at two points, per the architecture doc: every
 excluded record is filtered before ranking (inside both index queries, then again in
 ``retrieve``), and ``permitted_records`` checks the result again before the LLM prompt is
 built.
+
+Media records (``modality`` image/pdf) stay indexed for a later evidence-window ticket, but
+``retrieve`` excludes them inside both index queries the same way as revision exclusions, so
+they do not consume ``vector_candidates`` / ``keyword_candidates`` slots while sidecar text
+is still kept out of ``Excerpt.text``.
 """
 
 from __future__ import annotations
@@ -318,6 +323,11 @@ def retrieve(
     and are found again once no longer excluded. Before building the LLM prompt, re-check
     the result with ``permitted_records``.
 
+    Image/PDF records are also left out inside both index queries (same exclusion path) so
+    media neighbours cannot fill candidate slots and starve text recall while media is still
+    withheld from the evidence window. They remain indexed for a later retrieval ticket.
+    ``excluded_record_ids`` on the result is only the revision's set, not media IDs.
+
     There is no relevance threshold: the vector KNN always returns its ``k`` nearest chunks,
     so in a small case every record can land in the window, ranked low.
     TODO: add a maximum cosine distance setting if analysis sees noise from weak matches.
@@ -335,6 +345,16 @@ def retrieve(
     if session.get(Case, case_id) is None:
         raise CaseNotFoundError(f"case {case_id!r} does not exist")
     excluded = set(excluded_record_ids or ())
+    # Media stays indexed but must not consume retrieve() candidate slots yet.
+    media_ids = set(
+        session.scalars(
+            select(EvidenceRecordRow.record_id).where(
+                EvidenceRecordRow.case_id == case_id,
+                EvidenceRecordRow.modality.in_(("image", "pdf")),
+            )
+        )
+    )
+    search_excluded = excluded | media_ids
 
     fts_query = to_fts_query(question)
     empty = RetrievalResult(
@@ -366,37 +386,21 @@ def retrieve(
             case_id,
             embedder.embed_query(question),
             k=cfg.vector_candidates,
-            excluded_record_ids=excluded,
+            excluded_record_ids=search_excluded,
         )
-        if h.record_id not in excluded
+        if h.record_id not in search_excluded
     ]
     keyword_hits = [
         h
         for h in keyword_search(
-            session, case_id, fts_query, k=cfg.keyword_candidates, excluded_record_ids=excluded
+            session,
+            case_id,
+            fts_query,
+            k=cfg.keyword_candidates,
+            excluded_record_ids=search_excluded,
         )
-        if h.record_id not in excluded
+        if h.record_id not in search_excluded
     ]
-
-    # Media chunks stay indexed (vectors + FTS sidecar) on import/re-embed, but must not
-    # enter the evidence window yet: sidecar text is not record content, so putting it in
-    # Excerpt.text breaks content[char_start:char_end] and GET /records offsets. Evidence-
-    # window / vision for image/PDF is a later ticket—filter them out of retrieve() now.
-    hit_ids = {h.record_id for h in vector_hits} | {h.record_id for h in keyword_hits}
-    media_ids: set[str] = set()
-    if hit_ids:
-        media_ids = set(
-            session.scalars(
-                select(EvidenceRecordRow.record_id).where(
-                    EvidenceRecordRow.case_id == case_id,
-                    EvidenceRecordRow.record_id.in_(list(hit_ids)),
-                    EvidenceRecordRow.modality.in_(("image", "pdf")),
-                )
-            )
-        )
-        if media_ids:
-            vector_hits = [h for h in vector_hits if h.record_id not in media_ids]
-            keyword_hits = [h for h in keyword_hits if h.record_id not in media_ids]
 
     fused = fuse(
         vector_hits,

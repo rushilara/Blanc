@@ -172,7 +172,7 @@ class GeminiEmbedder:
         config = self._config("RETRIEVAL_DOCUMENT")
         vectors: list[list[float]] = []
         for item in items:
-            data, mime_type = prepare_media_for_embedding(item.data, item.mime_type)
+            data, mime_type, _coverage = prepare_media_for_embedding(item.data, item.mime_type)
             contents = [types.Part.from_bytes(data=data, mime_type=mime_type)]
             try:
                 response = client.models.embed_content(
