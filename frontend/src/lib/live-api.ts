@@ -136,6 +136,9 @@ export type RevisionSummary = {
   created_at: string;
   excluded_record_ids: string[];
   restored_from_analysis_id: string | null;
+  // BLA-65. Absent on a backend that predates the history label: treat as standard.
+  evidence_window?: "standard" | "expanded";
+  max_records?: number | null;
 };
 const id = (value: unknown): value is string => text(value) && value.length > 0;
 const nullableId = (value: unknown) => value === null || id(value);
@@ -147,7 +150,9 @@ export async function listRevisions(caseId: string, signal?: AbortSignal): Promi
     && text(r.created_at) && /^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:\d{2})$/.test(r.created_at)
     && Number.isFinite(Date.parse(r.created_at)) && nullableId(r.restored_from_analysis_id)
     && Array.isArray(r.excluded_record_ids) && r.excluded_record_ids.every(id)
-    && new Set(r.excluded_record_ids).size === r.excluded_record_ids.length)) {
+    && new Set(r.excluded_record_ids).size === r.excluded_record_ids.length
+    && (r.evidence_window === undefined || r.evidence_window === "standard" || r.evidence_window === "expanded")
+    && (r.max_records === undefined || r.max_records === null || nonnegative(r.max_records)))) {
     throw new ApiError("The saved version history is invalid.");
   }
   const revisions = data as RevisionSummary[];
@@ -214,14 +219,36 @@ export function askFollowUp(
   question: string,
   boardId?: string | null,
   signal?: AbortSignal,
+  evidenceWindow?: "standard" | "expanded",
 ): Promise<AnalysisRevision> {
   return postRevision(
     `${path(caseId)}/analyses/${encodeURIComponent(analysisId)}/follow-up`,
-    { question, ...(boardId ? { board_id: boardId } : {}) },
+    { question, ...(boardId ? { board_id: boardId } : {}), ...(evidenceWindow ? { evidence_window: evidenceWindow } : {}) },
     signal,
     status => {
       if (status === 401) return new ApiError(SIGNED_OUT, 401);
       if (status === 422) return new ApiError("A follow-up needs a question with letters or numbers.", 422);
+      if (status === 503) return new ApiError("The analysis service is not ready. Please try again later.", 503);
+      return new ApiError(`The request failed (HTTP ${status}).`, status);
+    },
+  );
+}
+
+/** Rerun this revision's question in another evidence window (BLA-65). Returns the new child. */
+export function rerunWithWindow(
+  caseId: string,
+  analysisId: string,
+  evidenceWindow: "standard" | "expanded",
+  signal?: AbortSignal,
+): Promise<AnalysisRevision> {
+  return postRevision(
+    `${path(caseId)}/analyses/${encodeURIComponent(analysisId)}/rerun`,
+    { evidence_window: evidenceWindow },
+    signal,
+    status => {
+      if (status === 401) return new ApiError(SIGNED_OUT, 401);
+      if (status === 409) return new ApiError("This revision already used that evidence window. It is unchanged.", 409);
+      if (status === 422) return new ApiError("Choose the standard or expanded evidence window.", 422);
       if (status === 503) return new ApiError("The analysis service is not ready. Please try again later.", 503);
       return new ApiError(`The request failed (HTTP ${status}).`, status);
     },

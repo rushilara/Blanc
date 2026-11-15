@@ -190,6 +190,11 @@ def test_an_expanded_rerun_is_a_new_child_and_the_parent_is_unchanged(app, clien
     assert coverage["offer_expanded_window"] is False
 
     assert client.get(f"/cases/{case_id}/analyses/{base['analysis_id']}").json() == base
+    listed = client.get(f"/cases/{case_id}/analyses").json()
+    history = {item["analysis_id"]: item for item in listed}
+    base_row, child_row = history[base["analysis_id"]], history[child["analysis_id"]]
+    assert (base_row["evidence_window"], base_row["max_records"]) == ("standard", 1)
+    assert (child_row["evidence_window"], child_row["max_records"]) == ("expanded", 2)
     comparison = client.get(f"/cases/{case_id}/analyses/{child['analysis_id']}/comparison")
     assert comparison.status_code == 200
     statuses = {i["compared_ref_id"]: i["support_status"] for i in comparison.json()["items"]}

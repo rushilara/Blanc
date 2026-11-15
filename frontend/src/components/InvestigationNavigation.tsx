@@ -2,6 +2,7 @@
 
 import { useId, useMemo, useRef, useState } from "react";
 import type { RevisionSummary } from "@/lib/live-api";
+import { windowLabel } from "@/lib/evidence-window";
 import { groupInvestigations, type InvestigationGroup } from "@/lib/investigation-navigation";
 
 export function InvestigationNavigation({ history, ready, activeId, busy, onOpen, variant = "rail" }: {
@@ -64,7 +65,7 @@ export function InvestigationNavigation({ history, ready, activeId, busy, onOpen
         {session.versions.map((version, i) => <div key={version.analysis_id} className="blanc-history-version">
           <button type="button" aria-current={version.analysis_id === activeId ? "page" : undefined} disabled={busy} onClick={() => openVersion(version.analysis_id)}>
             <span>Version {i + 1}{version.analysis_id === activeId ? " · viewing" : ""}</span>
-            <small>{date(version.created_at)}{version.excluded_record_ids.length ? ` · ${version.excluded_record_ids.length} excluded` : ""}{version.needs_review ? " · needs review" : ""}</small>
+            <small>{date(version.created_at)} · {windowLabel(version.evidence_window, version.max_records)}{version.excluded_record_ids.length ? ` · ${version.excluded_record_ids.length} excluded` : ""}{version.needs_review ? " · needs review" : ""}</small>
           </button>
           <details><summary>View original question</summary><p>{version.question}</p></details>
         </div>)}
