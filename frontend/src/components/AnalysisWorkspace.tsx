@@ -1,5 +1,11 @@
-import type { ReactNode } from "react";
+"use client";
+
+import { useState, type ReactNode } from "react";
+
+import { EvidenceDrawer } from "@/components/EvidenceDrawer";
 import type { AnalysisRevision } from "@/lib/analysis";
+import type { EvidenceSelection } from "@/lib/evidence-selection";
+import type { EvidenceRecord } from "@/lib/records";
 
 function Pane({ id, title, count, children }: {
   id: string; title: string; count: number; children: ReactNode;
@@ -27,10 +33,28 @@ function Status({ value }: { value: string }) {
   return <span className="text-xs font-medium capitalize text-zinc-500">{value.replaceAll("_", " ")}</span>;
 }
 
+type AnalysisWorkspaceProps = {
+  revision: AnalysisRevision;
+  records?: EvidenceRecord[];
+  onExclude?: (recordId: string) => void;
+  onAnnotate?: (recordId: string) => void;
+};
+
 // Fixture loading is outside this component. BLA-42 can pass a validated live
 // response to the same renderer; no case-specific findings belong here.
-export function AnalysisWorkspace({ revision }: { revision: AnalysisRevision }) {
+export function AnalysisWorkspace({
+  revision,
+  records,
+  onExclude,
+  onAnnotate,
+}: AnalysisWorkspaceProps) {
+  const [selection, setSelection] = useState<EvidenceSelection | null>(null);
   const nodes = new Map(revision.graph.nodes.map((node) => [node.id, node.label]));
+
+  function openEvidence(next: EvidenceSelection) {
+    setSelection(next);
+  }
+
   return (
     <main className="mx-auto w-full max-w-7xl space-y-6 p-4 sm:p-6">
       <div className="space-y-2">
@@ -51,7 +75,21 @@ export function AnalysisWorkspace({ revision }: { revision: AnalysisRevision }) 
             {revision.claims.map((claim) => (
               <li key={claim.id} className="space-y-2 border-l-2 border-zinc-200 pl-3 dark:border-zinc-700">
                 <Status value={claim.status} />
-                <p className="text-sm leading-6">{claim.text}</p>
+                <button
+                  type="button"
+                  onClick={() =>
+                    openEvidence({
+                      kind: "claim",
+                      id: claim.id,
+                      label: claim.text,
+                      evidenceIds: claim.evidence_ids,
+                    })
+                  }
+                  aria-haspopup="dialog"
+                  className="block w-full rounded-md text-left text-sm leading-6 underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-500"
+                >
+                  {claim.text}
+                </button>
                 <Sources ids={claim.evidence_ids} />
               </li>
             ))}
@@ -109,6 +147,17 @@ export function AnalysisWorkspace({ revision }: { revision: AnalysisRevision }) 
           <p>Excluded from this revision</p>
           <Sources ids={revision.excluded_record_ids} />
         </aside>
+      )}
+      {selection && (
+        <EvidenceDrawer
+          caseId={revision.case_id}
+          selection={selection}
+          records={records}
+          excludedRecordIds={revision.excluded_record_ids}
+          onClose={() => setSelection(null)}
+          onExclude={onExclude}
+          onAnnotate={onAnnotate}
+        />
       )}
     </main>
   );
