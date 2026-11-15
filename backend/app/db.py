@@ -9,6 +9,10 @@ Every SQLite connection loads the sqlite-vec extension, because the chunk vector
 and triggers on ``evidence_chunks`` write to it.
 """
 
+import logging
+import os
+import platform
+import sys
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,6 +26,15 @@ from sqlalchemy.pool import StaticPool
 from sqlalchemy.types import TypeDecorator
 
 from app.config import DEFAULT_EMBEDDING_DIM
+
+logger = logging.getLogger(__name__)
+
+ROSETTA_WARNING = (
+    "This is an x86_64 (Intel) Python running under Rosetta on an Apple Silicon Mac. "
+    "Loading sqlite-vec can crash it with 'Fatal Python error: Illegal instruction'. "
+    "Use a native arm64 Python 3.12 (python.org or Homebrew) and recreate the venv; "
+    "see backend/README.md."
+)
 
 
 class Base(DeclarativeBase):
@@ -61,6 +74,17 @@ def _enable_sqlite_foreign_keys(dbapi_connection: Any, _connection_record: Any) 
     cursor.close()
 
 
+def running_under_rosetta() -> bool:
+    """True for an x86_64 Python on an arm64 Mac. Under Rosetta platform.machine()
+    reports the process architecture (x86_64) but the kernel version string is still the
+    host's (...RELEASE_ARM64_...)."""
+    return (
+        sys.platform == "darwin"
+        and platform.machine() == "x86_64"
+        and "ARM64" in os.uname().version
+    )
+
+
 def _load_sqlite_vec(dbapi_connection: Any, _connection_record: Any) -> None:
     from app.search_index import load_sqlite_vec
 
@@ -83,6 +107,9 @@ def make_engine(database_url: str) -> Engine:
 
     engine = create_engine(url, **kwargs)
     if is_sqlite:
+        if running_under_rosetta():
+            # Warn before the first connection loads sqlite-vec: that may crash the process.
+            logger.warning(ROSETTA_WARNING)
         event.listen(engine, "connect", _enable_sqlite_foreign_keys)
         event.listen(engine, "connect", _load_sqlite_vec)
     return engine
