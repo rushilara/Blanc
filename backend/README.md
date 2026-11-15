@@ -42,16 +42,17 @@ If it prints `x86_64`, install a native arm64 Python 3.12 (the python.org instal
 
 ## Config
 
-`app/config.py` defines `Settings` (pydantic-settings), loaded from the repo-root `.env`; real environment variables override it. Fields: `GEMINI_API_KEY` (LLM and embeddings), `GEMINI_MODEL`, `EMBEDDING_MODEL` (default `gemini-embedding-001`), `EMBEDDING_DIM` (default 768; the Gemini `output_dimensionality` and the vector index size), `DATABASE_URL`, `CORS_ORIGINS` (comma-separated). Keys are optional, so the app starts without them. Use `get_settings()` to access config.
+`app/config.py` defines `Settings` (pydantic-settings), loaded from the repo-root `.env`; real environment variables override it. Fields: `GEMINI_API_KEY` (LLM and embeddings), `GEMINI_MODEL`, `EMBEDDING_MODEL` (default `gemini-embedding-001`), `EMBEDDING_DIM` (default 768; the Gemini `output_dimensionality` and the vector index size), `DATABASE_URL`, `CORS_ORIGINS` (comma-separated), and the `RETRIEVAL_*` tuning settings (see "Retrieval" below). Keys are optional, so the app starts without them. Use `get_settings()` to access config.
 
 ## Layout
 
 - `app/main.py`: app factory (`create_app`), CORS, lifespan (opens the DB and creates tables), `GET /health` (status plus a non-secret config summary).
 - `app/config.py`: settings.
 - `app/db.py`: SQLAlchemy 2.0 engine/session factory, `Base`, `UTCDateTime`, `get_session` dependency. SQLite foreign keys are enabled on every connection, and the DB file's parent directory is created on startup.
-- `app/models.py`: ORM tables: `Case`, `EvidenceRecordRow` (`evidence_records`), `EvidenceChunk` (`evidence_chunks`).
+- `app/models.py`: ORM tables: `Case`, `EvidenceRecordRow` (`evidence_records`), `EvidenceChunk` (`evidence_chunks`), `BoardSnapshotRow` (`board_snapshots`, append-only), `AnalysisRevisionRow` (`analysis_revisions`, immutable), `RevisionRestoreRow` (`revision_restores`, insert-only).
 - `app/evidence_store.py`: `store_records` (persist records + chunks + vectors + keyword index), `reembed_stale_chunks`, case-scoped reads. See "Evidence storage" below.
-- `app/search_index.py`: sqlite-vec and FTS5 virtual tables, their cleanup trigger, and case-scoped `vector_search` / `keyword_search` primitives (ranking/fusion is BLA-13).
+- `app/search_index.py`: sqlite-vec and FTS5 virtual tables, their cleanup trigger, and case-scoped `vector_search` / `keyword_search` primitives, and `to_fts_query` (free text to a safe FTS5 query).
+- `app/retrieval.py`: `retrieve`, hybrid vector + keyword retrieval with RRF fusion and the capped evidence window. See "Retrieval" below.
 - `app/chunking.py`: `chunk_spans`, the ~400-token / ~50-token-overlap splitter.
 - `app/embeddings.py`: `Embedder` protocol, `GeminiEmbedder`, `FakeEmbedder` (tests), `make_embedder(settings)`.
 - `app/schemas/`: Pydantic request/response models. Kept separate from ORM tables.
@@ -59,7 +60,9 @@ If it prints `x86_64`, install a native arm64 Python 3.12 (the python.org instal
 - `app/ids.py`: `new_id(prefix)` returns prefixed ULIDs (`case_01J...`). Use it for every server-generated ID (`analysis_`, `board_`, `rec_`, ...).
 - `app/contracts.py`: Pydantic models for the shared contracts in `../contracts/` (`EvidenceRecord`, `AnalysisRevision`, `InvestigationBoard`, `RevisionComparison`). Kept in sync with the JSON Schemas by `tests/test_contracts.py`.
 - `app/validation.py`: cross-reference checks (`validate_revision`, `validate_board`, `validate_comparison`) plus `schema_errors` for parsing untrusted JSON. Each returns readable error strings; an empty list means valid.
-- `app/routers/`: HTTP routers (`cases.py`: `POST /cases`, `GET /cases`, `GET /cases/{case_id}`).
+- `app/routers/`: HTTP routers (`cases.py`: `POST /cases`, `GET /cases`, `GET /cases/{case_id}`; `records.py`: `GET /cases/{case_id}/records[/{record_id}]`; `search.py`: `POST /cases/{case_id}/search`; `boards.py`: `/cases/{case_id}/boards`).
+- `app/boards.py`: investigation boards: create, pin/unpin, notes, append-only snapshots. See "Boards" below.
+- `app/records.py`: case-scoped record + exact excerpt lookup. See "Source records" below.
 - `tests/`: pytest suite (`TestClient`). `conftest.py` gives each test its own temp SQLite file.
 
 ## Persistence
@@ -81,7 +84,7 @@ session.commit()  # store_records flushes; the caller owns the transaction
 ```
 
 - **Tables.** `evidence_records`: PK `(case_id, record_id)` (record IDs are only unique within a case), all contract fields, plus `content_hash`. `evidence_chunks`: `chunk_id` (`chk_` ULID), `case_id`, `record_id` (composite FK to the record, `ON DELETE CASCADE`), `chunk_index`, `char_start`/`char_end` (so `record.content[char_start:char_end] == chunk.text`), `text`, `embedding_model`, `embedding_dim`. Both cascade from `cases`.
-- **Indexes.** `evidence_chunk_vectors` (sqlite-vec `vec0`, cosine distance): `chunk_id`, `case_id` as a **partition key**, `record_id` as a metadata column, `embedding float[EMBEDDING_DIM]`. `evidence_chunks_fts` (FTS5): `text` plus `UNINDEXED` `chunk_id`/`case_id`/`record_id`. Virtual tables cannot have FKs, so `evidence_chunks` is the source of truth and an `AFTER DELETE` trigger on it deletes the matching vector and FTS rows: deleting a chunk, record or case never leaves orphans.
+- **Indexes.** `evidence_chunk_vectors` (sqlite-vec `vec0`, cosine distance): `chunk_id`, `case_id` as a **partition key**, `record_id` as a metadata column, `embedding float[EMBEDDING_DIM]`. `evidence_chunks_fts` (FTS5, `tokenize='porter unicode61 remove_diacritics 2'`): `text` plus `UNINDEXED` `chunk_id`/`case_id`/`record_id`. If an existing database's FTS table has a different tokenizer (databases created before BLA-13 used plain `unicode61`), startup detects it from the table's SQL in `sqlite_master`, logs a warning, drops it and refills it from `evidence_chunks` (no embedding calls). Virtual tables cannot have FKs, so `evidence_chunks` is the source of truth and an `AFTER DELETE` trigger on it deletes the matching vector and FTS rows: deleting a chunk, record or case never leaves orphans.
 - **Case scoping in search.** `vector_search(session, case_id, vector, k)` puts `case_id = ?` in the KNN query, so the partition key restricts the scan *before* the `k` nearest are picked. `keyword_search(session, case_id, match, k)` filters `case_id = ?` in the same statement as `MATCH`, before `ORDER BY bm25 LIMIT k`. Never query the virtual tables without a `case_id` filter.
 - **Re-import.** Identical records (same SHA-256 of the canonical contract JSON) are a no-op: no new rows, no embedding calls. A stored `record_id` that differs **only** in `original_sha256` (the hash of the whole source file, so it changes when, say, messages are appended to a chat export) counts as unchanged: the stored version is kept with its old hash, nothing is embedded, and the ID is listed in `result.source_changed` (also counted in `unchanged`) so the importer can tell the user the file changed. A stored `record_id` arriving with any **other** difference is rejected and the stored version kept (records are immutable); the reason names the differing fields, e.g. `(fields: content, timestamp)`; so is a record whose `case_id` is not the target case. Other records in the call are still stored. An unknown case raises `CaseNotFoundError`. Records are embedded before anything is written, so an embedding failure writes nothing.
 - **Chunking.** ~4 characters per token (no tokenizer dependency). Content up to 400 tokens (1600 chars) is one chunk; longer content is split into 1600-char windows overlapping by ~200 chars, with boundaries moved to whitespace. Empty or whitespace-only content is stored with no chunks.
@@ -101,3 +104,139 @@ Every piece of evidence belongs to exactly one case. Search for one case must ne
 Serialize contract models with `to_contract_json(model)` (or `model.to_contract_json()`) from `app.contracts`. If a route returns the model directly, set `response_model_exclude_unset=True`.
 
 Plain `model_dump()` / `model_dump_json()` is **not** schema-valid. Some fields may be left out but must not be `null` (edge `description`, a node board item's `status`, `needs_review`, ...). These default to `None` internally, so a plain dump writes them as `null`, which `../contracts/*.schema.json` rejects. `to_contract_json` drops them and keeps the fields the schema allows to be `null` (`parent_analysis_id`, `base_ref_id`, ...).
+
+## Retrieval (BLA-13)
+
+`app/retrieval.py` turns a question into the evidence window for analysis (BLA-15):
+
+```python
+from app.retrieval import RetrievalConfig, retrieve
+result = retrieve(session, case_id, question, embedder, config=RetrievalConfig.from_settings(settings))
+# optional per call: limit=..., max_excerpt_chars=..., excluded_record_ids={...}
+for rec in result.records:  # best first
+    rec.record_id, rec.source_file, rec.source_locator, rec.timestamp, rec.timestamp_kind
+    rec.score, rec.matched_by  # fused RRF score; "vector" | "keyword" | "both"
+    rec.vector, rec.keyword    # per-retriever rank, best chunk_id and raw score (or None)
+    rec.excerpts               # [Excerpt(text, char_start, char_end, chunk_ids, score, truncated)]
+result.skipped                 # [SkippedRecord(record_id, rank, score, reason, excerpt_chars)]
+result.budget_substituted      # a lower-ranked record was included after a budget skip
+```
+
+- **Pipeline.** The question is embedded with `embed_query` (Gemini `RETRIEVAL_QUERY`) and the `RETRIEVAL_VECTOR_CANDIDATES` (50) nearest chunks of the case are taken from sqlite-vec; the question is converted with `to_fts_query` and the best `RETRIEVAL_KEYWORD_CANDIDATES` (50) BM25 chunks are taken from FTS5. Both searches filter by `case_id` inside the query.
+- **Fusion.** Reciprocal rank fusion per record: each list is reduced to records (a record's rank is its best chunk's rank in that list), and `score = sum(weight / (RRF_K + rank))` over the lists the record appears in (`RETRIEVAL_RRF_K` 60, `RETRIEVAL_VECTOR_WEIGHT` / `RETRIEVAL_KEYWORD_WEIGHT` 1.0). Best chunk per list, not a sum over all chunks, so long records are not favoured just for having many chunks; summing across the two lists means a record found by both outranks one found by only one. Ties break by `record_id`.
+- **Excerpts.** Each record carries up to `RETRIEVAL_MAX_EXCERPTS_PER_RECORD` (2) excerpts: its best chunks by chunk-level RRF, with overlapping chunks merged. Every excerpt is the exact slice `record.content[char_start:char_end]`.
+- **Evidence window.** At most `RETRIEVAL_MAX_RECORDS` (16) records and `RETRIEVAL_MAX_EXCERPT_CHARS` (32000, ~8000 tokens) characters of excerpt text in total. Excerpts that do not fit the remaining budget are skipped (a record with none left is dropped); only the window's first excerpt is truncated, and only if the budget is smaller than it. `dropped_by_limit`, `dropped_by_budget` and `excerpt_chars` report what happened.
+- **What the window left out.** `result.skipped` lists every fused candidate that is not in `records`, in rank order: `record_id`, fused `rank` and `score`, `reason` (`"budget"` or `"record_limit"`) and, for budget skips, `excerpt_chars` (the size of the best excerpt that did not fit). It carries IDs and metadata only, never content. The entries match `dropped_by_budget` / `dropped_by_limit`. `budget_substituted` is true when a lower-ranked record was included after a higher-ranked one was skipped for budget. **BLA-20 should surface this to the investigator** ("N relevant records were not considered"), so an answer built from a cut window is not presented as complete.
+- **No relevance threshold.** The vector KNN always returns its `k` nearest chunks, so in a small case every record can land in the window, ranked low. A maximum-distance setting is a TODO if analysis sees noise.
+- **Stemming.** The FTS5 index uses the porter stemmer, and quoted query terms are stemmed the same way, so `delivering` matches `delivered` / `delivers` / `deliver`, and `meetings` matches `meeting`. Porter only strips suffixes: irregular forms (`said` / `say`) and some derivations (`deliveries` / `delivering`) still do not match; the vector search covers those.
+- **Free text to FTS5.** `keyword_search` takes raw FTS5 syntax (internal callers only). `search_index.to_fts_query(text)` makes user text safe: words are split into letter/digit runs like the `unicode61` tokenizer, every term is quoted (so `AND`/`OR`/`NEAR`/`*`/`:`/`(`/`"` are plain text), words like `it's` or `rec-0042` become phrases (`"it s"`), common English stopwords are dropped unless nothing else is left, and terms are OR'd (at most 32). It returns `None` for empty or punctuation-only text; `retrieve` then returns no records without calling the embedder.
+- **Exclusions.** `excluded_record_ids` drops every chunk of those records from both candidate lists before fusion, so they never appear. Pushing the filter into the index queries (so excluded chunks do not use up candidates) and the revision-level exclusion semantics are BLA-14.
+- Retrieval is read-only. An unknown case raises `CaseNotFoundError`; an embedder whose dimension does not match the index raises `EmbeddingIndexMismatchError`.
+- **Debug endpoint.** `POST /cases/{case_id}/search` with `{"question": "...", "limit": 5}` (`limit` optional) returns the `RetrievalResult` as JSON (including `skipped` and `budget_substituted`), for inspecting and tuning retrieval. A question that is empty or has no letters or digits is a 422 (`question must contain at least one letter or digit`); library callers of `retrieve()` get an empty result instead.
+
+## Analysis with retry (BLA-18)
+
+`app/analysis_retry.py` turns retrieved evidence into a storable `AnalysisRevision`, with at most two LLM calls:
+
+```python
+from app.analysis_retry import RevisionMetadata, analyze_with_retry
+result = analyze_with_retry(llm, retrieval, case_records, RevisionMetadata(analysis_id, created_at, parent_analysis_id), session=session)
+result.revision      # always passes validate_revision; save this
+result.needs_review  # True when the revision is a partial result (revision.needs_review)
+result.attempts      # per-attempt detail: schema errors, citation warnings, structural errors
+```
+
+- **Validation.** Schema problems come from parsing the model's output. Source problems come from `sanitize_citations` (#25): citations outside the permitted evidence, dropped findings, and structural errors such as duplicate IDs.
+- **One retry.** If the first answer has any problem, the model is asked once more. The retry prompt is the original prompt, then the previous answer as the model's turn, then a user turn listing every validation error.
+- **Partial fallback.** If the retry also fails, the result is the most recent attempt that could be sanitized into a valid revision. If neither could be, it is an empty revision whose only unresolved question says no analysis could be produced. Either way the revision has `needs_review: true` and `validation_errors`.
+- **`validation_errors` are server-worded counts** (for example "Attempt 1: 2 citations to records outside the permitted evidence were removed."). They never quote IDs or field names the model chose, because the contract says they are never LLM-authored. The full detail is logged (logger `app.analysis_retry`) and kept in `result.attempts`.
+- **Not retried.** A provider failure on the first call is raised (`AnalysisLLMError`). One on the retry falls back to the first attempt's partial result, if it had one. An inconsistent corpus or retrieval set raises `ValueError` before any LLM call.
+
+## Source records (BLA-59)
+
+The evidence drawer (BLA-40) resolves a citation to its source text with
+`GET /cases/{case_id}/records/{record_id}`. Optional query params select an exact excerpt, **at most one mode**:
+
+- `chunk_id=chk_...`: the excerpt is that chunk's stored text and offsets. The chunk must belong to this case **and** this record.
+- `char_start=N&char_end=M` (both required): the excerpt is `content[N:M]`. Offsets are Python `str` indices (Unicode code points, not UTF-8 bytes or UTF-16 units), the same as `evidence_chunks.char_start`/`char_end`. Requires `0 <= N < M <= len(content)`.
+
+```json
+{
+  "record": {"record_id": "rec-01", "case_id": "case_01J...", "source_file": "mailbox.eml",
+             "source_locator": "message 1, line 12", "content": "Alex emails Jordan ...",
+             "timestamp": "2026-04-10T09:15:00Z", "timestamp_kind": "sent",
+             "original_sha256": null, "metadata": {"sender": "Alex"}},
+  "excerpt": {"text": "Alex emails", "char_start": 0, "char_end": 11, "chunk_id": null}
+}
+```
+
+`record` is exactly the `EvidenceRecord` contract JSON (`to_contract_json`: omitted `timestamp_kind`/`metadata` are absent, never null). `excerpt` is `null` when no mode is given; `excerpt.chunk_id` is null in offset mode.
+
+Errors: unknown case, a record not in this case (even if another case has that `record_id`), or a chunk not in this case and record: **404** (`{"detail": "Case not found" | "Record not found" | "Chunk not found"}`). Both modes at once, a lone `char_start`/`char_end`, negative, empty/reversed or past-the-end offsets, or an empty `chunk_id`: **422**. The record is resolved before offsets are checked, so offsets cannot probe another case's content length.
+
+`GET /cases/{case_id}/records?limit=50&offset=0` lists the case's records ordered by `(source_file, record_id)`: `{"items": [EvidenceRecord, ...], "total", "limit", "offset"}` (`limit` 1-200).
+
+The logic lives in `app/records.py` (`get_record_with_excerpt`, `chunk_excerpt`, `span_excerpt`, `page_records`) for reuse by reconstruction and citation checks; it raises `RecordNotFoundError` / `ChunkNotFoundError` / `InvalidExcerptError`. Stored content is untrusted evidence and is returned verbatim; the UI must render it as text, never as HTML.
+
+## Saved revisions (BLA-28)
+
+`app/analyses.py` stores every `AnalysisRevision` in `analysis_revisions` and loads it back exactly as saved:
+
+```python
+from app.analyses import save_revision, get_revision, list_revisions, revision_lineage
+save_revision(session, revision)   # validates, then commits; returns the stored revision
+get_revision(session, case_id, analysis_id)
+list_revisions(session, case_id)   # summaries, newest first
+revision_lineage(session, case_id, analysis_id)  # root ... this revision
+```
+
+- **Immutable, append-only.** A saved row is never updated (a SQLite trigger rejects `UPDATE`). A follow-up, exclusion or restore saves a new revision whose `parent_analysis_id` points at the one it came from. Saving the identical revision again is a no-op, so a retried request is safe. Saving different content under a used `analysis_id` raises `RevisionConflictError`, and so does a concurrent save of the same ID.
+- **Validated before saving.** `validate_revision` runs against the case's stored records: every citation must be a retrieved, permitted record of this case. The parent must be a saved revision of the same case, enforced by a `(case_id, parent_analysis_id)` foreign key as well as a check. The case must exist. Otherwise it raises `InvalidRevisionError` / `RevisionNotFoundError` and nothing is saved.
+- **Case-scoped.** The primary key is `(case_id, analysis_id)`, and every read filters by `case_id`.
+
+| Endpoint | Returns |
+|---|---|
+| `GET /cases/{case_id}/analyses` | History, newest first: `analysis_id`, `parent_analysis_id`, `question`, `needs_review`, `created_at`, `excluded_record_ids` (its evidence state) and `restored_from_analysis_id` (set on a restore). |
+| `GET /cases/{case_id}/analyses/{analysis_id}` | The revision, as `AnalysisRevision` contract JSON exactly as saved (404 if it is not in this case). |
+| `GET /cases/{case_id}/analyses/{analysis_id}/lineage` | The revision and its ancestors, oldest first. |
+| `POST /cases/{case_id}/analyses/{analysis_id}/restore` | `{"record_ids": [...]}`: bring excluded records back (BLA-35). Returns the new revision (201), with the reused revision's ID in the `X-Restored-From` header. |
+
+**Restoring (BLA-35).** Restore reuses an earlier evidence state; it deletes and rewrites nothing. The target state is the current exclusions minus `record_ids`. The nearest ancestor with the same question and exactly that exclusion set is found, and its findings are saved again as a new revision whose parent is the current one. A `revision_restores` row records which revision it reused, which is shown in the history. No LLM call is made. Errors: 422 if a record is not excluded in this revision, and 409 if no ancestor ever had that state. For example, if records A then B were excluded, restoring A alone would leave only B excluded, which never existed, so the analysis has to be rerun with that exclusion set.
+
+Creating revisions is the analyze, follow-up and exclude endpoints' job (BLA-20, BLA-29, BLA-33); they call `save_revision`. Restore is implemented here (`restore_records`). Everything is in SQLite, so revisions and boards (with their notes) reload after a browser refresh or a server restart.
+
+## Boards (BLA-31)
+
+Every response is `InvestigationBoard` contract JSON. A board is a series of append-only snapshots: creating one writes revision 1, and every change writes `revision + 1` with `parent_revision` set. Rows are never updated (a SQLite trigger rejects `UPDATE` on `board_snapshots`).
+
+| Endpoint | Does |
+|---|---|
+| `POST /cases/{case_id}/boards` | `{"title", "active_analysis_id"?}` creates an empty board (201). |
+| `GET /cases/{case_id}/boards` | Latest snapshot of every board, most recently updated first. |
+| `GET /cases/{case_id}/boards/{board_id}` | Latest snapshot. |
+| `GET /cases/{case_id}/boards/{board_id}/revisions[/{n}]` | Every snapshot, oldest first, or snapshot `n`. |
+| `PATCH /cases/{case_id}/boards/{board_id}` | Unpin, pin, add notes, rename, set the active revision; appends one snapshot. |
+
+`PATCH` body (every field optional, applied in this order):
+
+```json
+{
+  "expected_revision": 3,
+  "unpin": ["item_..."],
+  "add_reconstruction": {"analysis_id": "analysis_..."},
+  "pin": [{"kind": "claim", "source_analysis_id": "analysis_...", "ref_id": "claim-2"}],
+  "notes": [{"text": "Check whether the meeting happened.", "target_item_id": "item_..."}],
+  "title": "New title",
+  "active_analysis_id": "analysis_..."
+}
+```
+
+- **A pin names a finding; the server copies its `evidence_ids` and `status`** from the saved revision. The request cannot set either, so pinning never changes a status or marks anything verified.
+- **"Add this reconstruction to board"** (BLA-30): `"add_reconstruction": {"analysis_id": "analysis_...", "kinds": ["claim", "node", "edge", "event"]}` pins every finding of that revision in one change (`kinds` optional, default all), through the same checks as single pins. Nodes that cite no evidence are skipped. Adding the same revision again changes nothing; adding a second revision appends its findings next to the first.
+- **Nodes are never merged.** A node is identified by its revision and ID, so the same or a similar name from another revision (or the same revision) stays a separate item; deciding two are the same person is left to the investigator.
+- **No length cap on revision IDs.** `ref_id`, `source_analysis_id`, `analysis_id` and `active_analysis_id` name things stored in a revision, whose contract sets no maximum length, so requests don't cap them either. Item IDs (`unpin`, `target_item_id`) are server-generated and capped at 200 characters.
+- **Stable item IDs.** `item_id` is derived from `(source_analysis_id, kind, ref_id)` (`app.boards.item_id_for`), so pinning a finding twice is a no-op, and re-pinning after an unpin gives the same ID. A note can target an item pinned in the same request by that ID.
+- **Notes are investigator-only text**, kept in `notes`, never in items. The server sets every note's `author` to `"investigator"`; the request has no author field, so a client cannot label a note as model output. Notes are never removed, so an item with notes cannot be unpinned (422).
+- **Validated before saving.** The new snapshot goes through `validate_board`. Any error is a 422 listing every problem, and nothing is saved.
+- **Errors:** 404 for an unknown case or board, or a board of another case; 409 when `expected_revision` is stale or another save took that revision number; 422 for an invalid change. A change that alters nothing returns the current snapshot and writes nothing.
+- **Revision lookup.** Boards find revisions through the `get_revision_lookup` dependency in `app/routers/boards.py`, which returns `app.analyses.saved_revision_lookup`: only findings of saved revisions of the same case can be pinned, and only a saved revision can be `active_analysis_id` (otherwise a 422: `no saved revision ... in this case` / `active_analysis_id ... is not a revision of case ...`). Tests override the dependency to inject revisions.

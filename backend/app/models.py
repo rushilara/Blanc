@@ -11,7 +11,9 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (
+    DDL,
     JSON,
+    Boolean,
     CheckConstraint,
     Enum,
     ForeignKey,
@@ -21,6 +23,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -155,3 +158,111 @@ class EvidenceChunk(Base):
     embedding_model: Mapped[str] = mapped_column(String(200), nullable=False)
     embedding_dim: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, default=utcnow)
+
+
+class AnalysisRevisionRow(Base):
+    """One saved ``AnalysisRevision`` (BLA-28). Immutable: a trigger rejects any UPDATE, and
+    a follow-up, exclusion or restore is a new row linked by ``parent_analysis_id``.
+
+    ``revision`` holds the contract JSON exactly as returned; the other columns copy what
+    lists and lineage queries need. The ``(case_id, analysis_id)`` primary key leads with
+    ``case_id`` (it doubles as the ``case_id`` index), and the parent foreign key includes
+    ``case_id``, so a revision can only descend from a revision of the same case.
+    """
+
+    __tablename__ = "analysis_revisions"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["case_id", "parent_analysis_id"],
+            ["analysis_revisions.case_id", "analysis_revisions.analysis_id"],
+        ),
+        Index("ix_analysis_revisions_created_at", "case_id", "created_at"),
+    )
+
+    case_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("cases.case_id", ondelete="CASCADE"), primary_key=True
+    )
+    analysis_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    parent_analysis_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    needs_review: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    revision: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+
+
+event.listen(
+    AnalysisRevisionRow.__table__,
+    "after_create",
+    DDL(
+        "CREATE TRIGGER analysis_revisions_immutable BEFORE UPDATE ON analysis_revisions "
+        "BEGIN SELECT RAISE(ABORT, 'analysis revisions are immutable'); END"
+    ).execute_if(dialect="sqlite"),
+)
+
+
+class RevisionRestoreRow(Base):
+    """Marks a saved revision as a restore (BLA-35): it reuses the findings and evidence
+    state of ``restored_from_analysis_id``, an earlier revision in its lineage. Kept in its
+    own table so ``analysis_revisions`` needs no new column. Insert-only, like revisions."""
+
+    __tablename__ = "revision_restores"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["case_id", "analysis_id"],
+            ["analysis_revisions.case_id", "analysis_revisions.analysis_id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["case_id", "restored_from_analysis_id"],
+            ["analysis_revisions.case_id", "analysis_revisions.analysis_id"],
+        ),
+    )
+
+    case_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("cases.case_id", ondelete="CASCADE"), primary_key=True
+    )
+    analysis_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    restored_from_analysis_id: Mapped[str] = mapped_column(Text, nullable=False)
+    restored_record_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+
+
+event.listen(
+    RevisionRestoreRow.__table__,
+    "after_create",
+    DDL(
+        "CREATE TRIGGER revision_restores_immutable BEFORE UPDATE ON revision_restores "
+        "BEGIN SELECT RAISE(ABORT, 'revision restores are immutable'); END"
+    ).execute_if(dialect="sqlite"),
+)
+
+
+class BoardSnapshotRow(Base):
+    """One append-only ``InvestigationBoard`` snapshot (BLA-31).
+
+    Every save inserts a new row with ``revision`` one higher; rows are never updated
+    (a trigger rejects any UPDATE). ``snapshot`` holds the contract JSON exactly as
+    returned. The ``(case_id, board_id, revision)`` primary key leads with ``case_id``, so
+    it doubles as the required ``case_id`` index, and a second save racing for the same
+    revision number fails instead of overwriting.
+    """
+
+    __tablename__ = "board_snapshots"
+    __table_args__ = (CheckConstraint("revision >= 1", name="ck_board_snapshots_revision"),)
+
+    case_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("cases.case_id", ondelete="CASCADE"), primary_key=True
+    )
+    board_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, primary_key=True)
+    snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, default=utcnow)
+
+
+event.listen(
+    BoardSnapshotRow.__table__,
+    "after_create",
+    DDL(
+        "CREATE TRIGGER board_snapshots_append_only BEFORE UPDATE ON board_snapshots "
+        "BEGIN SELECT RAISE(ABORT, 'board snapshots are append-only'); END"
+    ).execute_if(dialect="sqlite"),
+)
