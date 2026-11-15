@@ -27,6 +27,19 @@ npm run build
 
 ## Layout
 
-- `src/app/page.tsx`: workspace shell with empty Answer, Graph and Timeline panes and a backend health indicator.
+- `src/app/page.tsx`: loads the shared synthetic revision fixture, labels it as fictional, and retains the backend health indicator.
 - `src/lib/api.ts`: backend base URL and API helpers.
 - `src/components/`: UI components.
+
+## Fixture workspace (BLA-4)
+
+The home page renders `../fixtures/synthetic_analysis_revision.json` without
+requiring the backend. `AnalysisWorkspace` accepts an `AnalysisRevision` prop
+and has no fixture import or case-specific findings. A validated live response
+can use the same component in BLA-42. The view shows cited claims, entities and
+relationships, raw source timestamps and uncertainty, and unresolved questions.
+Source references are display-only until the evidence drawer is implemented.
+Interactive graph layout and timeline normalization remain separate tickets.
+
+Turbopack's root is the repository root so the shared fixture can be imported
+directly; keep the repository's `fixtures/` directory in frontend build contexts.
