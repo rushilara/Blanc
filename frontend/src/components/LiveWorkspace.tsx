@@ -2,8 +2,9 @@
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { AnalysisWorkspace } from "./AnalysisWorkspace";
+import { VersionsDrawer } from "./VersionsDrawer";
 import { SourceReferences } from "./SourceReferences";
-import { analyzeCase, ApiError, getSource, listCases, searchCase, type CaseSummary, type SearchResult } from "@/lib/live-api";
+import { analyzeCase, ApiError, getSource, getRevision, listCases, loadRevisionSources, searchCase, type CaseSummary, type SearchResult } from "@/lib/live-api";
 import type { AnalysisRevision, EvidenceRecord } from "@/lib/analysis";
 
 export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: string }) {
@@ -12,7 +13,7 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
   const [caseState, setCaseState] = useState<"loading" | "ready" | "error">("loading");
   const [reload, setReload] = useState(0);
   const [question, setQuestion] = useState("");
-  const [pending, setPending] = useState<"search" | "analysis" | null>(null);
+  const [pending, setPending] = useState<"search" | "analysis" | "revision" | null>(null);
   const [error, setError] = useState("");
   const [search, setSearch] = useState<SearchResult | null>(null);
   const [analysis, setAnalysis] = useState<AnalysisRevision | null>(null);
@@ -51,17 +52,33 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
         if (!controller.signal.aborted) setSearch(result);
       } else {
         const result = await analyzeCase(selected, ask, controller.signal);
-        // Fetch each cited original from its case, rather than treating an excerpt
-        // returned by a model as evidence. Missing sources remain visibly unavailable.
-        const ids = [...new Set([...result.claims, ...result.graph.edges, ...result.timeline_events].flatMap(f => f.evidence_ids))];
-        const records = await Promise.allSettled(ids.map(id => getSource(selected, id, controller.signal)));
+        const records = await loadRevisionSources(result, controller.signal);
         if (!controller.signal.aborted) {
           setAnalysis(result);
-          setSources(records.flatMap(r => r.status === "fulfilled" ? [r.value] : []));
+          setSources(records);
         }
       }
     } catch (e) {
       if (!controller.signal.aborted) setError(e instanceof ApiError ? e.message : "Could not reach the backend. Check that it is running, then try again.");
+    } finally {
+      if (active.current === controller) { setPending(null); active.current = null; }
+    }
+  }
+
+  async function openRevision(analysisId: string): Promise<boolean> {
+    if (!selected || pending) return false;
+    const controller = new AbortController();
+    active.current?.abort(); active.current = controller;
+    setPending("revision"); setError("");
+    try {
+      const revision = await getRevision(selected, analysisId, controller.signal);
+      const records = await loadRevisionSources(revision, controller.signal);
+      if (controller.signal.aborted) return false;
+      setAnalysis(revision); setSources(records); setSearch(null); setQuestion(revision.question);
+      return true;
+    } catch (e) {
+      if (!controller.signal.aborted) setError(e instanceof ApiError ? e.message : "Could not open the saved version. Check the backend connection.");
+      return false;
     } finally {
       if (active.current === controller) { setPending(null); active.current = null; }
     }
@@ -84,6 +101,8 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
         {caseState === "loading" && <p role="status">Loading cases…</p>}
         {caseState === "error" && <div role="alert">Could not load cases. Check the backend connection. <button className="underline" onClick={() => { setCaseState("loading"); setReload(n => n + 1); }}>Retry</button></div>}
         {caseState === "ready" && !cases.length && <p role="status">No cases are available. Import evidence into the backend before searching.</p>}
+        {selected && <VersionsDrawer key={selected} caseId={selected} caseTitle={cases.find(c => c.case_id === selected)?.title ?? selected}
+          activeId={analysis?.analysis_id} busy={!!pending} onSelect={openRevision} />}
         {cases.length > 0 && <form onSubmit={submit} className="space-y-4">
           <div className="space-y-2"><label htmlFor="live-case" className="block text-sm font-semibold">Case</label>
             <select id="live-case" value={selected} onChange={e => changeCase(e.target.value)} className="w-full rounded border border-zinc-400 bg-white p-3 dark:bg-zinc-900">
@@ -99,7 +118,7 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
             <button type="submit" value="analysis" disabled={!!pending || !question.trim()} className="rounded border border-zinc-400 px-5 py-3 font-semibold disabled:opacity-40">{pending === "analysis" ? "Generating…" : "Generate analysis"}</button>
           </div>
         </form>}
-        {pending && <p role="status">{pending === "search" ? "Retrieving source excerpts…" : "Waiting for a validated analysis…"}</p>}
+        {pending && <p role="status">{pending === "search" ? "Retrieving source excerpts…" : pending === "revision" ? "Opening saved version…" : "Waiting for a validated analysis…"}</p>}
         {error && <p role="alert" className="rounded border border-red-400 p-4 text-sm">{error}</p>}
         {search && <div className="space-y-4" aria-label="Search results">
           <h2 className="text-lg font-semibold">Evidence for: {search.question}</h2>

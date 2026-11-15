@@ -95,3 +95,60 @@ export async function analyzeCase(caseId: string, question: string, signal?: Abo
     throw error;
   }
 }
+
+export type RevisionSummary = {
+  analysis_id: string;
+  parent_analysis_id: string | null;
+  question: string;
+  needs_review: boolean;
+  created_at: string;
+  excluded_record_ids: string[];
+  restored_from_analysis_id: string | null;
+};
+const id = (value: unknown): value is string => text(value) && value.length > 0;
+const nullableId = (value: unknown) => value === null || id(value);
+
+export async function listRevisions(caseId: string, signal?: AbortSignal): Promise<RevisionSummary[]> {
+  const data = await request(`${path(caseId)}/analyses`, signal);
+  if (!Array.isArray(data) || !data.every(r => object(r) && id(r.analysis_id)
+    && nullableId(r.parent_analysis_id) && text(r.question) && typeof r.needs_review === "boolean"
+    && text(r.created_at) && /^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:\d{2})$/.test(r.created_at)
+    && Number.isFinite(Date.parse(r.created_at)) && nullableId(r.restored_from_analysis_id)
+    && Array.isArray(r.excluded_record_ids) && r.excluded_record_ids.every(id)
+    && new Set(r.excluded_record_ids).size === r.excluded_record_ids.length)) {
+    throw new ApiError("The saved version history is invalid.");
+  }
+  const revisions = data as RevisionSummary[];
+  const byId = new Map(revisions.map(r => [r.analysis_id, r]));
+  if (byId.size !== revisions.length) throw new ApiError("The saved version history has duplicate IDs.");
+  for (const revision of revisions) {
+    const seen = new Set<string>();
+    let current: RevisionSummary | undefined = revision;
+    while (current) {
+      if (seen.has(current.analysis_id)) throw new ApiError("The saved version history has a cycle.");
+      seen.add(current.analysis_id);
+      if (current.parent_analysis_id === null) break;
+      current = byId.get(current.parent_analysis_id);
+      if (!current) throw new ApiError("The saved version history has a missing parent.");
+    }
+  }
+  return revisions;
+}
+
+export async function getRevision(caseId: string, analysisId: string, signal?: AbortSignal): Promise<AnalysisRevision> {
+  const data = await request(`${path(caseId)}/analyses/${encodeURIComponent(analysisId)}`, signal);
+  if (!object(data) || data.analysis_id !== analysisId || !text(data.question)) {
+    throw new ApiError("The saved version does not match the requested revision.");
+  }
+  return parseRevision(data, caseId, data.question);
+}
+
+export async function loadRevisionSources(revision: AnalysisRevision, signal?: AbortSignal): Promise<EvidenceRecord[]> {
+  const ids = [...new Set([
+    ...[...revision.claims, ...revision.graph.edges, ...revision.timeline_events, ...revision.graph.nodes]
+      .flatMap(finding => finding.evidence_ids ?? []),
+    ...revision.excluded_record_ids,
+  ])];
+  const responses = await Promise.allSettled(ids.map(recordId => getSource(revision.case_id, recordId, signal)));
+  return responses.flatMap(r => r.status === "fulfilled" ? [r.value] : []);
+}
