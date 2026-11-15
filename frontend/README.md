@@ -131,3 +131,36 @@ real local normalizer; requires the preview on port 3002, its backend on 8002 an
 a dedicated headless Chrome test profile exposing CDP on port 9226. It verifies
 ordering, multi-source event inspection, Escape/focus, an independent browser time
 zone, 390px layout, error preservation/retry and empty timelines.
+
+## Saved versions (BLA-41)
+
+On `/live`, **Saved versions** loads the selected case's history from
+`GET /cases/{case_id}/analyses`. Each entry shows its question, saved timestamp
+(as stored, with time-zone offset), parent, excluded records, review flag and
+restore source when present. With a revision open, the list defaults to its
+investigation (the shared root and all sibling branches). The selector also
+allows browsing all investigations in the current case.
+
+**Open version** retrieves the immutable saved revision by ID, validates the
+shared contract and case/revision identity, and loads original sources for its
+claims, nodes, edges, events and excluded-record references. It does not invoke
+retrieval, embedding or answer generation. The investigation question updates to
+the saved question. Failed opens keep the current view; missing originals remain
+visibly unavailable in the source drawer. Case changes abort pending loads and
+ignore late revision/source responses. History is refreshed each time the drawer
+opens, so newly generated revisions appear without a page reload.
+
+`npm test` covers history shape/lineage validation, root grouping, saved response
+identity and partial source loading. Browser regression checks use synthetic
+responses only, including errors/retry, branch filtering, excluded originals,
+failed opens preserving the view, case switches during revision and source
+loads, empty history, Escape/focus and mobile wrapping. Run against an isolated
+frontend preview and dedicated Chrome CDP session:
+
+```bash
+PREVIEW_URL=http://127.0.0.1:3006/live CDP_URL=http://127.0.0.1:9233 node tests/versions-browser.mjs
+```
+
+The browser script makes GET requests only. It does not use live model APIs or
+modify a case. Reopening saved versions after refresh uses the drawer; automatic
+restoration of the selected version on refresh belongs to BLA-32.
