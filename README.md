@@ -92,9 +92,13 @@ Then in `/workspace`, pick the case and ask a question. Each successful ask pers
 - Embeddings: Gemini embeddings API (`GEMINI_API_KEY`, `EMBEDDING_MODEL`, `EMBEDDING_DIM`); vectors are stored locally in SQLite with sqlite-vec.
 - Persistence: local `DATABASE_URL` (default `sqlite:///./data/blanc.db` under `backend/`). Do not point MVP demos at a hosted volume for case evidence.
 
+### Run it on a laptop with Docker
+
+`docker compose up --build -d`, then open <http://localhost:3000>: the backend and workspace in one command, with evidence kept in a local Docker volume. Install, importing a case and sign-in are in [`docs/07_LAPTOP_INSTALL.md`](docs/07_LAPTOP_INSTALL.md).
+
 ### Optional hosted app path
 
-Blanc is local-first. To host the landing page publicly (with the workspace closed until auth exists) or to run the backend in a container on storage you control, see [`docs/06_DEPLOYMENT.md`](docs/06_DEPLOYMENT.md). It is not a cloud evidence store.
+Blanc is local-first. To host the landing page publicly (with the workspace closed) or to run the backend in a container on storage you control, see [`docs/06_DEPLOYMENT.md`](docs/06_DEPLOYMENT.md). It is not a cloud evidence store.
 
 ## Suggested kickoff
 
