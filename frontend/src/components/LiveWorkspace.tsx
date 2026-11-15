@@ -5,6 +5,7 @@ import { AnalysisWorkspace } from "./AnalysisWorkspace";
 import { SourceReferences } from "./SourceReferences";
 import { analyzeCase, ApiError, getSource, listCases, searchCase, type CaseSummary, type SearchResult } from "@/lib/live-api";
 import type { AnalysisRevision, EvidenceRecord } from "@/lib/analysis";
+import { loadCitedSources } from "@/lib/citations";
 
 export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: string }) {
   const [cases, setCases] = useState<CaseSummary[]>([]);
@@ -53,11 +54,11 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
         const result = await analyzeCase(selected, ask, controller.signal);
         // Fetch each cited original from its case, rather than treating an excerpt
         // returned by a model as evidence. Missing sources remain visibly unavailable.
-        const ids = [...new Set([...result.claims, ...result.graph.edges, ...result.timeline_events].flatMap(f => f.evidence_ids))];
-        const records = await Promise.allSettled(ids.map(id => getSource(selected, id, controller.signal)));
+        // Covers claims, graph nodes, graph edges and timeline events alike.
+        const records = await loadCitedSources(result, id => getSource(selected, id, controller.signal));
         if (!controller.signal.aborted) {
           setAnalysis(result);
-          setSources(records.flatMap(r => r.status === "fulfilled" ? [r.value] : []));
+          setSources(records);
         }
       }
     } catch (e) {

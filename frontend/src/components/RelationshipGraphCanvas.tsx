@@ -1,53 +1,47 @@
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, type KeyboardEvent } from "react";
 import {
   Background,
+  BaseEdge,
   Controls,
-  MarkerType,
+  EdgeLabelRenderer,
+  Handle,
   MiniMap,
+  Position,
   ReactFlow,
   ReactFlowProvider,
+  getBezierPath,
   useEdgesState,
   useNodesState,
   useReactFlow,
   type Edge,
-  type Node,
-  type NodeProps,
-  Handle,
-  Position,
-  BaseEdge,
-  EdgeLabelRenderer,
-  getBezierPath,
+  type EdgeChange,
   type EdgeProps,
+  type Node,
+  type NodeChange,
+  type NodeProps,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
-import type { AnalysisRevision } from "@/lib/analysis";
-import { layoutGraph } from "@/lib/graphLayout";
+import { routeParallelEdge, withoutRemovals } from "@/lib/graphEdges";
+import {
+  FALLBACK_EDGE,
+  STATUS_EDGE,
+  buildElements,
+  relationLabel,
+  type EntityData,
+  type GraphEdge,
+  type GraphNode,
+  type RelationData,
+} from "@/lib/graphElements";
 
-type GraphNode = AnalysisRevision["graph"]["nodes"][number];
-type GraphEdge = AnalysisRevision["graph"]["edges"][number];
-
-type EntityData = {
-  label: string;
-  entityType: string;
-  evidenceIds: string[];
+type Handlers = {
+  onInspectNode: (nodeId: string) => void;
+  onSelectEdge: (edgeId: string) => void;
 };
 
-type RelationData = {
-  relationType: string;
-  status: string;
-  description?: string;
-  evidenceIds: string[];
-};
-
-const STATUS_EDGE: Record<string, string> = {
-  observed: "#059669",
-  reported: "#2563eb",
-  inferred: "#7c3aed",
-  unresolved: "#d97706",
-};
+const HandlersContext = createContext<Handlers | null>(null);
 
 function EntityNode({ data, selected }: NodeProps<Node<EntityData>>) {
   return (
@@ -58,13 +52,13 @@ function EntityNode({ data, selected }: NodeProps<Node<EntityData>>) {
           : "border-zinc-300 dark:border-zinc-700"
       }`}
     >
-      <Handle type="target" position={Position.Left} className="!h-2 !w-2 !border-zinc-400 !bg-zinc-200 dark:!bg-zinc-700" />
+      <Handle type="target" position={Position.Left} isConnectable={false} className="!h-2 !w-2 !border-zinc-400 !bg-zinc-200 dark:!bg-zinc-700" />
       <p className="truncate text-sm font-medium text-zinc-900 dark:text-zinc-100">{data.label}</p>
       <p className="truncate text-xs capitalize text-zinc-500">{data.entityType.replaceAll("_", " ")}</p>
       {!!data.evidenceIds.length && (
         <p className="mt-1 font-mono text-[10px] text-zinc-400">{data.evidenceIds.length} source{data.evidenceIds.length === 1 ? "" : "s"}</p>
       )}
-      <Handle type="source" position={Position.Right} className="!h-2 !w-2 !border-zinc-400 !bg-zinc-200 dark:!bg-zinc-700" />
+      <Handle type="source" position={Position.Right} isConnectable={false} className="!h-2 !w-2 !border-zinc-400 !bg-zinc-200 dark:!bg-zinc-700" />
     </div>
   );
 }
@@ -80,35 +74,47 @@ function RelationEdge({
   data,
   markerEnd,
   selected,
+  interactionWidth,
 }: EdgeProps<Edge<RelationData>>) {
-  const [path, labelX, labelY] = getBezierPath({
-    sourceX,
-    sourceY,
-    targetX,
-    targetY,
-    sourcePosition,
-    targetPosition,
-  });
-  const stroke = STATUS_EDGE[data?.status ?? ""] ?? "#71717a";
+  const handlers = useContext(HandlersContext);
+  const lane = data?.lane ?? { index: 0, count: 1, forward: true };
+  // A lone edge keeps the default Bezier; parallel edges each get their own lane.
+  const routed = lane.count > 1 ? routeParallelEdge({ sourceX, sourceY, targetX, targetY }, lane) : null;
+  const [path, labelX, labelY] = routed
+    ? [routed.path, routed.labelX, routed.labelY]
+    : getBezierPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition });
+  const stroke = STATUS_EDGE[data?.status ?? ""] ?? FALLBACK_EDGE;
+  const type = relationLabel(data?.relationType);
+  const status = data?.status ?? "unknown";
   return (
     <>
       <BaseEdge
         id={id}
         path={path}
         markerEnd={markerEnd}
+        interactionWidth={interactionWidth}
         style={{ stroke, strokeWidth: selected ? 2.5 : 1.75 }}
       />
       <EdgeLabelRenderer>
-        <div
-          className={`nodrag nopan pointer-events-none absolute rounded border px-1.5 py-0.5 text-[10px] font-medium capitalize shadow-sm ${
+        <button
+          type="button"
+          data-edge-label={id}
+          aria-haspopup="dialog"
+          aria-label={`Relationship: ${type}, ${status}. Inspect cited sources.`}
+          onClick={(event) => {
+            event.stopPropagation();
+            handlers?.onSelectEdge(id);
+          }}
+          className={`nodrag nopan pointer-events-auto absolute cursor-pointer rounded border px-1.5 py-0.5 text-[10px] font-medium shadow-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600 ${
             selected
               ? "border-blue-400 bg-blue-50 text-blue-900 dark:border-blue-700 dark:bg-blue-950 dark:text-blue-100"
-              : "border-zinc-200 bg-white text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"
+              : "border-zinc-200 bg-white text-zinc-700 hover:border-zinc-400 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"
           }`}
           style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
         >
-          {(data?.relationType ?? "related").replaceAll("_", " ")}
-        </div>
+          <span className="capitalize">{type}</span>
+          <span className="text-zinc-500 dark:text-zinc-400"> · {status}</span>
+        </button>
       </EdgeLabelRenderer>
     </>
   );
@@ -116,40 +122,6 @@ function RelationEdge({
 
 const nodeTypes = { entity: EntityNode };
 const edgeTypes = { relation: RelationEdge };
-
-function buildElements(nodes: GraphNode[], edges: GraphEdge[]) {
-  const laidOut = layoutGraph(nodes, edges);
-  const byId = new Map(laidOut.map((item) => [item.id, item]));
-  const flowNodes: Node<EntityData>[] = nodes.map((node) => {
-    const spot = byId.get(node.id) ?? { x: 0, y: 0 };
-    return {
-      id: node.id,
-      type: "entity",
-      position: { x: spot.x, y: spot.y },
-      data: {
-        label: node.label,
-        entityType: node.type,
-        evidenceIds: node.evidence_ids ?? [],
-      },
-      draggable: true,
-    };
-  });
-  const flowEdges: Edge<RelationData>[] = edges.map((edge) => ({
-    id: edge.id,
-    source: edge.source,
-    target: edge.target,
-    type: "relation",
-    data: {
-      relationType: edge.type,
-      status: edge.status,
-      description: edge.description,
-      evidenceIds: edge.evidence_ids,
-    },
-    markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: STATUS_EDGE[edge.status] ?? "#71717a" },
-    interactionWidth: 24,
-  }));
-  return { flowNodes, flowEdges };
-}
 
 function FitViewOnChange({ nodeCount, edgeCount }: { nodeCount: number; edgeCount: number }) {
   const { fitView } = useReactFlow();
@@ -163,81 +135,98 @@ function FitViewOnChange({ nodeCount, edgeCount }: { nodeCount: number; edgeCoun
 function GraphInner({
   nodes,
   edges,
-  onInspect,
+  onInspectNode,
+  onSelectEdge,
 }: {
   nodes: GraphNode[];
   edges: GraphEdge[];
-  onInspect: (evidenceIds: string[], label: string) => void;
-}) {
+} & Handlers) {
   const built = useMemo(() => buildElements(nodes, edges), [nodes, edges]);
-  const [flowNodes, setNodes, onNodesChange] = useNodesState(built.flowNodes);
-  const [flowEdges, setEdges, onEdgesChange] = useEdgesState(built.flowEdges);
+  const [flowNodes, setNodes, applyNodeChanges] = useNodesState(built.flowNodes);
+  const [flowEdges, setEdges, applyEdgeChanges] = useEdgesState(built.flowEdges);
+  const handlers = useMemo(() => ({ onInspectNode, onSelectEdge }), [onInspectNode, onSelectEdge]);
 
   useEffect(() => {
     setNodes(built.flowNodes);
     setEdges(built.flowEdges);
   }, [built, setNodes, setEdges]);
 
+  // Read-only view: drag, select and dimension changes apply; removals never do.
+  const onNodesChange = useCallback(
+    (changes: NodeChange<Node<EntityData>>[]) => applyNodeChanges(withoutRemovals(changes)),
+    [applyNodeChanges],
+  );
+  const onEdgesChange = useCallback(
+    (changes: EdgeChange<Edge<RelationData>>[]) => applyEdgeChanges(withoutRemovals(changes)),
+    [applyEdgeChanges],
+  );
+
+  function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "Enter") return;
+    const target = event.target as HTMLElement;
+    const nodeId = target.classList.contains("react-flow__node") ? target.dataset.id : undefined;
+    if (nodeId) {
+      event.preventDefault();
+      onInspectNode(nodeId);
+    }
+  }
+
   return (
-    <ReactFlow
-      nodes={flowNodes}
-      edges={flowEdges}
-      onNodesChange={onNodesChange}
-      onEdgesChange={onEdgesChange}
-      nodeTypes={nodeTypes}
-      edgeTypes={edgeTypes}
-      nodesConnectable={false}
-      edgesReconnectable={false}
-      elementsSelectable
-      panOnScroll
-      zoomOnScroll
-      fitView
-      colorMode="system"
-      minZoom={0.4}
-      maxZoom={1.75}
-      proOptions={{ hideAttribution: true }}
-      onNodeClick={(_, node) => {
-        const data = node.data as EntityData;
-        onInspect(data.evidenceIds, data.label);
-      }}
-      onEdgeClick={(_, edge) => {
-        const data = edge.data as RelationData | undefined;
-        const label = (data?.relationType ?? "relationship").replaceAll("_", " ");
-        onInspect(data?.evidenceIds ?? [], label);
-      }}
-      aria-label="Entity relationship graph"
-      className="bg-zinc-50 dark:bg-zinc-900/40"
-    >
-      <FitViewOnChange nodeCount={nodes.length} edgeCount={edges.length} />
-      <Background gap={18} size={1} color="#a1a1aa" className="opacity-40" />
-      <Controls showInteractive={false} className="!overflow-hidden !rounded-lg !border !border-zinc-200 !bg-white !shadow-none dark:!border-zinc-700 dark:!bg-zinc-950" />
-      <MiniMap
-        pannable
-        zoomable
-        className="!overflow-hidden !rounded-lg !border !border-zinc-200 !bg-white dark:!border-zinc-700 dark:!bg-zinc-950"
-        nodeColor="#a1a1aa"
-      />
-    </ReactFlow>
+    <HandlersContext.Provider value={handlers}>
+      <ReactFlow
+        nodes={flowNodes}
+        edges={flowEdges}
+        onNodesChange={onNodesChange}
+        onEdgesChange={onEdgesChange}
+        nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
+        deleteKeyCode={null}
+        nodesConnectable={false}
+        edgesReconnectable={false}
+        elementsSelectable
+        panOnScroll
+        zoomOnScroll
+        fitView
+        colorMode="system"
+        minZoom={0.4}
+        maxZoom={1.75}
+        proOptions={{ hideAttribution: true }}
+        onNodeClick={(_, node) => onInspectNode(node.id)}
+        onEdgeClick={(_, edge) => onSelectEdge(edge.id)}
+        onKeyDown={onKeyDown}
+        aria-label="Entity relationship graph"
+        className="bg-zinc-50 dark:bg-zinc-900/40"
+      >
+        <FitViewOnChange nodeCount={nodes.length} edgeCount={edges.length} />
+        <Background gap={18} size={1} color="#a1a1aa" className="opacity-40" />
+        <Controls showInteractive={false} className="!overflow-hidden !rounded-lg !border !border-zinc-200 !bg-white !shadow-none dark:!border-zinc-700 dark:!bg-zinc-950" />
+        <MiniMap
+          pannable
+          zoomable
+          className="!overflow-hidden !rounded-lg !border !border-zinc-200 !bg-white dark:!border-zinc-700 dark:!bg-zinc-950"
+          nodeColor="#a1a1aa"
+        />
+      </ReactFlow>
+    </HandlersContext.Provider>
   );
 }
 
 export default function RelationshipGraphCanvas({
   nodes,
   edges,
-  onInspect,
+  onInspectNode,
+  onSelectEdge,
 }: {
   nodes: GraphNode[];
   edges: GraphEdge[];
-  onInspect: (evidenceIds: string[], label: string) => void;
-}) {
+} & Handlers) {
   if (!nodes.length && !edges.length) {
     return <p className="p-5 text-sm text-zinc-500">No supported relationships.</p>;
   }
 
   return (
     <ReactFlowProvider>
-      <GraphInner nodes={nodes} edges={edges} onInspect={onInspect} />
+      <GraphInner nodes={nodes} edges={edges} onInspectNode={onInspectNode} onSelectEdge={onSelectEdge} />
     </ReactFlowProvider>
   );
 }
-

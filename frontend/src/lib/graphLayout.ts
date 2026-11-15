@@ -4,7 +4,7 @@ export type LayoutNode = { id: string };
 export type LayoutEdge = { source: string; target: string };
 export type LaidOutNode = { id: string; x: number; y: number };
 
-const COL_GAP = 220;
+const COL_GAP = 300;
 const ROW_GAP = 110;
 const ORIGIN_X = 40;
 const ORIGIN_Y = 40;
