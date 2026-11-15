@@ -232,6 +232,60 @@ def test_gif_and_webp_are_sniffed_and_served(
     assert response.headers["content-type"] == media_type
 
 
+@pytest.mark.parametrize(
+    ("target", "source_path", "extracted", "bad_bytes"),
+    [
+        (
+            r"C:\Users\Test\Documents\lie.gif",
+            "Users/Test/Documents/lie.gif",
+            "artifacts/lie.gif",
+            PNG,
+        ),
+        (
+            r"C:\Users\Test\Documents\lie.webp",
+            "Users/Test/Documents/lie.webp",
+            "artifacts/lie.webp",
+            JPEG,
+        ),
+    ],
+)
+def test_gif_and_webp_with_wrong_bytes_are_refused(
+    tmp_path: Path, target: str, source_path: str, extracted: str, bad_bytes: bytes
+) -> None:
+    """A sniff that always returns True would wrongly serve these as 200."""
+    root = tmp_path / "evidence"
+    case_id = "case_wrongsniff"
+    case_dir = root / case_id
+    write(case_dir, extracted, bad_bytes)
+    (case_dir / "artifact_manifest.jsonl").write_text(
+        json.dumps({"source_path": source_path, "extracted_file": extracted, "sha256": None}),
+        encoding="utf-8",
+    )
+    with pytest.raises(MediaIntegrityError):
+        resolve_media(download(case_id, "bad", target), root, case_id)
+
+
+def test_empty_case_id_is_refused(tmp_path: Path, root: Path) -> None:
+    with pytest.raises(MediaNotFoundError, match="case_id"):
+        resolve_media(download("c", "flights", r"C:\Users\Test\Documents\flights.PNG"), root, "")
+
+
+def test_media_cors_exposes_hash_headers(client_and_cases) -> None:
+    """Cross-origin frontend must read X-Hash-Verified (CORS expose_headers)."""
+    client, a, _ = client_and_cases
+    response = client.get(
+        f"/cases/{a}/records/flights/media",
+        headers={"Origin": "http://localhost:3000"},
+    )
+    assert response.status_code == 200
+    exposed = response.headers.get("access-control-expose-headers", "")
+    exposed_l = exposed.lower()
+    assert "x-hash-verified" in exposed_l
+    assert "x-content-sha256" in exposed_l
+    assert "x-source-path" in exposed_l
+    assert response.headers["x-hash-verified"] == "true"
+
+
 def test_media_is_case_scoped(client_and_cases) -> None:
     """Same target_path in two cases: only the case with files under its folder gets 200."""
     client, a, b = client_and_cases

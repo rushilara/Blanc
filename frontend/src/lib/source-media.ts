@@ -41,3 +41,26 @@ export function remoteImageAttachments(record: EvidenceRecord): { filename: stri
 export function mediaUrl(caseId: string, recordId: string): string {
   return `${API_BASE_URL}/cases/${encodeURIComponent(caseId)}/records/${encodeURIComponent(recordId)}/media`;
 }
+
+export type MediaLoadResult =
+  | { status: "missing" }
+  | { status: "integrity" }
+  | { status: "ready"; hashVerified: boolean };
+
+/** Map a /media HTTP status (+ optional X-Hash-Verified) for the source panel. */
+export function interpretMediaResponse(
+  status: number,
+  headers: { get(name: string): string | null },
+): MediaLoadResult {
+  if (status === 404) return { status: "missing" };
+  if (status === 409) return { status: "integrity" };
+  if (status !== 200) return { status: "missing" };
+  return { status: "ready", hashVerified: headers.get("X-Hash-Verified") === "true" };
+}
+
+/** Default caption: verified vs path-only (hash not checked). */
+export function mediaCaption(name: string, hashVerified: boolean): string {
+  return hashVerified
+    ? `${name} · original file from local evidence`
+    : `${name} · local evidence file (hash not checked)`;
+}

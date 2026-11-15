@@ -43,6 +43,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        # Frontend (:3000) reads these on cross-origin /media responses.
+        expose_headers=["X-Hash-Verified", "X-Content-SHA256", "X-Source-Path"],
     )
 
     @app.get("/health")

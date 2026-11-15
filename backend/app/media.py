@@ -163,6 +163,8 @@ def resolve_media(record: EvidenceRecord, evidence_root: Path | None, case_id: s
     ``MediaNotFoundError`` or ``MediaIntegrityError``."""
     if evidence_root is None:
         raise MediaNotFoundError("no local evidence folder is configured (EVIDENCE_ROOT)")
+    if not case_id.strip():
+        raise MediaNotFoundError("case_id is required to resolve local evidence")
     try:
         base = evidence_root.expanduser().resolve(strict=True)
     except (FileNotFoundError, OSError) as exc:

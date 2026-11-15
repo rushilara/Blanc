@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { EvidenceRecord } from "../src/lib/analysis";
-import { localImageName, mediaUrl, remoteImageAttachments } from "../src/lib/source-media";
+import {
+  interpretMediaResponse,
+  localImageName,
+  mediaCaption,
+  mediaUrl,
+  remoteImageAttachments,
+} from "../src/lib/source-media";
 
 const record = (content: unknown, source_file = "Users/Test/Chrome/History"): EvidenceRecord => ({
   record_id: "r 1", case_id: "case/a", source_file, source_locator: "x",
@@ -29,4 +35,28 @@ test("remote attachments are listed by name and host, never as loadable URLs", (
 
 test("the media URL is case-scoped and encoded", () => {
   assert.match(mediaUrl("case/a", "r 1"), /\/cases\/case%2Fa\/records\/r%201\/media$/);
+});
+
+test("SourceImage load states: 404 missing, 409 integrity, 200 caption by hash", () => {
+  const headers = (verified: string | null) => ({
+    get: (name: string) => (name === "X-Hash-Verified" ? verified : null),
+  });
+  assert.deepEqual(interpretMediaResponse(404, headers(null)), { status: "missing" });
+  assert.deepEqual(interpretMediaResponse(409, headers(null)), { status: "integrity" });
+  assert.deepEqual(interpretMediaResponse(500, headers(null)), { status: "missing" });
+  assert.deepEqual(interpretMediaResponse(200, headers("true")), {
+    status: "ready",
+    hashVerified: true,
+  });
+  assert.deepEqual(interpretMediaResponse(200, headers("false")), {
+    status: "ready",
+    hashVerified: false,
+  });
+  assert.deepEqual(interpretMediaResponse(200, headers(null)), {
+    status: "ready",
+    hashVerified: false,
+  });
+  assert.match(mediaCaption("a.png", true), /original file from local evidence/);
+  assert.match(mediaCaption("a.png", false), /hash not checked/);
+  assert.ok(!mediaCaption("a.png", false).includes("original file from local evidence"));
 });

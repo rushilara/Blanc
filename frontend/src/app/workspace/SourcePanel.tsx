@@ -4,7 +4,13 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { EvidenceRecord } from "@/lib/analysis";
 import { fetchRecord, RecordFetchError } from "@/lib/records";
 import { presentSource } from "@/lib/source-presentation";
-import { localImageName, mediaUrl, remoteImageAttachments } from "@/lib/source-media";
+import {
+  interpretMediaResponse,
+  localImageName,
+  mediaCaption,
+  mediaUrl,
+  remoteImageAttachments,
+} from "@/lib/source-media";
 
 /** "Open in Google Maps" for Maps links, else "Open <host>". */
 function linkLabel(url: string): string {
@@ -152,29 +158,22 @@ function SourceImage({ caseId, recordId, name, caption, missing }: {
   const viewer = useRef<HTMLDialogElement>(null);
 
   useEffect(() => {
+    // Initial state is already "loading"; the panel keys SourceImage by record, so do not
+    // setState("loading") here (react-hooks/set-state-in-effect).
     const controller = new AbortController();
     let objectUrl: string | undefined;
-    setState({ status: "loading" });
     fetch(mediaUrl(caseId, recordId), { signal: controller.signal })
       .then(async response => {
         if (controller.signal.aborted) return;
-        if (response.status === 404) {
-          setState({ status: "missing" });
+        const interpreted = interpretMediaResponse(response.status, response.headers);
+        if (interpreted.status !== "ready") {
+          setState(interpreted);
           return;
         }
-        if (response.status === 409) {
-          setState({ status: "integrity" });
-          return;
-        }
-        if (!response.ok) {
-          setState({ status: "missing" });
-          return;
-        }
-        const hashVerified = response.headers.get("X-Hash-Verified") === "true";
         const blob = await response.blob();
         if (controller.signal.aborted) return;
         objectUrl = URL.createObjectURL(blob);
-        setState({ status: "ready", src: objectUrl, hashVerified });
+        setState({ status: "ready", src: objectUrl, hashVerified: interpreted.hashVerified });
       })
       .catch(() => {
         if (controller.signal.aborted) return;
@@ -193,9 +192,7 @@ function SourceImage({ caseId, recordId, name, caption, missing }: {
     return <p className="blanc-source-offline" role="alert">The local file for <strong>{name}</strong> failed its integrity check, so it is not shown as evidence.</p>;
   }
   const ready = state.status === "ready";
-  const defaultCaption = ready && !state.hashVerified
-    ? `${name} · local evidence file (hash not checked)`
-    : `${name} · original file from local evidence`;
+  const defaultCaption = ready ? mediaCaption(name, state.hashVerified) : `${name} · original file from local evidence`;
   return <figure className="blanc-source-media" data-state={state.status}>
     <button type="button" onClick={() => viewer.current?.showModal()} aria-label={`View ${name} larger`} disabled={!ready}>
       {/* eslint-disable-next-line @next/next/no-img-element -- local evidence served by the case API, not a static asset */}
