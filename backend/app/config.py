@@ -37,6 +37,19 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = DEFAULT_EMBEDDING_MODEL
     EMBEDDING_DIM: int = Field(default=DEFAULT_EMBEDDING_DIM, ge=1, le=3072)
 
+    # Retrieval (app/retrieval.py). Candidates: chunks pulled from each index per question.
+    # Fusion: reciprocal rank fusion, score = sum(weight / (RRF_K + rank)). Evidence window:
+    # at most RETRIEVAL_MAX_RECORDS records and RETRIEVAL_MAX_EXCERPT_CHARS characters of
+    # excerpt text in total (~4 chars per token, so 32000 chars ~ 8000 tokens).
+    RETRIEVAL_VECTOR_CANDIDATES: int = Field(default=50, ge=1, le=4096)
+    RETRIEVAL_KEYWORD_CANDIDATES: int = Field(default=50, ge=1, le=4096)
+    RETRIEVAL_RRF_K: int = Field(default=60, ge=0)
+    RETRIEVAL_VECTOR_WEIGHT: float = Field(default=1.0, ge=0)
+    RETRIEVAL_KEYWORD_WEIGHT: float = Field(default=1.0, ge=0)
+    RETRIEVAL_MAX_RECORDS: int = Field(default=16, ge=1, le=200)
+    RETRIEVAL_MAX_EXCERPT_CHARS: int = Field(default=32000, ge=1)
+    RETRIEVAL_MAX_EXCERPTS_PER_RECORD: int = Field(default=2, ge=1)
+
     # Storage: one SQLite file holds tables, the sqlite-vec vector index and the FTS5 index.
     DATABASE_URL: str = "sqlite:///./data/blanc.db"
 
