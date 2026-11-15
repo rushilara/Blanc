@@ -54,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.out is not None:
         args.out.parent.mkdir(parents=True, exist_ok=True)
-        payload = [record.model_dump() for record in result.records]
+        payload = [record.to_contract_json() for record in result.records]
         args.out.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
     files = {record.source_file for record in result.records}

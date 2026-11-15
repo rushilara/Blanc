@@ -1,31 +1,16 @@
-"""`EvidenceRecord` model, mirroring `contracts/evidence_record.schema.json`.
+"""Record identifiers for imported evidence.
 
-`tests/test_evidence_import.py` checks that the fields and the `timestamp_kind`
-values stay in sync with the schema, so a contract change fails loudly here.
+The record model itself is the shared contract model, `app.contracts.EvidenceRecord`
+(BLA-5), so imported records can go straight to `app.evidence_store.store_records`.
+It is re-exported here for the importer.
 """
 
 import hashlib
-from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from app.contracts import EvidenceRecord
+from app.contracts import RecordTimestampKind as TimestampKind
 
-TimestampKind = Literal["sent", "received", "created", "modified", "observed", "stated", "unknown"]
-
-
-class EvidenceRecord(BaseModel):
-    """One immutable, traceable source record."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    record_id: str = Field(min_length=1)
-    case_id: str = Field(min_length=1)
-    source_file: str = Field(min_length=1)
-    source_locator: str = Field(min_length=1)
-    content: str
-    timestamp: str | None = None
-    timestamp_kind: TimestampKind = "unknown"
-    original_sha256: str | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
+__all__ = ["EvidenceRecord", "TimestampKind", "stable_record_id"]
 
 
 def stable_record_id(case_id: str, source_file: str, source_locator: str) -> str:
