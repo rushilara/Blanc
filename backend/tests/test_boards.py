@@ -252,6 +252,11 @@ def test_without_saved_revisions_nothing_can_be_pinned_yet(app, client, seeded) 
     board_id = create(client, seeded.case_id)["board_id"]
     body = patch(client, seeded.case_id, board_id, 422, pin=[pin("claim", "claim-1")])
     assert "no saved revision analysis-synthetic-1 in this case" in body["detail"][0]
+    # Nor can the active revision be set yet.
+    body = patch(client, seeded.case_id, board_id, 422, active_analysis_id=BASE_ID)
+    assert "active_analysis_id analysis-synthetic-1 is not a revision" in body["detail"][0]
+    response = client.post(url(seeded.case_id), json={"title": "x", "active_analysis_id": BASE_ID})
+    assert response.status_code == 422
     # Notes still work.
     noted = patch(client, seeded.case_id, board_id, notes=[{"text": "Check rec-02."}])
     assert noted["notes"][0]["text"] == "Check rec-02."
@@ -277,17 +282,24 @@ def test_notes_are_kept_apart_from_pinned_findings(client, seeded) -> None:
             pin=[pin("claim", "claim-2")],
             notes=[
                 {"text": "  Did the meeting take place?  ", "target_item_id": item_id},
-                {"text": "Board-level note.", "author": "investigator-demo"},
+                {"text": "Board-level note."},
             ],
         )
     )
     first, second = board["notes"]
     assert first["text"] == "Did the meeting take place?"  # trimmed, otherwise verbatim
     assert first["target_item_id"] == item_id and first["author"] == "investigator"
-    assert second["target_item_id"] is None and second["author"] == "investigator-demo"
+    assert second["target_item_id"] is None and second["author"] == "investigator"
     assert first["note_id"].startswith("note_")
     # The note's text appears only in notes, never in an item.
     assert "meeting" not in str(board["items"])
+
+
+def test_the_server_sets_every_notes_author(client, seeded) -> None:
+    board_id = create(client, seeded.case_id)["board_id"]
+    patch(client, seeded.case_id, board_id, 422, notes=[{"text": "x", "author": "assistant"}])
+    board = patch(client, seeded.case_id, board_id, notes=[{"text": "x"}])
+    assert board["notes"][0]["author"] == "investigator"
 
 
 def test_a_note_must_target_an_item_on_the_board(client, seeded) -> None:
