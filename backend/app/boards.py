@@ -11,7 +11,8 @@ Rules this module enforces:
   evidence IDs and status from that revision. Pinning never changes a status and never
   means "verified".
 - **Investigator notes stay separate.** Notes are the only investigator-authored text on
-  a board, and they live in ``notes``, not in items.
+  a board, and they live in ``notes``, not in items. Their ``author`` is set by the
+  server (``NOTE_AUTHOR``), never by the request.
 - **Items are deduplicated by a stable ID.** ``item_id`` is derived from
   ``(source_analysis_id, kind, ref_id)``, so pinning the same finding twice is a no-op and
   re-pinning it after an unpin gives the same ID.
@@ -25,7 +26,8 @@ Rules this module enforces:
 
 Revisions are looked up through a ``RevisionLookup``, because saved analysis revisions
 are BLA-28. Until that lands, the app's lookup knows no revisions, so a board can be
-created and annotated but nothing can be pinned yet.
+created, renamed and annotated, but nothing can be pinned and ``active_analysis_id``
+cannot be set yet.
 """
 
 import hashlib
@@ -45,6 +47,11 @@ from app.ids import new_id
 from app.models import BoardSnapshotRow, EvidenceRecordRow
 from app.schemas.boards import ALL_KINDS, BoardChange, NoteCreate, PinRequest
 from app.validation import validate_board
+
+# Every note's author. Set by the server, never by the request: there are no user
+# accounts yet, and a client-chosen author ("assistant") could pass a note off as model
+# output next to LLM content.
+NOTE_AUTHOR = "investigator"
 
 # (session, case_id, analysis_ids) -> the saved revisions of that case among those IDs.
 RevisionLookup = Callable[[Session, str, Collection[str]], list[AnalysisRevision]]
@@ -363,7 +370,7 @@ def _new_notes(notes: list[NoteCreate], moment: datetime) -> list[BoardNote]:
             note_id=new_id("note"),
             text=note.text,
             target_item_id=note.target_item_id,
-            author=note.author,
+            author=NOTE_AUTHOR,
             created_at=moment,
         )
         for note in notes

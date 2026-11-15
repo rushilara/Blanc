@@ -12,7 +12,6 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 Title = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 Id = Annotated[str, StringConstraints(min_length=1, max_length=200)]
 NoteText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=10000)]
-Author = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 
 MAX_CHANGES = 200
 
@@ -59,7 +58,8 @@ class NoteCreate(BaseModel):
     # An item on the board after this change (including one pinned in the same request);
     # null or absent for a board-level note.
     target_item_id: Id | None = None
-    author: Author = "investigator"
+    # No author field: the server sets it (see app.boards.NOTE_AUTHOR), so a client cannot
+    # label a note as coming from the model.
 
 
 class BoardChange(BaseModel):
