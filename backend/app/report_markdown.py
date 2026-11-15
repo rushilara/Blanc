@@ -335,8 +335,10 @@ def _source(out: list[str], source: ReportSource) -> None:
     add(f"- Timestamp: {stamp} ({source.timestamp_kind or 'unknown'})")
     add(f"- Cited by: {', '.join(_ref(ref) for ref in source.cited_by)}")
     excerpt = source.excerpt
+    media = source.media
+    hidden = excerpt is None if media is None else media.withheld
     if source.excluded_in:
-        if excerpt is None:
+        if hidden:
             add(
                 f"- Excluded in analysis {_ids(source.excluded_in)}: it supports nothing "
                 "there, and its content is not shown."
@@ -347,7 +349,20 @@ def _source(out: list[str], source: ReportSource) -> None:
                 "there; it is cited here from a revision that still included it. The "
                 "active (or exported) revision permits it, so the excerpt is shown."
             )
-    if excerpt is None:
+    if media is not None:
+        # An image or PDF is described, never embedded: no bytes, base64 or file text.
+        kind = "Image" if media.modality == "image" else "PDF"
+        add(f"- {kind}: {code(media.file_name)} ({code(media.content_type)})")
+        if media.sha256 is not None:
+            add(f"- File SHA-256: {code(media.sha256)}")
+        add(
+            "- Excerpt: none (an image or PDF is cited by record ID; the file stays in the "
+            "local case folder and is not included in this report)."
+        )
+        for key, value in media.metadata.items():
+            add(f"- File metadata {code(key)}: {code(str(value))}")
+        add("")
+    elif excerpt is None:
         add("- Excerpt: omitted (excluded in the active or exported revision).")
         add("")
     else:

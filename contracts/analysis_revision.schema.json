@@ -339,9 +339,11 @@
                 "enum": [
                   "budget",
                   "record_limit",
-                  "media"
+                  "media",
+                  "media_limit",
+                  "media_too_large"
                 ],
-                "description": "budget: did not fit the character budget. record_limit: ranked past max_records. media: an image/PDF record in the window that was not sent to the model (vision analysis is a later step), including any beyond the media cap."
+                "description": "budget: did not fit the character budget. record_limit: ranked past max_records. The media reasons mark an image/PDF record in the window that was not sent to the model: media_limit: over a media count or total-bytes cap; media_too_large: the single file is over the per-file inline cap; media: any other reason (stored file missing or failed its integrity check), and on revisions saved before vision analysis, any retrieved media."
               },
               "vector_rank": {
                 "type": "integer",
@@ -365,7 +367,11 @@
                 "if": {
                   "properties": {
                     "reason": {
-                      "const": "media"
+                      "enum": [
+                        "media",
+                        "media_limit",
+                        "media_too_large"
+                      ]
                     }
                   },
                   "required": [

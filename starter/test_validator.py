@@ -70,6 +70,18 @@ class TestRetrievalCoverage(unittest.TestCase):
         self.assertEqual(validate_revision(records,media),[])
         no_modality=deepcopy(media); del no_modality['retrieval_coverage']['skipped'][0]['modality']
         self.assertTrue(validate_revision(records,no_modality))
+        # BLA-71: an image sent to the model is retrieved on top of the text slots.
+        on_top=deepcopy(media); on_top['retrieval_coverage']['max_records']=1
+        media_records=[*records,{**records[1],'record_id':'rec-img','content':'','modality':'image',
+            'media_path':'media/rec_0000000000000000.jpg','content_type':'image/jpeg'}]
+        on_top['retrieved_record_ids']=[*on_top['retrieved_record_ids'],'rec-img']
+        self.assertFalse([e for e in validate_revision(media_records,on_top) if 'retrieved count' in e])
+        self.assertTrue([e for e in validate_revision(records,{**on_top,'retrieved_record_ids':['rec-01','rec-03']}) if 'retrieved count' in e])
+        for reason in ('media_limit','media_too_large'):  # BLA-71 caps
+            capped=deepcopy(media); capped['retrieval_coverage']['skipped'][0]['reason']=reason
+            self.assertEqual(validate_revision(records,capped),[],reason)
+            del capped['retrieval_coverage']['skipped'][0]['modality']
+            self.assertTrue(validate_revision(records,capped),reason)
         image_past=covered(); image_past['retrieval_coverage']['skipped'][0]['modality']='image'
         image_past['retrieval_coverage'].update({'left_out_record_ids':[],'offer_expanded_window':False})
         self.assertEqual(validate_revision(records,image_past),[])

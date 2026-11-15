@@ -10,7 +10,7 @@ import logging
 from datetime import datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
@@ -34,6 +34,7 @@ from app.analyses import (
     run_case_analysis,
 )
 from app.analysis_llm import AnalysisLLMError
+from app.analysis_media import AnalysisMediaConfig
 from app.boards import BoardNotFoundError
 from app.contracts import AnalysisRevision, EvidenceWindow, RevisionComparison
 from app.deps import AnalysisLLMDep, CaseDep, EmbedderDep, SessionDep
@@ -48,6 +49,14 @@ router = APIRouter(prefix="/cases/{case_id}/analyses", tags=["analyses"])
 
 LLM_UNAVAILABLE = "The analysis service is not ready. Please try again later."
 RetrievalConfigDep = Annotated[RetrievalConfig, Depends(get_retrieval_config)]
+
+
+def get_media_config(request: Request) -> AnalysisMediaConfig | None:
+    """Vision analysis caps and the case media folder (BLA-71), set in the lifespan."""
+    return getattr(request.app.state, "media_config", None)
+
+
+MediaConfigDep = Annotated[AnalysisMediaConfig | None, Depends(get_media_config)]
 
 
 class RevisionSummaryRead(BaseModel):
@@ -74,6 +83,7 @@ def create_case_analysis(
     embedder: EmbedderDep,
     llm: AnalysisLLMDep,
     config: RetrievalConfigDep,
+    media_config: MediaConfigDep,
 ) -> Any:
     """Retrieve evidence for ``question``, run structured analysis, save and return the
     revision. Optional ``analysis_id`` is a prior revision of this case (parent context);
@@ -92,6 +102,7 @@ def create_case_analysis(
             llm,
             embedder,
             retrieval_config=config,
+            media_config=media_config,
             prior_analysis_id=body.analysis_id,
             evidence_window=body.evidence_window,
         )
@@ -206,6 +217,7 @@ def exclude_analysis_records(
     embedder: EmbedderDep,
     llm: AnalysisLLMDep,
     config: RetrievalConfigDep,
+    media_config: MediaConfigDep,
 ) -> Any:
     """Exclude records and rerun this revision's question on the remaining evidence (BLA-33).
 
@@ -227,6 +239,7 @@ def exclude_analysis_records(
             llm,
             embedder,
             retrieval_config=config,
+            media_config=media_config,
             evidence_window=body.evidence_window,
         )
     except RevisionNotFoundError as error:
@@ -284,6 +297,7 @@ def follow_up_analysis(
     embedder: EmbedderDep,
     llm: AnalysisLLMDep,
     config: RetrievalConfigDep,
+    media_config: MediaConfigDep,
 ) -> Any:
     """Ask a follow-up that builds on revision ``analysis_id`` (BLA-29).
 
@@ -307,6 +321,7 @@ def follow_up_analysis(
             embedder,
             board_id=body.board_id,
             retrieval_config=config,
+            media_config=media_config,
             evidence_window=body.evidence_window,
         )
     except RevisionNotFoundError as error:
@@ -340,6 +355,7 @@ def rerun_analysis(
     embedder: EmbedderDep,
     llm: AnalysisLLMDep,
     config: RetrievalConfigDep,
+    media_config: MediaConfigDep,
 ) -> Any:
     """"Want more evidence?" (BLA-64): rerun this revision's question, with its exclusions,
     in another evidence window, usually ``expanded``. The result is a new child revision
@@ -358,6 +374,7 @@ def rerun_analysis(
             llm,
             embedder,
             retrieval_config=config,
+            media_config=media_config,
         )
     except RevisionNotFoundError as error:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Analysis not found") from error

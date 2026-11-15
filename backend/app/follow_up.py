@@ -35,6 +35,7 @@ from sqlalchemy.orm import Session
 
 from app.analyses import _analyze_and_save, get_revision, saved_revision_lookup
 from app.analysis_llm import AnalysisLLM
+from app.analysis_media import AnalysisMediaConfig
 from app.boards import _finding, get_board
 from app.contracts import AnalysisRevision, EvidenceWindow, InvestigationBoard
 from app.embeddings import Embedder
@@ -58,6 +59,7 @@ def ask_follow_up(
     *,
     board_id: str | None = None,
     retrieval_config: RetrievalConfig | None = None,
+    media_config: AnalysisMediaConfig | None = None,
     evidence_window: EvidenceWindow | None = None,
     now: datetime | None = None,
 ) -> AnalysisRevision:
@@ -86,6 +88,7 @@ def ask_follow_up(
         parent_id=parent.analysis_id,
         prior_text=context,
         retrieval_config=retrieval_config,
+        media_config=media_config,
         window=evidence_window or window_of(parent),
         now=now,
     )

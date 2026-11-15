@@ -2,6 +2,8 @@
 
 import dynamic from "next/dynamic";
 import Link from "next/link";
+import { InvestigationNavigation } from "@/components/InvestigationNavigation";
+import { investigationTitle } from "@/lib/investigation-navigation";
 import { SpatialConnections } from "@/components/SpatialConnections";
 import { presentSource } from "@/lib/source-presentation";
 import { SourcePanel } from "./SourcePanel";
@@ -11,7 +13,8 @@ import type { AnalysisRevision, EvidenceRecord } from "@/lib/analysis";
 import { citedRecordIds } from "@/lib/citations";
 import { anchorCitations, splitCitations, type Anchor } from "@/lib/inline-citations";
 import { itemFor, sameFindingNote, sourcesInOrder, supportChanged, supportLabel, type ComparisonItem, type ComparisonKind, type RevisionComparison, type SupportStatus } from "@/lib/comparison";
-import { analyzeCase, ApiError, excludeRecords, getComparison, getRevision, listCaseRecordsPage, listCases, loadRevisionSources, restoreRecords, type CaseSummary } from "@/lib/live-api";
+import { addReconstruction, createBoard, loadCaseBoard } from "@/lib/boards-api";
+import { analyzeCase, ApiError, askFollowUp, excludeRecords, getComparison, getRevision, listCaseRecordsPage, listCases, listRevisions, loadRevisionSources, restoreRecords, type CaseSummary, type RevisionSummary } from "@/lib/live-api";
 
 /** Thrown by the dynamic() catch fallback when the map chunk fails to import. */
 const MAP_LOAD_ERROR = "Connection map failed to load.";
@@ -55,11 +58,13 @@ export function Findings() {
   const [records, setRecords] = useState<EvidenceRecord[]>([]);
   const [cases, setCases] = useState<CaseSummary[] | null>(null);
   const [caseId, setCaseId] = useState("");
-  const [expandedCase, setExpandedCase] = useState<string>();
   const [loading, setLoading] = useState(false);
   const [askFailed, setAskFailed] = useState(false);
   const [casesReload, setCasesReload] = useState(0);
   const [casesError, setCasesError] = useState(false);
+  const [history, setHistory] = useState<RevisionSummary[]>([]);
+  const [historyReady, setHistoryReady] = useState(false);
+  const [followUp, setFollowUp] = useState("");
   const request = useRef<AbortController | null>(null);
   const questionRef = useRef<HTMLTextAreaElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
@@ -76,7 +81,10 @@ export function Findings() {
       // import_status is not kept up to date by every import path, so it only breaks ties.
       const ready = items.filter(item => item.import_status === "ready");
       const candidates = ready.length ? ready : items;
-      if (candidates.length === 1) setCaseId(candidates[0].case_id);
+      const params = new URLSearchParams(window.location.search);
+      const wanted = params.get("case");
+      if (wanted && items.some(item => item.case_id === wanted)) setCaseId(wanted);
+      else if (!wanted && candidates.length === 1) setCaseId(candidates[0].case_id);
     }).catch(error => {
       if (!controller.signal.aborted) {
         setCases([]);
@@ -101,6 +109,63 @@ export function Findings() {
     if (loading) cancelRef.current?.focus();
     else if (askFailed) retryAskRef.current?.focus();
   }, [loading, askFailed]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const wantedCase = params.get("case");
+    const wantedAnalysis = params.get("analysis");
+    if (!wantedCase || !wantedAnalysis) return;
+    const controller = new AbortController();
+    void (async () => {
+      setWorking("Opening the saved investigation…");
+      try {
+        const next = await getRevision(wantedCase, wantedAnalysis, controller.signal);
+        if (controller.signal.aborted) return;
+        const loaded = await loadRevisionSources(next, controller.signal);
+        if (controller.signal.aborted) return;
+        setCaseId(wantedCase);
+        setRecords(loaded);
+        setRevision(next);
+        setPrevious(null);
+        setComparison(null);
+        setShowingPrevious(false);
+        setView("Findings");
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          setCaseId(wantedCase);
+          setFeedback(error instanceof ApiError ? error.message : "The saved investigation could not be opened.");
+        }
+      } finally {
+        if (!controller.signal.aborted) setWorking("");
+      }
+    })();
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    if (!revision) return;
+    const url = new URL(window.location.href);
+    url.searchParams.set("case", revision.case_id);
+    url.searchParams.set("analysis", revision.analysis_id);
+    window.history.replaceState(null, "", `${url.pathname}${url.search}`);
+  }, [revision]);
+
+  useEffect(() => {
+    if (!caseId) return;
+    const controller = new AbortController();
+    listRevisions(caseId, controller.signal).then(items => {
+      if (!controller.signal.aborted) {
+        setHistory(items);
+        setHistoryReady(true);
+      }
+    }).catch(() => {
+      if (!controller.signal.aborted) {
+        setHistory([]);
+        setHistoryReady(true);
+      }
+    });
+    return () => controller.abort();
+  }, [caseId, revision?.analysis_id]);
   // Record IDs the model wrote into its prose become numbered citations too. Numbering
   // follows citation order, then any loaded source mentioned only in prose.
   const knownIds = shown ? [...citedRecordIds(shown), ...records.map(record => record.record_id)] : [];
@@ -299,6 +364,117 @@ export function Findings() {
     }
   }
 
+  function switchCase(nextId: string) {
+    if (!nextId || nextId === caseId) return;
+    setCaseId(nextId);
+    setRevision(null);
+    setPrevious(null);
+    setComparison(null);
+    setShowingPrevious(false);
+    setRecords([]);
+    setHistory([]);
+    setHistoryReady(false);
+    setOpen(undefined);
+    setFollowUp("");
+    setFeedback("");
+    const url = new URL(window.location.href);
+    url.searchParams.set("case", nextId);
+    url.searchParams.delete("analysis");
+    window.history.replaceState(null, "", `${url.pathname}${url.search}`);
+  }
+
+  async function openSaved(analysisId: string) {
+    if (!caseId || working) return;
+    if (analysisId === revision?.analysis_id) {
+      setShowingPrevious(false);
+      setView("Findings");
+      return;
+    }
+    setWorking("Opening the saved investigation…");
+    setFeedback("");
+    try {
+      const next = await getRevision(caseId, analysisId);
+      const loaded = await loadRevisionSources(next);
+      let parent: AnalysisRevision | null = null;
+      if (next.parent_analysis_id) {
+        try {
+          parent = await getRevision(caseId, next.parent_analysis_id);
+        } catch {
+          parent = null;
+        }
+      }
+      let diff: RevisionComparison | null = null;
+      if (parent && parent.question === next.question) {
+        try {
+          diff = await getComparison(caseId, next.analysis_id);
+        } catch {
+          diff = null;
+        }
+      }
+      setRecords(loaded);
+      setPrevious(parent);
+      setRevision(next);
+      setComparison(diff);
+      setShowingPrevious(false);
+      setOpen(undefined);
+      setView("Findings");
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : "The saved investigation could not be opened.");
+    } finally {
+      setWorking("");
+    }
+  }
+
+  async function submitFollowUp() {
+    const prompt = followUp.trim();
+    if (!shown || !prompt || working) return;
+    setWorking("Running the follow-up…");
+    setFeedback("");
+    try {
+      let boardId: string | null = null;
+      try {
+        boardId = (await loadCaseBoard(shown.case_id))?.board_id ?? null;
+      } catch {
+        boardId = null;
+      }
+      const child = await askFollowUp(shown.case_id, shown.analysis_id, prompt, boardId);
+      setRecords(await loadRevisionSources(child));
+      setPrevious(shown);
+      setRevision(child);
+      setComparison(null);
+      setShowingPrevious(false);
+      setFollowUp("");
+      setView("Findings");
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : "The follow-up could not be saved.");
+    } finally {
+      setWorking("");
+    }
+  }
+
+  async function addToBoard() {
+    if (!shown || working) return;
+    setWorking("Adding findings to the board…");
+    setFeedback("");
+    try {
+      let board = await loadCaseBoard(shown.case_id);
+      if (!board) board = await createBoard(shown.case_id, `${caseTitle || "Investigation"} board`, shown.analysis_id);
+      try {
+        board = await addReconstruction(shown.case_id, board, shown.analysis_id);
+      } catch (error) {
+        if (!(error instanceof ApiError) || error.status !== 409) throw error;
+        const fresh = await loadCaseBoard(shown.case_id);
+        if (!fresh) throw error;
+        board = await addReconstruction(shown.case_id, fresh, shown.analysis_id);
+      }
+      setFeedback(`Added this revision's findings to “${board.title}”.`);
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : "The findings could not be added to the board.");
+    } finally {
+      setWorking("");
+    }
+  }
+
   async function togglePrevious() {
     if (!revision || working) return;
     if (showingPrevious) {
@@ -329,10 +505,11 @@ export function Findings() {
     }
   }
 
+
   return <div className="blanc-workspace">
     {/* The static sheet avoids the missing workspace styles in the CSS pipeline. */}
     {/* eslint-disable-next-line @next/next/no-css-tags */}
-    <link rel="stylesheet" href="/blanc/findings.css?v=spatial-map-1" precedence="blanc" />
+    <link rel="stylesheet" href="/blanc/findings.css?v=follow-up-2" precedence="blanc" />
     <header className="blanc-header">
       <Link href="/" aria-label="Blanc home"><svg width="92" height="37" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="210 168 1460 570"><defs>
     <filter id="ink-alpha" colorInterpolationFilters="sRGB">
@@ -351,10 +528,17 @@ export function Findings() {
     </header>
 
     {shown ? <div className={`blanc-investigation${open ? " has-source" : ""}${view === "Connections" ? " is-map" : ""}`}>
-      <aside className="blanc-case-rail" aria-label="Current case and sources">
-        <small>Current case</small>
-        <h2>{caseTitle}</h2>
-        <section className="blanc-rail-sources"><h3>Sources</h3><ol>{sourceOrder.map((id, i) => {
+      <aside className="blanc-case-rail" aria-label="Current case, investigations, and sources">
+        <label className="blanc-case-picker">
+          <small>Current case</small>
+          <select aria-label="Current case" value={caseId} onChange={event => switchCase(event.target.value)}>
+            {!cases && <option value={caseId}>{caseTitle || "Loading cases…"}</option>}
+            {cases?.map(item => <option key={item.case_id} value={item.case_id}>{item.title}</option>)}
+            {cases && caseId && !cases.some(item => item.case_id === caseId) && <option value={caseId}>{caseTitle}</option>}
+          </select>
+        </label>
+        <InvestigationNavigation key={`navigation-${caseId}`} history={history} ready={historyReady} activeId={shown.analysis_id} busy={!!working} onOpen={id => void openSaved(id)} />
+        <details className="blanc-rail-sources blanc-source-disclosure"><summary>Sources <span>{sourceOrder.length}</span></summary><ol>{sourceOrder.map((id, i) => {
           const expanded = expandedSource === id;
           const excluded = shown.excluded_record_ids.includes(id);
           return <li key={id} className={[expanded ? "is-open" : "", excluded ? "is-excluded" : ""].filter(Boolean).join(" ") || undefined}
@@ -374,13 +558,13 @@ export function Findings() {
               <button type="button" aria-pressed={open === id} onClick={() => setOpen(open === id ? undefined : id)}>{open === id ? "Close source" : "Open source"}</button>
             </div>
           </li>;
-        })}</ol></section>
+        })}</ol></details>
       </aside>
       <main className="blanc-reading blanc-report" key={shown.analysis_id}>
       <p className="blanc-meta">{caseTitle}{showingPrevious ? " · previous revision" : ""}</p>
-      <div className="blanc-sent">
-        <p>You</p>
-        <h1>{shown.question}</h1>
+      <div className="blanc-investigation-heading">
+        <h1>{investigationTitle(shown.question)}</h1>
+        <details className="blanc-original-question"><summary>View question</summary><p>{shown.question}</p></details>
       </div>
       {(working || feedback) && <p role="status">{working || feedback}</p>}
       {shown.needs_review && <p>This analysis needs investigator review.</p>}
@@ -389,6 +573,9 @@ export function Findings() {
           {showingPrevious ? "Show the revision after the change" : "Show the previous revision"}
         </button>
       </p>}
+      <p className="blanc-revision-switch">
+        <button type="button" onClick={() => void addToBoard()} disabled={!!working}>Add findings to board</button>
+      </p>
       {view === "Findings" && <>
         <h2>Finding</h2>
         <p>{shown.answer ? withCitations(shown.answer, [], true) : "No answer in this revision."}</p>
@@ -446,7 +633,13 @@ export function Findings() {
           </ul>
         </>}
       </>}
-      {view === "Findings" && <section className="blanc-ruled"><h3>Follow-ups</h3><input aria-label="Ask a follow-up" placeholder="Ask a follow-up…" disabled /><small>Follow-up analysis is not connected yet.</small></section>}
+      {view === "Findings" && <section className="blanc-ruled">
+        <h3>Follow-ups</h3>
+        <form className="blanc-followup" onSubmit={event => { event.preventDefault(); void submitFollowUp(); }}>
+          <input aria-label="Ask a follow-up" placeholder="Ask a follow-up…" value={followUp} disabled={!!working} onChange={event => setFollowUp(event.target.value)} />
+          <button type="submit" disabled={!!working || !followUp.trim()}>Ask follow-up</button>
+        </form>
+      </section>}
     </main>
       {open && <SourcePanel key={open} caseId={shown.case_id} recordId={open} records={sources}
         number={sourceOrder.indexOf(open) + 1 || sourceOrder.length} total={sourceOrder.length}
@@ -457,6 +650,13 @@ export function Findings() {
         onClose={() => setOpen(undefined)} onStep={stepSource} />}
     </div> : <main className="blanc-reading blanc-entry">
       <h1 aria-label={greeting || undefined}><TypedGreeting key={greeting} text={greeting} /></h1>
+      <div className="blanc-home-case">
+        <label htmlFor="blanc-home-case">Case</label>
+        <select id="blanc-home-case" aria-label="Choose a case" value={caseId} disabled={loading || !!working || !cases?.length} onChange={event => switchCase(event.target.value)}>
+          <option value="" disabled>{cases === null ? "Loading cases…" : "Select a case"}</option>
+          {cases?.map(item => <option key={item.case_id} value={item.case_id}>{item.title}</option>)}
+        </select>
+      </div>
       <form onSubmit={event => { event.preventDefault(); void ask(); }}>
         <textarea ref={questionRef} rows={2} required aria-label="Ask a question about a case" placeholder="Ask a question about a case…" value={question} disabled={loading} onKeyDown={event => {
           if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
@@ -467,26 +667,12 @@ export function Findings() {
         <button type="submit" aria-label="Ask question" disabled={loading || !question.trim()}>→</button>
       </form>
       {loading && <p role="status">Searching case records… <button type="button" ref={cancelRef} className="blanc-retry" onClick={cancelAsk}>Cancel</button></p>}
+      {working && !loading && <p role="status">{working}</p>}
       {!loading && feedback && <p role={askFailed || casesError ? "alert" : "status"}>{feedback}{askFailed && question.trim() && <>{" "}<button type="button" ref={retryAskRef} className="blanc-retry" onClick={() => void ask()}>Retry analysis</button></>}{casesError && <>{" "}<button type="button" className="blanc-retry" onClick={() => { setCases(null); setCasesError(false); setFeedback(""); setCasesReload(n => n + 1); }}>Retry</button></>}</p>}
-      <section className="blanc-case-list" aria-labelledby="blanc-case-list-heading">
-        <h2 id="blanc-case-list-heading">Available cases</h2>
-        {cases === null && <p role="status">Loading cases…</p>}
-        {cases?.length === 0 && !casesError && <p>No cases are available.</p>}
-        {cases?.map(item => <div key={item.case_id}>
-          <button type="button" className="blanc-case-option" disabled={loading}
-            aria-expanded={expandedCase === item.case_id}
-            onClick={() => {
-              setCaseId(item.case_id);
-              setExpandedCase(expandedCase === item.case_id ? undefined : item.case_id);
-              setAskFailed(false);
-              setFeedback("");
-            }}>
-            <span><strong>{item.title}</strong>{caseId === item.case_id && <small>Selected</small>}</span>
-            <span className="blanc-case-chevron" aria-hidden="true" />
-          </button>
-          {expandedCase === item.case_id && <CaseFiles caseId={item.case_id} />}
-        </div>)}
-      </section>
+      {caseId && <InvestigationNavigation key={`navigation-${caseId}`} history={history} ready={historyReady} busy={!!working || loading} onOpen={id => void openSaved(id)} variant="recent" />}
+      {caseId && <CaseEvidenceBrowser key={`evidence-${caseId}`} caseId={caseId} />}
+      {cases?.length === 0 && !casesError && <p className="blanc-nav-empty">No cases are available yet.</p>}
+
     </main>}
     {sourceHover && sourceOrder.includes(sourceHover.id) && <div className="blanc-rail-float" style={{ top: sourceHover.top, left: sourceHover.left }}>
       <small>{citedOrder.indexOf(sourceHover.id) + 1} · {citationKind(sourceHover.id)}</small>
@@ -494,6 +680,14 @@ export function Findings() {
       <span>{citationSnippet(sourceHover.id)}</span>
     </div>}
   </div>;
+}
+
+function CaseEvidenceBrowser({ caseId }: { caseId: string }) {
+  const [open, setOpen] = useState(false);
+  return <details className="blanc-home-evidence" onToggle={event => setOpen(event.currentTarget.open)}>
+    <summary>Browse case evidence</summary>
+    {open && <CaseFiles caseId={caseId} />}
+  </details>;
 }
 
 const RECORDS_PER_PAGE = 50;

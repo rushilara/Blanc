@@ -183,7 +183,12 @@ function revisionError(status: number): ApiError {
   return new ApiError(`The request failed (HTTP ${status}).`, status);
 }
 
-async function postRevision(url: string, body: unknown, signal?: AbortSignal): Promise<AnalysisRevision> {
+async function postRevision(
+  url: string,
+  body: unknown,
+  signal?: AbortSignal,
+  failure: (status: number) => ApiError = revisionError,
+): Promise<AnalysisRevision> {
   const response = await fetch(`${API_BASE_URL}${url}`, {
     method: "POST",
     cache: "no-store",
@@ -192,7 +197,7 @@ async function postRevision(url: string, body: unknown, signal?: AbortSignal): P
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!response.ok) throw revisionError(response.status);
+  if (!response.ok) throw failure(response.status);
   let data: unknown;
   try { data = await response.json(); }
   catch { throw new ApiError("The backend returned invalid JSON."); }
@@ -200,6 +205,27 @@ async function postRevision(url: string, body: unknown, signal?: AbortSignal): P
     throw new ApiError("The analysis response does not match the shared contract.");
   }
   return parseRevision(data, data.case_id, data.question);
+}
+
+/** Ask a follow-up of a saved revision. Returns the new child revision. */
+export function askFollowUp(
+  caseId: string,
+  analysisId: string,
+  question: string,
+  boardId?: string | null,
+  signal?: AbortSignal,
+): Promise<AnalysisRevision> {
+  return postRevision(
+    `${path(caseId)}/analyses/${encodeURIComponent(analysisId)}/follow-up`,
+    { question, ...(boardId ? { board_id: boardId } : {}) },
+    signal,
+    status => {
+      if (status === 401) return new ApiError(SIGNED_OUT, 401);
+      if (status === 422) return new ApiError("A follow-up needs a question with letters or numbers.", 422);
+      if (status === 503) return new ApiError("The analysis service is not ready. Please try again later.", 503);
+      return new ApiError(`The request failed (HTTP ${status}).`, status);
+    },
+  );
 }
 
 /** Exclude records and rerun this revision's question. Returns the new child revision. */

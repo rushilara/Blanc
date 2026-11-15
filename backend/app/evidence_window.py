@@ -28,10 +28,16 @@ left out".
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
-from app.contracts import AnalysisRevision, EvidenceWindow, RetrievalCoverage, SkippedEvidence
+from app.contracts import (
+    AnalysisRevision,
+    EvidenceWindow,
+    RetrievalCoverage,
+    SkippedEvidence,
+    SkipReason,
+)
 
 if TYPE_CHECKING:  # retrieval loads the database layer; validation imports this module
     from app.retrieval import RetrievalResult
@@ -93,20 +99,23 @@ def coverage_of(
     max_records: int,
     max_excerpt_chars: int,
     excluded_record_ids: Sequence[str] = (),
+    media_skips: Mapping[str, SkipReason] | None = None,
 ) -> RetrievalCoverage:
     """``retrieval_coverage`` for a revision built from ``retrieval``.
 
-    Image/PDF records that retrieval put in the window are listed as skipped with reason
-    ``media`` (BLA-70): the analysis does not send them to the model until vision analysis
-    (BLA-71). Media retrieval left out over the media cap (``media_limit``) is listed the
-    same way. Excluded records are filtered by retrieval already; they are dropped here
-    too so they can never be listed."""
+    ``media_skips`` maps each image/PDF record of ``retrieval.records`` that was *not* sent
+    to the model to its reason (``media_limit``, ``media_too_large`` or ``media``; see
+    ``app.analysis_media``); media records not in it were sent and are not listed. Without
+    it, no media was sent (text-only analysis, BLA-70) and every retrieved image/PDF is
+    listed as ``media``. Media that retrieval itself left out over ``RETRIEVAL_MAX_MEDIA``
+    is listed as ``media_limit``. Excluded records are filtered by retrieval already; they
+    are dropped here too so they can never be listed."""
     excluded = set(excluded_record_ids)
     skipped = [
         _skip(
             skip.record_id,
             skip.rank,
-            "media" if skip.reason == "media_limit" else skip.reason,
+            skip.reason,
             vector_rank=skip.vector_rank,
             keyword_rank=skip.keyword_rank,
             modality=skip.modality,
@@ -117,13 +126,15 @@ def coverage_of(
         _skip(
             record.record_id,
             record.rank or 0,
-            "media",
+            "media" if media_skips is None else media_skips[record.record_id],
             vector_rank=record.vector.rank if record.vector else None,
             keyword_rank=record.keyword.rank if record.keyword else None,
             modality=record.modality,
         )
         for record in retrieval.records
-        if record.modality != "text" and record.record_id not in excluded
+        if record.modality != "text"
+        and record.record_id not in excluded
+        and (media_skips is None or record.record_id in media_skips)
     ]
     skipped.sort(key=lambda skip: skip.rank)
     ids = left_out(skipped, max_records)
@@ -135,14 +146,4 @@ def coverage_of(
         budget_substituted=retrieval.budget_substituted,
         left_out_record_ids=ids,
         offer_expanded_window=offers_expanded(window, ids),
-    )
-
-
-def text_only(retrieval: RetrievalResult) -> RetrievalResult:
-    """``retrieval`` without its image/PDF records: what the analysis model is given until
-    vision analysis (BLA-71). They stay in ``retrieval_coverage`` as ``media`` skips."""
-    if all(record.modality == "text" for record in retrieval.records):
-        return retrieval
-    return retrieval.model_copy(
-        update={"records": [r for r in retrieval.records if r.modality == "text"]}
     )
