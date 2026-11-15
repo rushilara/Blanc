@@ -1,4 +1,7 @@
 # Blanc local dev commands. Run from the repo root.
+# Demo path: cp .env.example .env → set GEMINI_API_KEY → make backend / make frontend
+# → open http://localhost:3000 (local SQLite case DB; Gemini for embed/analyze).
+#   make help      list common targets
 #   make backend   FastAPI on http://localhost:$(BACKEND_PORT) with reload
 #   make frontend  Next.js dev server on http://localhost:3000
 #   make import    store extracted evidence in the local case DB, e.g.
@@ -18,7 +21,17 @@ VENV := backend/.venv
 VENV_PY := $(VENV)/bin/python
 VENV_STAMP := $(VENV)/.installed
 
-.PHONY: backend frontend import test test-backend test-live test-frontend install-backend install-frontend coverage clean
+.PHONY: help backend frontend import test test-backend test-live test-frontend install-backend install-frontend coverage clean
+
+help:
+	@echo "Blanc local-first demo (case DB on this machine; Gemini for embed/analyze)"
+	@echo "  1. cp .env.example .env   # set GEMINI_API_KEY; keep DATABASE_URL local"
+	@echo "  2. make backend           # http://localhost:$(BACKEND_PORT)  (health: /health)"
+	@echo "  3. make frontend          # http://localhost:3000  (sign-in → /workspace)"
+	@echo "  4. make import EVIDENCE=path/to/exports TITLE=\"Case name\""
+	@echo "     Import only the extracted evidence folder; keep answer keys and question sets elsewhere."
+	@echo "Other: make test | test-live | coverage | clean"
+	@echo "If the frontend origin is not http://localhost:3000, set CORS_ORIGINS in .env."
 
 $(VENV_PY):
 	$(PYTHON) -m venv $(VENV)
@@ -34,8 +47,9 @@ backend: install-backend
 	cd backend && .venv/bin/uvicorn app.main:app --reload --host 127.0.0.1 --port $(BACKEND_PORT)
 
 # Import extracted evidence into the local SQLite case DB (DATABASE_URL), embedding
-# chunks with Gemini. EVIDENCE is a file or folder, relative to the repo root or
-# absolute; files are read in place, not copied. Prints the case_id on stdout.
+# text chunks with Gemini. EVIDENCE is a file or folder (relative to the repo root
+# or absolute)—use only the evidence export, not answer keys / question sets.
+# Files are read in place, not copied. Prints the case_id on stdout.
 import: install-backend
 	@test -n "$(EVIDENCE)" || { echo 'usage: make import EVIDENCE=path/to/exports TITLE="Case title"  (or CASE=case_id)'; exit 2; }
 	@test -n "$(TITLE)$(CASE)" || { echo 'make import: set TITLE="..." for a new case, or CASE=case_id to add to one'; exit 2; }
