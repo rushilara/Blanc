@@ -231,6 +231,18 @@ def _append_comparison_item(**item: object) -> Callable[[dict], None]:
     return lambda doc: doc["items"].append(item)
 
 
+LINK = {
+    "ref_id": "claim-x",
+    "shared_evidence_ids": ["rec-01"],
+    "remaining_sources": 1,
+    "original_sources": 2,
+}
+
+
+def _without(key: str) -> dict:
+    return {k: v for k, v in LINK.items() if k != key}
+
+
 # (fixture, description, mutation). Every mutation must be rejected by BOTH validators.
 MUTATIONS: list[tuple[str, str, Callable[[dict], None]]] = [
     # EvidenceRecord
@@ -308,6 +320,43 @@ MUTATIONS: list[tuple[str, str, Callable[[dict], None]]] = [
     ("comparison", "missing compared_ref_id key", _delete("items.0.compared_ref_id")),
     ("comparison", "duplicate excluded IDs", _set("excluded_record_ids", ["rec-02", "rec-02"])),
     ("comparison", "null explanation", _set("items.0.explanation", None)),
+    # possible_matches (BLA-63); item 0 has both ref IDs, item 1 only base_ref_id.
+    ("comparison", "link on an item with both refs", _set("items.0.possible_matches", [LINK])),
+    ("comparison", "null possible_matches", _set("items.1.possible_matches", None)),
+    ("comparison", "empty possible_matches", _set("items.1.possible_matches", [])),
+    ("comparison", "link extra field", _set("items.1.possible_matches", [{**LINK, "same": True}])),
+    ("comparison", "link missing ref_id", _set("items.1.possible_matches", [_without("ref_id")])),
+    ("comparison", "link empty ref_id", _set("items.1.possible_matches", [{**LINK, "ref_id": ""}])),
+    (
+        "comparison",
+        "link without shared records",
+        _set("items.1.possible_matches", [{**LINK, "shared_evidence_ids": []}]),
+    ),
+    (
+        "comparison",
+        "link duplicate shared records",
+        _set("items.1.possible_matches", [{**LINK, "shared_evidence_ids": ["rec-01", "rec-01"]}]),
+    ),
+    (
+        "comparison",
+        "link zero remaining",
+        _set("items.1.possible_matches", [{**LINK, "remaining_sources": 0}]),
+    ),
+    (
+        "comparison",
+        "link count as string",
+        _set("items.1.possible_matches", [{**LINK, "original_sources": "2"}]),
+    ),
+    (
+        "comparison",
+        "link count as bool",
+        _set("items.1.possible_matches", [{**LINK, "remaining_sources": True}]),
+    ),
+    (
+        "comparison",
+        "link missing counts",
+        _set("items.1.possible_matches", [_without("original_sources")]),
+    ),
 ]
 
 
@@ -354,6 +403,23 @@ ACCEPTED: list[tuple[str, str, Callable[[dict], None]]] = [
     ("board", "no active analysis", _set("active_analysis_id", None)),
     ("board", "note target omitted", _delete("notes.1.target_item_id")),
     ("comparison", "no explanation", _delete("items.0.explanation")),
+    ("comparison", "link on a base-only item", _set("items.1.possible_matches", [LINK])),
+    (
+        "comparison",
+        "two links on a newly supported item",
+        _append_comparison_item(
+            kind="claim",
+            base_ref_id=None,
+            compared_ref_id="claim-x",
+            support_status="newly_supported",
+            base_evidence_ids=[],
+            compared_evidence_ids=["rec-01"],
+            possible_matches=[
+                {**LINK, "ref_id": "claim-2"},
+                {**LINK, "ref_id": "claim-3", "remaining_sources": 2, "original_sources": 3},
+            ],
+        ),
+    ),
     (
         "comparison",
         "newly supported item",

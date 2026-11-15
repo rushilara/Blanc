@@ -2,6 +2,7 @@
 acceptance criteria. Each test mutates the raw fixture JSON, parses it through the contract
 models (as the server would) and runs the app.validation checks."""
 
+import copy
 import json
 from typing import Any
 
@@ -9,6 +10,7 @@ import pytest
 from _paths import FIXTURE_FILES, FIXTURES_DIR
 from pydantic import ValidationError
 
+from app.comparison import compare_revisions
 from app.contracts import (
     AnalysisRevision,
     EvidenceRecord,
@@ -331,6 +333,233 @@ class TestComparison:
             cmp["base_analysis_id"],
         )
         assert_error(check_comparison(raw), "must be a child of the base revision")
+
+
+# --- possible_matches (BLA-63) ----------------------------------------------------------
+
+
+class TestPossibleMatches:
+    """A computed comparison where base claim-2 (rec-02 + rec-01) loses rec-02 and the child
+    rewords it as claim-x on rec-01, so the two are linked on both items."""
+
+    @pytest.fixture
+    def linked(self, raw: Raw) -> Raw:
+        raw["revision"]["claims"][1]["evidence_ids"] = ["rec-02", "rec-01"]
+        raw["child"]["claims"].append(
+            {
+                "id": "claim-x",
+                "text": "Jordan may meet Casey.",
+                "evidence_ids": ["rec-01"],
+                "status": "reported",
+            }
+        )
+        base, child = revisions_of(raw)
+        raw["comparison"] = compare_revisions(base, child).to_contract_json()
+        return raw
+
+    @staticmethod
+    def items(raw: Raw) -> tuple[Raw, Raw]:
+        items = raw["comparison"]["items"]
+        before = next(i for i in items if i["base_ref_id"] == "claim-2")
+        after = next(i for i in items if i["compared_ref_id"] == "claim-x")
+        return before, after
+
+    def test_computed_links_are_valid(self, linked: Raw) -> None:
+        before, after = self.items(linked)
+        assert before["possible_matches"] == [
+            {
+                "ref_id": "claim-x",
+                "shared_evidence_ids": ["rec-01"],
+                "remaining_sources": 1,
+                "original_sources": 2,
+            }
+        ]
+        assert after["possible_matches"][0]["ref_id"] == "claim-2"
+        assert check_comparison(linked) == []
+
+    def test_link_to_an_unknown_item(self, linked: Raw) -> None:
+        before, _ = self.items(linked)
+        before["possible_matches"][0]["ref_id"] = "claim-9"
+        assert_error(check_comparison(linked), "possible match claim-9 is not a newly_supported")
+
+    def test_link_to_an_item_of_another_kind(self, linked: Raw) -> None:
+        _, after = self.items(linked)
+        after["possible_matches"][0]["ref_id"] = "edge-2"
+        assert_error(check_comparison(linked), "possible match edge-2 is not an unmatched base")
+
+    def test_link_on_an_item_that_cannot_have_one(self, linked: Raw) -> None:
+        _, after = self.items(linked)
+        after["support_status"] = "unresolved"
+        assert_error(check_comparison(linked), "possible_matches is only for")
+
+    def test_link_on_an_item_with_both_refs_is_a_schema_error(self, linked: Raw) -> None:
+        before, _ = self.items(linked)
+        linked["comparison"]["items"][0]["possible_matches"] = before["possible_matches"]
+        model, errors = schema_errors(RevisionComparison, linked["comparison"])
+        assert model is None
+        assert_error(errors, "possible_matches is only for items with one ref ID null")
+
+    def test_shared_must_equal_new_item_citations(self, linked: Raw) -> None:
+        for item in self.items(linked):
+            item["possible_matches"][0]["shared_evidence_ids"] = ["rec-02"]
+        errors = check_comparison(linked)
+        assert_error(errors, "shared_evidence_ids must equal the new item's unique cited records")
+        assert_error(errors, "possible match claim-x shares excluded records")
+
+    def test_new_item_citations_must_be_permitted_base_subset(self, linked: Raw) -> None:
+        # Hand-written link: new claim also cites rec-04, which the base never cited.
+        before, after = self.items(linked)
+        after["compared_evidence_ids"] = ["rec-01", "rec-04"]
+        linked["child"]["claims"][-1]["evidence_ids"] = ["rec-01", "rec-04"]
+        for item in (before, after):
+            item["possible_matches"][0]["shared_evidence_ids"] = ["rec-01"]
+        assert_error(
+            check_comparison(linked),
+            "cites records that are not among the base item's still-permitted citations",
+        )
+
+    def test_edge_link_requires_same_direction_endpoints(self, raw: Raw) -> None:
+        # Base edge-1 cites rec-01+rec-02; exclude rec-02; child adds a reversed edge on rec-01.
+        raw["revision"]["graph"]["edges"][0]["evidence_ids"] = ["rec-01", "rec-02"]
+        edge = copy.deepcopy(raw["revision"]["graph"]["edges"][0])
+        edge["id"] = "edge-rev"
+        edge["source"], edge["target"] = edge["target"], edge["source"]
+        edge["evidence_ids"] = ["rec-01"]
+        raw["child"]["graph"]["edges"] = [
+            e for e in raw["child"]["graph"]["edges"] if e["id"] != "edge-1"
+        ] + [edge]
+        base, child = revisions_of(raw)
+        raw["comparison"] = compare_revisions(base, child).to_contract_json()
+        # compare_revisions must not link them; a hand-written link must be rejected.
+        before = next(
+            i
+            for i in raw["comparison"]["items"]
+            if i["kind"] == "edge" and i["base_ref_id"] == "edge-1" and i["compared_ref_id"] is None
+        )
+        after = next(
+            i
+            for i in raw["comparison"]["items"]
+            if i["kind"] == "edge" and i["compared_ref_id"] == "edge-rev"
+        )
+        assert "possible_matches" not in before and "possible_matches" not in after
+        link = {
+            "shared_evidence_ids": ["rec-01"],
+            "remaining_sources": 1,
+            "original_sources": 2,
+        }
+        before["possible_matches"] = [{"ref_id": "edge-rev", **link}]
+        after["possible_matches"] = [{"ref_id": "edge-1", **link}]
+        assert_error(
+            check_comparison(raw),
+            "edge endpoints must match in the same direction",
+        )
+
+    def _reject_edge_link_after_endpoint_change(self, raw: Raw, **node_update: str) -> None:
+        # compare_revisions also matches label+type; ID-only endpoints must not pass validation.
+        raw["revision"]["graph"]["edges"][0]["evidence_ids"] = ["rec-01", "rec-02"]
+        edge = copy.deepcopy(raw["revision"]["graph"]["edges"][0])
+        edge["id"] = "edge-x"
+        edge["evidence_ids"] = ["rec-01"]
+        for node in raw["child"]["graph"]["nodes"]:
+            if node["id"] == "jordan":
+                node.update(node_update)
+        raw["child"]["graph"]["edges"] = [
+            e for e in raw["child"]["graph"]["edges"] if e["id"] != "edge-1"
+        ] + [edge]
+        base, child = revisions_of(raw)
+        raw["comparison"] = compare_revisions(base, child).to_contract_json()
+        before = next(
+            i
+            for i in raw["comparison"]["items"]
+            if i["kind"] == "edge" and i["base_ref_id"] == "edge-1" and i["compared_ref_id"] is None
+        )
+        after = next(
+            i
+            for i in raw["comparison"]["items"]
+            if i["kind"] == "edge" and i["compared_ref_id"] == "edge-x"
+        )
+        assert "possible_matches" not in before and "possible_matches" not in after
+        link = {
+            "shared_evidence_ids": ["rec-01"],
+            "remaining_sources": 1,
+            "original_sources": 2,
+        }
+        before["possible_matches"] = [{"ref_id": "edge-x", **link}]
+        after["possible_matches"] = [{"ref_id": "edge-1", **link}]
+        assert_error(
+            check_comparison(raw),
+            "edge endpoints must match in the same direction",
+        )
+
+    def test_edge_link_rejects_relabelled_endpoint(self, raw: Raw) -> None:
+        self._reject_edge_link_after_endpoint_change(raw, label="Morgan")
+
+    def test_edge_link_rejects_endpoint_type_change(self, raw: Raw) -> None:
+        self._reject_edge_link_after_endpoint_change(raw, type="organization")
+
+    def test_edge_link_allows_normalised_label_differences(self, raw: Raw) -> None:
+        # Case/spacing-only label differences still match (same _wording as compare_revisions).
+        raw["revision"]["graph"]["edges"][0]["evidence_ids"] = ["rec-01", "rec-02"]
+        for node in raw["child"]["graph"]["nodes"]:
+            if node["id"] == "jordan":
+                node["label"] = "  JORDAN. "
+        edge = copy.deepcopy(raw["revision"]["graph"]["edges"][0])
+        edge["id"] = "edge-x"
+        edge["type"] = "emailed"  # type may change; endpoints are what matter
+        edge["evidence_ids"] = ["rec-01"]
+        raw["child"]["graph"]["edges"] = [
+            e for e in raw["child"]["graph"]["edges"] if e["id"] != "edge-1"
+        ] + [edge]
+        base, child = revisions_of(raw)
+        raw["comparison"] = compare_revisions(base, child).to_contract_json()
+        before = next(
+            i
+            for i in raw["comparison"]["items"]
+            if i["kind"] == "edge" and i["base_ref_id"] == "edge-1" and i["compared_ref_id"] is None
+        )
+        assert before.get("possible_matches")
+        assert check_comparison(raw) == []
+
+    def test_counts_must_match_the_base_item(self, linked: Raw) -> None:
+        for item in self.items(linked):
+            item["possible_matches"][0]["remaining_sources"] = 2
+        assert_error(
+            check_comparison(linked), "claim-x source counts do not match", "expected 1 of 2"
+        )
+
+    def test_link_on_a_base_item_that_lost_no_source(self, raw: Raw) -> None:
+        # claim-2 now cites only rec-01, which is not excluded: no link may be computed...
+        raw["revision"]["claims"][1]["evidence_ids"] = ["rec-01"]
+        raw["child"]["claims"].append(
+            {
+                "id": "claim-x",
+                "text": "Jordan may meet Casey.",
+                "evidence_ids": ["rec-01"],
+                "status": "reported",
+            }
+        )
+        base, child = revisions_of(raw)
+        raw["comparison"] = compare_revisions(base, child).to_contract_json()
+        before, after = self.items(raw)
+        assert "possible_matches" not in before and "possible_matches" not in after
+        assert check_comparison(raw) == []
+        # ...and a hand-written one is rejected.
+        link = {"shared_evidence_ids": ["rec-01"], "remaining_sources": 1, "original_sources": 1}
+        before["possible_matches"] = [{"ref_id": "claim-x", **link}]
+        after["possible_matches"] = [{"ref_id": "claim-2", **link}]
+        errors = check_comparison(raw)
+        assert_error(errors, "claim-x links a base item that lost no cited source")
+        assert_error(errors, "claim-x must have fewer remaining than original sources")
+
+    def test_link_must_be_listed_on_both_items(self, linked: Raw) -> None:
+        _, after = self.items(linked)
+        del after["possible_matches"]
+        assert_error(check_comparison(linked), "claim-x is not listed the same way")
+
+    def test_link_must_not_repeat(self, linked: Raw) -> None:
+        before, _ = self.items(linked)
+        before["possible_matches"].append(before["possible_matches"][0])
+        assert_error(check_comparison(linked), "possible_matches repeats claim-x")
 
 
 # --- Schema-error helpers ---------------------------------------------------------------
