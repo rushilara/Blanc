@@ -6,10 +6,15 @@ import { VersionsDrawer } from "./VersionsDrawer";
 import { SourceReferences } from "./SourceReferences";
 import { analyzeCase, ApiError, getSource, getRevision, listCases, loadRevisionSources, searchCase, type CaseSummary, type SearchResult } from "@/lib/live-api";
 import type { AnalysisRevision, EvidenceRecord } from "@/lib/analysis";
+import { isRetryableStatus } from "@/lib/retryable";
 
 type RetryAction =
   | { kind: "search" | "analysis" }
   | { kind: "revision"; analysisId: string };
+
+type SourceLoad =
+  | { ok: true; record: EvidenceRecord }
+  | { ok: false; retryable: boolean };
 
 export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: string }) {
   const [cases, setCases] = useState<CaseSummary[]>([]);
@@ -24,6 +29,9 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
   const [analysis, setAnalysis] = useState<AnalysisRevision | null>(null);
   const [sources, setSources] = useState<EvidenceRecord[]>([]);
   const active = useRef<AbortController | null>(null);
+  const questionRef = useRef<HTMLTextAreaElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const retryRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -36,6 +44,11 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
   }, [preferredCaseId, reload]);
   useEffect(() => () => active.current?.abort(), []);
 
+  useEffect(() => {
+    if (pending) cancelRef.current?.focus();
+    else if (retryAction && error) retryRef.current?.focus();
+  }, [pending, retryAction, error]);
+
   function changeCase(id: string) {
     active.current?.abort();
     active.current = null;
@@ -47,6 +60,13 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
     active.current = null;
     setPending(null);
     // Keep the question so an interrupted ask can be retried.
+    queueMicrotask(() => questionRef.current?.focus());
+  }
+
+  function rememberRetry(action: RetryAction, err: unknown) {
+    const status = err instanceof ApiError ? err.status : undefined;
+    if (isRetryableStatus(status)) setRetryAction(action);
+    else setRetryAction(null);
   }
 
   async function run(mode: "search" | "analysis") {
@@ -70,7 +90,7 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
     } catch (e) {
       if (!controller.signal.aborted) {
         setError(e instanceof ApiError ? e.message : "Could not reach the backend. Check that it is running, then try again.");
-        setRetryAction({ kind: mode });
+        rememberRetry({ kind: mode }, e);
       }
     } finally {
       if (active.current === controller) { setPending(null); active.current = null; }
@@ -97,7 +117,7 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
     } catch (e) {
       if (!controller.signal.aborted) {
         setError(e instanceof ApiError ? e.message : "Could not open the saved version. Check the backend connection.");
-        setRetryAction({ kind: "revision", analysisId });
+        rememberRetry({ kind: "revision", analysisId }, e);
       }
       return false;
     } finally {
@@ -105,14 +125,17 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
     }
   }
 
-  async function inspect(id: string) {
+  async function inspect(id: string): Promise<SourceLoad> {
     const controller = active.current;
     const caseId = selected;
     try {
       const record = await getSource(caseId, id, controller?.signal);
       // A case change unmounts SearchSources; it discards a late source response.
-      return record;
-    } catch { return null; }
+      return { ok: true, record };
+    } catch (e) {
+      const status = e instanceof ApiError ? e.status : undefined;
+      return { ok: false, retryable: isRetryableStatus(status) };
+    }
   }
 
   function retryFailed() {
@@ -137,7 +160,7 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
             </select>
           </div>
           <div className="space-y-2"><label htmlFor="live-question" className="block text-sm font-semibold">Investigation question</label>
-            <textarea id="live-question" required maxLength={4000} rows={3} value={question} onChange={e => setQuestion(e.target.value)} disabled={!!pending}
+            <textarea ref={questionRef} id="live-question" required maxLength={4000} rows={3} value={question} onChange={e => setQuestion(e.target.value)} disabled={!!pending}
               className="w-full rounded border border-zinc-400 bg-white p-3 dark:bg-zinc-900" placeholder="What would you like to establish from this case’s evidence?" />
           </div>
           <div className="flex flex-wrap gap-3">
@@ -147,11 +170,11 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
         </form>}
         {pending && <p role="status" className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <span>{pending === "search" ? "Retrieving source excerpts…" : pending === "revision" ? "Opening saved version…" : "Waiting for a validated analysis…"}</span>
-          <button type="button" className="underline" onClick={cancelRequest}>Cancel</button>
+          <button type="button" ref={cancelRef} className="underline" onClick={cancelRequest}>Cancel</button>
         </p>}
         {error && <div role="alert" className="space-y-2 rounded border border-red-400 p-4 text-sm [overflow-wrap:anywhere]">
           <p>{error}</p>
-          {retryAction && <button type="button" className="underline" onClick={retryFailed}>Retry</button>}
+          {retryAction && <button type="button" ref={retryRef} className="underline" onClick={retryFailed}>Retry</button>}
         </div>}
         {search && <div className="space-y-4" aria-label="Search results">
           <h2 className="text-lg font-semibold [overflow-wrap:anywhere]">Evidence for: {search.question}</h2>
@@ -171,20 +194,27 @@ export function LiveWorkspace({ preferredCaseId = "" }: { preferredCaseId?: stri
   );
 }
 
-function SearchSources({ recordId, caseId, load }: { recordId: string; caseId: string; load: (id: string) => Promise<EvidenceRecord | null> }) {
+function SearchSources({ recordId, caseId, load }: { recordId: string; caseId: string; load: (id: string) => Promise<SourceLoad> }) {
   const [record, setRecord] = useState<EvidenceRecord | null>(null);
   const [state, setState] = useState<"idle" | "loading" | "error">("idle");
+  const [retryable, setRetryable] = useState(true);
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
-  if (record) return <SourceReferences caseId={caseId} ids={[recordId]} records={[record]} autoOpen />;
-  return <div><button type="button" disabled={state === "loading"} className="text-sm text-blue-700 underline dark:text-blue-300" onClick={async () => {
-    setState("loading"); const source = await load(recordId);
+
+  async function tryLoad() {
+    setState("loading");
+    const result = await load(recordId);
     if (!mounted.current) return;
-    if (source) { setRecord(source); setState("idle"); } else setState("error");
-  }}>{state === "loading" ? "Loading original…" : "Inspect original source"}</button>
-    {state === "error" && <p role="alert" className="text-sm [overflow-wrap:anywhere]">Source unavailable. <button type="button" className="underline" onClick={async () => {
-      setState("loading"); const source = await load(recordId);
-      if (!mounted.current) return;
-      if (source) { setRecord(source); setState("idle"); } else setState("error");
-    }}>Retry</button></p>}</div>;
+    if (result.ok) {
+      setRecord(result.record);
+      setState("idle");
+    } else {
+      setRetryable(result.retryable);
+      setState("error");
+    }
+  }
+
+  if (record) return <SourceReferences caseId={caseId} ids={[recordId]} records={[record]} autoOpen />;
+  return <div><button type="button" disabled={state === "loading"} className="text-sm text-blue-700 underline dark:text-blue-300" onClick={() => void tryLoad()}>{state === "loading" ? "Loading original…" : "Inspect original source"}</button>
+    {state === "error" && <p role="alert" className="text-sm [overflow-wrap:anywhere]">Source unavailable.{retryable && <>{" "}<button type="button" className="underline" onClick={() => void tryLoad()}>Retry</button></>}</p>}</div>;
 }

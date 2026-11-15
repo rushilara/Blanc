@@ -8,7 +8,7 @@ import { useEffect, useRef, useSyncExternalStore, useState } from "react";
 import type { AnalysisRevision, EvidenceRecord } from "@/lib/analysis";
 import { citedRecordIds } from "@/lib/citations";
 import { anchorCitations, splitCitations, type Anchor } from "@/lib/inline-citations";
-import { analyzeCase, listCaseRecordsPage, listCases, loadRevisionSources, type CaseSummary } from "@/lib/live-api";
+import { analyzeCase, ApiError, listCaseRecordsPage, listCases, loadRevisionSources, type CaseSummary } from "@/lib/live-api";
 
 const views = ["Findings", "Connections", "Timeline", "Revisions"] as const;
 
@@ -39,6 +39,9 @@ export function Findings() {
   const [casesReload, setCasesReload] = useState(0);
   const [casesError, setCasesError] = useState(false);
   const request = useRef<AbortController | null>(null);
+  const questionRef = useRef<HTMLTextAreaElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const retryAskRef = useRef<HTMLButtonElement>(null);
   const caseTitle = cases?.find(item => item.case_id === caseId)?.title ?? caseId;
 
   const [feedback, setFeedback] = useState("");
@@ -56,7 +59,7 @@ export function Findings() {
       if (!controller.signal.aborted) {
         setCases([]);
         setCasesError(true);
-        setFeedback(error instanceof Error ? error.message : "Could not load cases.");
+        setFeedback(error instanceof ApiError ? error.message : "Could not load cases. Check the backend connection.");
       }
     });
     return () => {
@@ -68,6 +71,11 @@ export function Findings() {
   const [view, setView] = useState<(typeof views)[number]>("Findings");
   const [open, setOpen] = useState<string>();
   const sources = records;
+
+  useEffect(() => {
+    if (loading) cancelRef.current?.focus();
+    else if (askFailed) retryAskRef.current?.focus();
+  }, [loading, askFailed]);
   // Record IDs the model wrote into its prose become numbered citations too. Numbering
   // follows citation order, then any loaded source mentioned only in prose.
   const knownIds = revision ? [...citedRecordIds(revision), ...records.map(record => record.record_id)] : [];
@@ -103,6 +111,7 @@ export function Findings() {
     request.current = null;
     setLoading(false);
     // Keep the question so an interrupted analysis can be retried.
+    queueMicrotask(() => questionRef.current?.focus());
   }
 
   async function ask() {
@@ -138,7 +147,7 @@ export function Findings() {
     } catch (error) {
       if (!controller.signal.aborted) {
         setAskFailed(true);
-        setFeedback(error instanceof Error ? error.message : "Analysis could not be completed.");
+        setFeedback(error instanceof ApiError ? error.message : "Could not reach the backend. Check that it is running, then try again.");
       }
     } finally {
       if (request.current === controller) {
@@ -243,7 +252,7 @@ export function Findings() {
     </div> : <main className="blanc-reading blanc-entry">
       <h1 aria-label={greeting || undefined}><TypedGreeting key={greeting} text={greeting} /></h1>
       <form onSubmit={event => { event.preventDefault(); void ask(); }}>
-        <textarea rows={2} required aria-label="Ask a question about a case" placeholder="Ask a question about a case…" value={question} disabled={loading} onKeyDown={event => {
+        <textarea ref={questionRef} rows={2} required aria-label="Ask a question about a case" placeholder="Ask a question about a case…" value={question} disabled={loading} onKeyDown={event => {
           if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
             event.preventDefault();
             event.currentTarget.form?.requestSubmit();
@@ -251,8 +260,8 @@ export function Findings() {
         }} onChange={event => setQuestion(event.target.value)} />
         <button type="submit" aria-label="Ask question" disabled={loading || !question.trim()}>→</button>
       </form>
-      {loading && <p role="status">Searching case records… <button type="button" className="blanc-retry" onClick={cancelAsk}>Cancel</button></p>}
-      {!loading && feedback && <p role={askFailed || casesError ? "alert" : "status"}>{feedback}{askFailed && question.trim() && <>{" "}<button type="button" className="blanc-retry" onClick={() => void ask()}>Retry analysis</button></>}{casesError && <>{" "}<button type="button" className="blanc-retry" onClick={() => { setCases(null); setCasesError(false); setFeedback(""); setCasesReload(n => n + 1); }}>Retry</button></>}</p>}
+      {loading && <p role="status">Searching case records… <button type="button" ref={cancelRef} className="blanc-retry" onClick={cancelAsk}>Cancel</button></p>}
+      {!loading && feedback && <p role={askFailed || casesError ? "alert" : "status"}>{feedback}{askFailed && question.trim() && <>{" "}<button type="button" ref={retryAskRef} className="blanc-retry" onClick={() => void ask()}>Retry analysis</button></>}{casesError && <>{" "}<button type="button" className="blanc-retry" onClick={() => { setCases(null); setCasesError(false); setFeedback(""); setCasesReload(n => n + 1); }}>Retry</button></>}</p>}
       <section className="blanc-case-list" aria-labelledby="blanc-case-list-heading">
         <h2 id="blanc-case-list-heading">Available cases</h2>
         {cases === null && <p role="status">Loading cases…</p>}

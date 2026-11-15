@@ -16,14 +16,13 @@ test("BackendStatus starts in a checking status state", () => {
   assert.match(html, /Checking backend/);
 });
 
-test("QuestionInput keeps the draft text and exposes a retry control after failure markup is present", () => {
-  // Error markup is client-driven; assert the input preserves the provided question
-  // and that the component source contract keeps draft + Retry wired (render baseline).
+test("QuestionInput keeps the provided draft on the initial render", () => {
   const html = renderToStaticMarkup(
     createElement(QuestionInput, { question: "Who paid the invoice?", onAsk: async () => {} }),
   );
   assert.match(html, /value="Who paid the invoice\?"/);
   assert.match(html, /Ask question/);
+  // Retry after failure is covered by cancel-retry.test.ts (client interaction).
   assert.doesNotMatch(html, /role="alert"/);
 });
 

@@ -33,13 +33,15 @@ export function BackendStatus() {
   }, [reload]);
 
   return (
-    <span
-      role={status === "unreachable" ? "alert" : "status"}
-      className="flex flex-wrap items-center gap-2 text-sm text-zinc-600 dark:text-zinc-400"
-      title={API_BASE_URL}
-    >
-      <span className={`h-2 w-2 shrink-0 rounded-full ${DOT[status]}`} aria-hidden />
-      {LABELS[status]}
+    <span className="flex flex-wrap items-center gap-2 text-sm text-zinc-600 dark:text-zinc-400" title={API_BASE_URL}>
+      <span
+        key={status}
+        role={status === "unreachable" ? "alert" : "status"}
+        className="flex flex-wrap items-center gap-2"
+      >
+        <span className={`h-2 w-2 shrink-0 rounded-full ${DOT[status]}`} aria-hidden />
+        {LABELS[status]}
+      </span>
       {status === "unreachable" && (
         <button
           type="button"

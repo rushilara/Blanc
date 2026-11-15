@@ -57,7 +57,7 @@ export function VersionsDrawer({ caseId, caseTitle, activeId, busy, onSelect }: 
               {roots.map(root => <option key={root.analysis_id} value={root.analysis_id}>{root.question} · {root.analysis_id}</option>)}
             </select>
           </label>
-          {!visible.length ? <p role="status">No versions in this investigation.</p> : <ol className="space-y-4" aria-label="Revision history">
+          <ol className="space-y-4" aria-label="Revision history">
             {visible.map(revision => <li key={revision.analysis_id} data-revision-id={revision.analysis_id} className="space-y-3 rounded-lg border border-zinc-300 p-4 text-sm dark:border-zinc-700">
               <p className="font-semibold [overflow-wrap:anywhere]">{revision.question}</p>
               <time dateTime={revision.created_at} className="block break-all font-mono text-xs">{revision.created_at}</time>
@@ -76,7 +76,7 @@ export function VersionsDrawer({ caseId, caseTitle, activeId, busy, onSelect }: 
                 {activeId === revision.analysis_id ? "Current version" : "Open version"}
               </button>
             </li>)}
-          </ol>}
+          </ol>
         </>}
       </>}
       {busy && <p role="status" className="mt-4 text-sm">Opening saved version and original sources…</p>}

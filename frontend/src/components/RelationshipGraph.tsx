@@ -25,11 +25,14 @@ import {
   type GraphEdge,
 } from "@/lib/graphElements";
 
+/** Thrown by the dynamic() catch fallback when the canvas chunk fails to import. */
+const GRAPH_LOAD_ERROR = "Relationship graph failed to load.";
+
 const RelationshipGraphCanvas = dynamic(
   () =>
     import("./RelationshipGraphCanvas").catch(() => ({
       default: function GraphLoadError(): never {
-        throw new Error("Relationship graph failed to load.");
+        throw new Error(GRAPH_LOAD_ERROR);
       },
     })),
   {
@@ -43,7 +46,7 @@ const RelationshipGraphCanvas = dynamic(
 );
 
 class GraphCanvasBoundary extends Component<
-  { children: ReactNode; onError: () => void },
+  { children: ReactNode; onError: (error: Error) => void },
   { failed: boolean }
 > {
   state = { failed: false };
@@ -52,8 +55,8 @@ class GraphCanvasBoundary extends Component<
     return { failed: true };
   }
 
-  componentDidCatch() {
-    this.props.onError();
+  componentDidCatch(error: Error) {
+    this.props.onError(error);
   }
 
   render() {
@@ -84,7 +87,8 @@ export function RelationshipGraph({
   const [status, setStatus] = useState<string | null>(null);
   const [pair, setPair] = useState<GraphEdge[] | null>(null);
   const [canvasKey, setCanvasKey] = useState(0);
-  const [canvasFailed, setCanvasFailed] = useState(false);
+  /** `load` = chunk import failed (Retry cannot recover); `render` = canvas threw after load. */
+  const [canvasFailed, setCanvasFailed] = useState<"load" | "render" | null>(null);
   const pairHeading = useRef<HTMLHeadingElement>(null);
   const pairTitleId = useId();
   const { drawable, dangling } = useMemo(() => partitionEdges(graph.nodes, graph.edges), [graph]);
@@ -150,22 +154,40 @@ export function RelationshipGraph({
         <div className="h-[min(28rem,55vh)] min-h-[18rem] overflow-hidden rounded-lg border border-zinc-200 dark:border-zinc-800">
           {canvasFailed ? (
             <p role="alert" className="space-y-2 p-5 text-sm text-red-700 [overflow-wrap:anywhere] dark:text-red-300">
-              <span>The relationship graph could not be drawn.</span>{" "}
-              <button
-                type="button"
-                className="underline"
-                onClick={() => {
-                  setCanvasFailed(false);
-                  setCanvasKey((key) => key + 1);
-                }}
-              >
-                Retry
-              </button>
+              <span>
+                {canvasFailed === "load"
+                  ? "The relationship graph failed to load."
+                  : "The relationship graph could not be drawn."}
+              </span>{" "}
+              {canvasFailed === "load" ? (
+                <button
+                  type="button"
+                  className="underline"
+                  onClick={() => {
+                    window.location.reload();
+                  }}
+                >
+                  Reload the page
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="underline"
+                  onClick={() => {
+                    setCanvasFailed(null);
+                    setCanvasKey((key) => key + 1);
+                  }}
+                >
+                  Retry
+                </button>
+              )}
             </p>
           ) : (
             <GraphCanvasBoundary
               key={canvasKey}
-              onError={() => setCanvasFailed(true)}
+              onError={(error) =>
+                setCanvasFailed(error.message === GRAPH_LOAD_ERROR ? "load" : "render")
+              }
             >
               <RelationshipGraphCanvas
                 nodes={graph.nodes}

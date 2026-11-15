@@ -5,6 +5,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { SourceContent } from "@/components/SourceContent";
 import type { EvidenceRecord } from "@/lib/analysis";
 import { fetchRecord, RecordFetchError } from "@/lib/records";
+import { isRetryableStatus } from "@/lib/retryable";
 
 const LATER = "available in a later step";
 
@@ -27,7 +28,7 @@ type SourceReferencesProps = {
 type RemoteState =
   | { status: "loading" }
   | { status: "ready"; record: EvidenceRecord; excerpt: string }
-  | { status: "error"; message: string };
+  | { status: "error"; message: string; retryable: boolean };
 
 function resolveFromProp(
   records: EvidenceRecord[],
@@ -125,7 +126,8 @@ function RecordSection({
           err instanceof RecordFetchError
             ? err.message
             : "Could not load this source record.";
-        setRemote({ status: "error", message });
+        const status = err instanceof RecordFetchError ? err.status : null;
+        setRemote({ status: "error", message, retryable: isRetryableStatus(status) });
       });
 
     return () => controller.abort();
@@ -143,7 +145,7 @@ function RecordSection({
       : null;
   const loading = !fromProp && (remote === null || remote.status === "loading");
   const error =
-    !fromProp && remote?.status === "error" ? remote.message : null;
+    !fromProp && remote?.status === "error" ? remote : null;
 
   return (
     <article
@@ -173,17 +175,22 @@ function RecordSection({
 
       {error && (
         <p role="alert" className="text-sm text-red-700 [overflow-wrap:anywhere] dark:text-red-300">
-          {error}{" "}
-          <button
-            type="button"
-            className="underline"
-            onClick={() => {
-              setRemote({ status: "loading" });
-              setReload((n) => n + 1);
-            }}
-          >
-            Retry
-          </button>
+          {error.message}
+          {error.retryable && (
+            <>
+              {" "}
+              <button
+                type="button"
+                className="underline"
+                onClick={() => {
+                  setRemote({ status: "loading" });
+                  setReload((n) => n + 1);
+                }}
+              >
+                Retry
+              </button>
+            </>
+          )}
         </p>
       )}
 
