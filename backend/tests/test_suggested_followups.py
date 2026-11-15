@@ -22,7 +22,6 @@ from app.analysis_llm import (
 )
 from app.contracts import (
     MAX_FOLLOWUP_CHARS,
-    MAX_SUGGESTED_FOLLOWUPS,
     AnalysisRevision,
     EvidenceRecord,
 )
