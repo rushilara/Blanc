@@ -18,6 +18,9 @@ type SourceReferencesProps = {
   excludedRecordIds?: string[];
   onExclude?: (recordId: string) => void;
   onAnnotate?: (recordId: string) => void;
+  /** Hide the built-in chips when the caller renders its own citation controls. */
+  hideTriggers?: boolean;
+  onClose?: () => void;
 };
 
 type RemoteState =
@@ -224,6 +227,8 @@ export function SourceReferences({
   excludedRecordIds = [],
   onExclude,
   onAnnotate,
+  hideTriggers = false,
+  onClose,
 }: SourceReferencesProps) {
   const dialog = useRef<HTMLDialogElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -253,7 +258,7 @@ export function SourceReferences({
 
   return (
     <>
-      {triggerLabel ? (
+      {hideTriggers ? null : triggerLabel ? (
         <button
           type="button"
           disabled={!uniqueIds.length}
@@ -286,7 +291,10 @@ export function SourceReferences({
           ref={dialog}
           aria-labelledby={titleId}
           aria-modal="true"
-          onClose={() => setDialogOpen(false)}
+          onClose={() => {
+            setDialogOpen(false);
+            onClose?.();
+          }}
           className="fixed inset-0 m-0 h-dvh max-h-none w-full max-w-none overflow-y-auto border-0 bg-white p-0 text-zinc-900 shadow-xl open:flex open:flex-col backdrop:bg-black/40 dark:bg-zinc-950 dark:text-zinc-100 sm:inset-y-0 sm:left-auto sm:right-0 sm:w-full sm:max-w-lg sm:border-l sm:border-zinc-200 dark:sm:border-zinc-700"
         >
           <header className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-zinc-200 bg-white px-5 py-4 dark:border-zinc-800 dark:bg-zinc-950">

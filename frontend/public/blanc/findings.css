@@ -220,3 +220,10 @@
   from { opacity: 0; translate: 0 5px; }
   to { opacity: 1; translate: 0 0; }
 }
+
+/* Evidence status: keeps a reported or inferred finding from reading as fact. */
+.blanc-status { display: inline-block; margin-right: 8px; padding: 0 6px; border: 1px solid currentColor; border-radius: 3px; font: 600 10px/1.6 system-ui, sans-serif; letter-spacing: .04em; text-transform: uppercase; vertical-align: 2px; color: #665548; }
+.blanc-status-observed { color: #2f5d3a; }
+.blanc-status-reported { color: #3b4f7a; }
+.blanc-status-inferred { color: #8a5a12; }
+.blanc-status-unresolved { color: #822b33; }

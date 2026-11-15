@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import { presentSource } from "@/lib/source-presentation";
+import { SourceReferences } from "@/components/SourceReferences";
+import { TimelineView } from "@/components/TimelineView";
 import { useEffect, useRef, useSyncExternalStore, useState } from "react";
 import type { AnalysisRevision, EvidenceRecord } from "@/lib/analysis";
 import { analyzeCase, getSource, listCaseRecords, listCases, type CaseSummary } from "@/lib/live-api";
@@ -57,7 +59,6 @@ export function Findings() {
   const [view, setView] = useState<(typeof views)[number]>("Findings");
   const [open, setOpen] = useState<string>();
   const sources = records;
-  const active = sources.find(record => record.record_id === open);
   const nodes = new Map(revision?.graph.nodes.map(node => [node.id, node.label]));
 
   async function ask() {
@@ -145,16 +146,16 @@ export function Findings() {
         <h2>Finding</h2>
         <p>{revision.answer || "No answer in this revision."}</p>
         <h2>Why</h2>
-        {revision.claims.map(claim => <p key={claim.id}>{claim.text} <sup>{claim.evidence_ids.map(id => citation(id))}</sup></p>)}
+        {revision.claims.map(claim => <p key={claim.id}><StatusLabel value={claim.status} />{claim.text} <sup>{claim.evidence_ids.map(id => citation(id))}</sup></p>)}
         {revision.unresolved_questions.length > 0 && <><h2>What remains unresolved</h2>{revision.unresolved_questions.map(question => <p key={question}>{question}</p>)}</>}
       </>}
-      {view === "Connections" && <><h2>Connections</h2>{revision.graph.edges.map(edge => <p key={edge.id}>{nodes.get(edge.source) ?? edge.source} → {nodes.get(edge.target) ?? edge.target}<br />{edge.description ?? edge.type.replaceAll("_", " ")} <sup>{edge.evidence_ids.map(id => citation(id))}</sup></p>)}</>}
-      {view === "Timeline" && <><h2>Timeline</h2>{revision.timeline_events.map(event => <p key={event.id}><small>{event.timestamp ?? "Undated"}</small><br />{event.description} <sup>{event.evidence_ids.map(id => citation(id))}</sup></p>)}</>}
+      {view === "Connections" && <><h2>Connections</h2>{revision.graph.edges.map(edge => <p key={edge.id}><StatusLabel value={edge.status} />{nodes.get(edge.source) ?? edge.source} → {nodes.get(edge.target) ?? edge.target}<br />{edge.description ?? edge.type.replaceAll("_", " ")} <sup>{edge.evidence_ids.map(id => citation(id))}</sup></p>)}</>}
+      {view === "Timeline" && <><h2>Timeline</h2><TimelineView key={revision.analysis_id} events={revision.timeline_events} caseId={revision.case_id} records={sources} excludedRecordIds={revision.excluded_record_ids} /></>}
       {view === "Revisions" && <><h2>Current revision</h2><p>{revision.analysis_id}</p><p>Excluded records: {revision.excluded_record_ids.join(", ") || "None"}</p></>}
-      {active && <EvidenceViewer key={active.record_id} record={active} onClose={() => setOpen(undefined)} />}
+      {open && <SourceReferences key={open} ids={[open]} caseId={revision.case_id} records={sources} excludedRecordIds={revision.excluded_record_ids} autoOpen hideTriggers onClose={() => setOpen(undefined)} />}
       {view === "Findings" && <section className="blanc-ruled"><h3>Follow-ups</h3><input aria-label="Ask a follow-up" placeholder="Ask a follow-up…" disabled /><small>Follow-up analysis is not connected yet.</small></section>}
     </main></div> : <main className="blanc-reading blanc-entry">
-      <h1><TypedGreeting key={greeting} text={greeting} /></h1>
+      <h1 aria-label={greeting || undefined}><TypedGreeting key={greeting} text={greeting} /></h1>
       <form onSubmit={event => { event.preventDefault(); void ask(); }}>
         <textarea rows={2} required aria-label="Ask a question about a case" placeholder="Ask a question about a case…" value={question} onKeyDown={event => {
           if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
@@ -241,7 +242,7 @@ function TypedGreeting({ text }: { text: string }) {
     return () => window.clearInterval(timer);
   }, [length]);
 
-  return <span className="blanc-typed-greeting" aria-label={text}>
+  return <span className="blanc-typed-greeting">
     <span className="blanc-greeting-space" aria-hidden="true">{text || "\u00a0"}</span>
     <span className="blanc-greeting-ink" aria-hidden="true">{letters.slice(0, Math.max(0, count - 1)).join("")}{count > 0 && <span key={count} className="blanc-greeting-letter">{letters[count - 1]}</span>}{count < length && <span className="blanc-greeting-caret" />}</span>
   </span>;
@@ -251,28 +252,6 @@ function sourceTitle(record: EvidenceRecord) {
   return presentSource(record)?.title ?? (record.source_file.split(/[\\/]/).filter(Boolean).at(-1) || "Evidence record");
 }
 
-function EvidenceViewer({ record, onClose }: { record: EvidenceRecord; onClose: () => void }) {
-  const dialog = useRef<HTMLDialogElement>(null);
-  useEffect(() => { dialog.current?.showModal(); }, []);
-
-  const presentation = presentSource(record);
-
-  return <dialog ref={dialog} className="blanc-evidence-viewer" onClose={onClose} aria-labelledby="blanc-source-title">
-    <button type="button" onClick={() => dialog.current?.close()}>Close</button>
-    <h2 id="blanc-source-title">{sourceTitle(record)}</h2>
-    {record.timestamp && <p><time dateTime={record.timestamp}>{record.timestamp}</time></p>}
-    {presentation ? <>
-      <dl>{presentation.fields.map(({ label, value }) => <div key={label}>
-        <dt>{label}</dt><dd>{value}</dd>
-      </div>)}</dl>
-      {presentation.message !== undefined && <blockquote>{presentation.message || "(Empty message)"}</blockquote>}
-    </> : <pre>{record.content}</pre>}
-    <details>
-      <summary>Original source details</summary>
-      <dl><div><dt>Path</dt><dd>{record.source_file}</dd></div>
-        <div><dt>Location</dt><dd>{record.source_locator}</dd></div>
-        <div><dt>Record ID</dt><dd>{record.record_id}</dd></div></dl>
-      {presentation && <pre>{record.content}</pre>}
-    </details>
-  </dialog>;
+function StatusLabel({ value }: { value: string }) {
+  return <span className={`blanc-status blanc-status-${value}`}>{value.replaceAll("_", " ")}</span>;
 }
