@@ -200,6 +200,21 @@
 .blanc-entry .blanc-saved { margin: 28px 0 8px; }
 .blanc-entry .blanc-history button { font-size: 15px; }
 .blanc-followup { display: grid; justify-items: start; gap: 8px; }
+.blanc-ruled .blanc-followup-window { margin: 0; padding: 0; border: 0; display: grid; gap: 6px; }
+.blanc-ruled .blanc-followup-window legend { margin-bottom: 2px; font: 600 12px/1.3 system-ui, sans-serif; }
+.blanc-ruled .blanc-followup-window label { display: flex; gap: 8px; align-items: center; font: 14px/1.4 Georgia, serif; }
+.blanc-ruled .blanc-followup-window input { display: inline-block; width: auto; margin: 0; padding: 0; }
+.blanc-evidence-offer { margin: 0 0 22px; padding: 14px 16px 12px; border: 1px solid #a99e89; background: #efe8da; }
+.blanc-evidence-offer h2 { margin: 0 0 8px; font: 400 20px/1.25 Georgia, serif; }
+.blanc-evidence-offer ul { margin: 0 0 12px; padding-left: 18px; }
+.blanc-evidence-offer li { margin: 4px 0; }
+.blanc-evidence-actions { display: flex; gap: 16px; align-items: center; }
+.blanc-evidence-yes { border: 0; background: #822b33; color: #f6efe2; padding: 8px 14px; cursor: pointer; font: 600 13px/1 system-ui, sans-serif; }
+.blanc-evidence-yes:disabled { opacity: .45; cursor: default; }
+.blanc-evidence-no { border: 0; background: transparent; padding: 0; color: #822b33; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; font: 600 13px/1.3 system-ui, sans-serif; }
+.blanc-evidence-no:disabled { opacity: .45; cursor: default; }
+.blanc-evidence-offer h3 { margin: 8px 0 4px; font: 600 12px/1.3 system-ui, sans-serif; }
+.blanc-skipped { margin: 0; padding: 0; list-style: none; font: 12px/1.5 ui-monospace, monospace; color: #665548; }
 .blanc-followup button, .blanc-revision-switch button {
   width: fit-content;
 }

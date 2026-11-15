@@ -69,6 +69,8 @@ class RevisionSummaryRead(BaseModel):
     created_at: datetime
     excluded_record_ids: list[str]  # the evidence state of this revision
     restored_from_analysis_id: str | None  # set when this revision is a restore
+    evidence_window: EvidenceWindow  # BLA-65: standard when the revision predates coverage
+    max_records: int | None  # the cap that window used; unknown on older revisions
 
     @classmethod
     def of(cls, summary: RevisionSummary) -> "RevisionSummaryRead":

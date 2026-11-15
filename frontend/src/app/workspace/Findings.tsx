@@ -2,7 +2,9 @@
 
 import dynamic from "next/dynamic";
 import Link from "next/link";
+import { EvidenceWindowNotice, FollowUpWindowChoice } from "@/components/EvidenceWindowNotice";
 import { InvestigationNavigation } from "@/components/InvestigationNavigation";
+import { windowLabel } from "@/lib/evidence-window";
 import { investigationTitle } from "@/lib/investigation-navigation";
 import { SpatialConnections } from "@/components/SpatialConnections";
 import { presentSource } from "@/lib/source-presentation";
@@ -14,7 +16,7 @@ import { citedRecordIds } from "@/lib/citations";
 import { anchorCitations, splitCitations, type Anchor } from "@/lib/inline-citations";
 import { itemFor, sameFindingNote, sourcesInOrder, supportChanged, supportLabel, type ComparisonItem, type ComparisonKind, type RevisionComparison, type SupportStatus } from "@/lib/comparison";
 import { addReconstruction, createBoard, loadCaseBoard } from "@/lib/boards-api";
-import { analyzeCase, ApiError, askFollowUp, excludeRecords, getComparison, getRevision, listCaseRecordsPage, listCases, listRevisions, loadRevisionSources, restoreRecords, type CaseSummary, type RevisionSummary } from "@/lib/live-api";
+import { analyzeCase, ApiError, askFollowUp, excludeRecords, getComparison, getRevision, listCaseRecordsPage, listCases, listRevisions, loadRevisionSources, rerunWithWindow, restoreRecords, type CaseSummary, type RevisionSummary } from "@/lib/live-api";
 
 /** Thrown by the dynamic() catch fallback when the map chunk fails to import. */
 const MAP_LOAD_ERROR = "Connection map failed to load.";
@@ -65,6 +67,7 @@ export function Findings() {
   const [history, setHistory] = useState<RevisionSummary[]>([]);
   const [historyReady, setHistoryReady] = useState(false);
   const [followUp, setFollowUp] = useState("");
+  const [followWindowFor, setFollowWindowFor] = useState<{ id: string; choice: "inherit" | "standard" } | null>(null);
   const request = useRef<AbortController | null>(null);
   const questionRef = useRef<HTMLTextAreaElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
@@ -103,6 +106,7 @@ export function Findings() {
   const [expandedSource, setExpandedSource] = useState<string>();
   const [sourceHover, setSourceHover] = useState<{ id: string; top: number; left: number } | null>(null);
   const shown = showingPrevious && previous ? previous : revision;
+  const followWindow = shown && followWindowFor?.id === shown.analysis_id ? followWindowFor.choice : "inherit";
   const sources = records;
 
   useEffect(() => {
@@ -437,7 +441,8 @@ export function Findings() {
       } catch {
         boardId = null;
       }
-      const child = await askFollowUp(shown.case_id, shown.analysis_id, prompt, boardId);
+      const evidenceWindow = shown.retrieval_coverage?.evidence_window === "expanded" && followWindow === "standard" ? "standard" as const : undefined;
+      const child = await askFollowUp(shown.case_id, shown.analysis_id, prompt, boardId, undefined, evidenceWindow);
       setRecords(await loadRevisionSources(child));
       setPrevious(shown);
       setRevision(child);
@@ -447,6 +452,29 @@ export function Findings() {
       setView("Findings");
     } catch (error) {
       setFeedback(error instanceof Error ? error.message : "The follow-up could not be saved.");
+    } finally {
+      setWorking("");
+    }
+  }
+
+  async function expandEvidence() {
+    if (!shown || working) return;
+    setWorking("Reading more evidence…");
+    setFeedback("");
+    try {
+      const child = await rerunWithWindow(shown.case_id, shown.analysis_id, "expanded");
+      setRecords(await loadRevisionSources(child));
+      setPrevious(shown);
+      setRevision(child);
+      setShowingPrevious(false);
+      setView("Findings");
+      try {
+        setComparison(shown.question === child.question ? await getComparison(child.case_id, child.analysis_id) : null);
+      } catch {
+        setComparison(null);
+      }
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : "More evidence could not be read.");
     } finally {
       setWorking("");
     }
@@ -509,7 +537,7 @@ export function Findings() {
   return <div className="blanc-workspace">
     {/* The static sheet avoids the missing workspace styles in the CSS pipeline. */}
     {/* eslint-disable-next-line @next/next/no-css-tags */}
-    <link rel="stylesheet" href="/blanc/findings.css?v=follow-up-2" precedence="blanc" />
+    <link rel="stylesheet" href="/blanc/findings.css?v=evidence-window" precedence="blanc" />
     <header className="blanc-header">
       <Link href="/" aria-label="Blanc home"><svg width="92" height="37" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="210 168 1460 570"><defs>
     <filter id="ink-alpha" colorInterpolationFilters="sRGB">
@@ -561,12 +589,13 @@ export function Findings() {
         })}</ol></details>
       </aside>
       <main className="blanc-reading blanc-report" key={shown.analysis_id}>
-      <p className="blanc-meta">{caseTitle}{showingPrevious ? " · previous revision" : ""}</p>
+      <p className="blanc-meta">{caseTitle} · {windowLabel(shown.retrieval_coverage?.evidence_window, shown.retrieval_coverage?.max_records)}{showingPrevious ? " · previous revision" : ""}</p>
       <div className="blanc-investigation-heading">
         <h1>{investigationTitle(shown.question)}</h1>
         <details className="blanc-original-question"><summary>View question</summary><p>{shown.question}</p></details>
       </div>
       {(working || feedback) && <p role="status">{working || feedback}</p>}
+      <EvidenceWindowNotice key={shown.analysis_id} coverage={shown.retrieval_coverage} busy={!!working} onExpand={() => void expandEvidence()} />
       {shown.needs_review && <p>This analysis needs investigator review.</p>}
       {revision?.parent_analysis_id && <p className="blanc-revision-switch">
         <button type="button" onClick={() => void togglePrevious()} disabled={!!working}>
@@ -636,6 +665,7 @@ export function Findings() {
       {view === "Findings" && <section className="blanc-ruled">
         <h3>Follow-ups</h3>
         <form className="blanc-followup" onSubmit={event => { event.preventDefault(); void submitFollowUp(); }}>
+          <FollowUpWindowChoice coverage={shown.retrieval_coverage} value={followWindow} onChange={choice => setFollowWindowFor({ id: shown.analysis_id, choice })} />
           <input aria-label="Ask a follow-up" placeholder="Ask a follow-up…" value={followUp} disabled={!!working} onChange={event => setFollowUp(event.target.value)} />
           <button type="submit" disabled={!!working || !followUp.trim()}>Ask follow-up</button>
         </form>
