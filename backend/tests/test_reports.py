@@ -136,15 +136,24 @@ def _evil_revision(case_id: str) -> AnalysisRevision:
     )
 
 
-def _records(case_id: str) -> list[EvidenceRecord]:
+OTHER_CASE_MARKER = " OTHER-CASE-CONTENT-MUST-NOT-LEAK"
+
+
+def _records(case_id: str, *, other_case: bool = False) -> list[EvidenceRecord]:
     records = [EvidenceRecord.model_validate(dict(r, case_id=case_id)) for r in RAW["records"]]
+    if other_case:
+        # Same record IDs as the primary case, different content — catches missing case_id
+        # filters that would otherwise still pass by coincidence.
+        records = [
+            r.model_copy(update={"content": r.content + OTHER_CASE_MARKER}) for r in records
+        ]
     records.append(
         EvidenceRecord(
             record_id="rec-evil",
             case_id=case_id,
             source_file="evil|<b>file</b>.txt",
             source_locator="line `1`",
-            content=EVIL_TEXT,
+            content=EVIL_TEXT + (OTHER_CASE_MARKER if other_case else ""),
             timestamp="2026-04-09",
             timestamp_kind="stated",
             metadata={"attachments": [{"locator": "part 2", "filename": "photo.jpg"}]},
@@ -156,7 +165,7 @@ def _records(case_id: str) -> list[EvidenceRecord]:
             case_id=case_id,
             source_file="long.txt",
             source_locator="entire file",
-            content="abcdefghij" * 300,
+            content=("abcdefghij" * 300) + (OTHER_CASE_MARKER if other_case else ""),
         )
     )
     return records
@@ -168,13 +177,37 @@ def seeded(app: FastAPI, client: TestClient) -> Seeded:
         case, other = Case(title="Report <case>"), Case(title="Other case")
         session.add_all([case, other])
         session.commit()
-        for case_id in (case.case_id, other.case_id):
-            store_records(session, case_id, _records(case_id), FakeEmbedder())
+        store_records(session, case.case_id, _records(case.case_id), FakeEmbedder())
+        store_records(
+            session, other.case_id, _records(other.case_id, other_case=True), FakeEmbedder()
+        )
         session.commit()
         case_id, other_id = case.case_id, other.case_id
         save_revision(session, _revision(case_id, "revision"))
         save_revision(session, _revision(case_id, "child"))
-        # A follow-up child of the exclusion: rec-02 stays excluded (inherited).
+        # Restore then re-exclude: first continuous exclusion streak starts at REEXCLUDE_ID.
+        save_revision(
+            session,
+            _revision(
+                case_id,
+                "revision",
+                analysis_id="analysis-synthetic-restore",
+                parent_analysis_id=CHILD_ID,
+                excluded_record_ids=[],
+                created_at="2026-11-14T20:30:00Z",
+            ),
+        )
+        save_revision(
+            session,
+            _revision(
+                case_id,
+                "child",
+                analysis_id="analysis-synthetic-reexclude",
+                parent_analysis_id="analysis-synthetic-restore",
+                created_at="2026-11-14T20:45:00Z",
+            ),
+        )
+        # A follow-up child of the first exclusion: rec-02 stays excluded (inherited).
         save_revision(
             session,
             _revision(
@@ -338,6 +371,11 @@ def test_board_sources_list_each_cited_record_once_with_exact_excerpt(client, se
             raw["timestamp"],
             raw["timestamp_kind"],
         )
+        if raw["record_id"] == "rec-02":
+            # Excluded in the board's active revision: locator stays, excerpt does not.
+            assert source["excerpt"] is None
+            assert source["excluded_in"] == [CHILD_ID]
+            continue
         excerpt = source["excerpt"]
         assert excerpt["text"] == raw["content"][excerpt["char_start"] : excerpt["char_end"]]
         assert excerpt["truncated"] is False
@@ -363,11 +401,27 @@ def test_board_excluded_evidence_is_listed_and_never_support(client, seeded) -> 
         "timestamp": "2026-04-10T10:30:00Z",
     }
     # rec-02 is cited by claim-2 pinned from the base revision, which still included it;
-    # the source entry says it is excluded in the active revision.
+    # the source entry says it is excluded in the active revision, and the excerpt is omitted.
     rec02 = next(s for s in report["sources"] if s["record_id"] == "rec-02")
     assert rec02["excluded_in"] == [CHILD_ID]
+    assert rec02["excerpt"] is None
     assert all(ref["analysis_id"] == BASE_ID for ref in rec02["cited_by"])
+    assert RAW["records"][1]["content"] not in str(report["sources"])
     assert any("excluded in another revision" in text for text in report["limitations"])
+
+    markdown = export(client, seeded.case_id, "boards", seeded.board_id, "md").text
+    assert RAW["records"][1]["content"] not in markdown
+    assert "Excerpt: omitted" in markdown
+
+
+def test_first_excluded_in_restarts_after_restore(client, seeded) -> None:
+    report = export(
+        client, seeded.case_id, "analyses", "analysis-synthetic-reexclude", "json"
+    ).json()
+    (exclusion,) = report["excluded_evidence"]
+    assert exclusion["inherited"] is False
+    assert exclusion["first_excluded_in"] == "analysis-synthetic-reexclude"
+    assert exclusion["analysis_id"] == "analysis-synthetic-reexclude"
 
 
 def test_board_notes_are_separate_and_attributed(client, seeded) -> None:
@@ -526,6 +580,15 @@ def test_cross_case_and_unknown_ids_are_404(client, seeded) -> None:
     report = export(client, seeded.other_case_id, "analyses", "analysis-other", "json").json()
     assert report["case"]["case_id"] == seeded.other_case_id
     assert {s["record_id"] for s in report["sources"]} == {"rec-01", "rec-02"}
+    # Same IDs as the primary case, but only the other-case content.
+    for source in report["sources"]:
+        assert source["excerpt"] is not None
+        assert OTHER_CASE_MARKER in source["excerpt"]["text"]
+    primary = export(client, seeded.case_id, "analyses", BASE_ID, "json").json()
+    assert OTHER_CASE_MARKER not in str(primary)
+    for source in primary["sources"]:
+        assert source["excerpt"] is not None
+        assert OTHER_CASE_MARKER not in source["excerpt"]["text"]
 
 
 def test_unknown_format_is_422(client, seeded) -> None:

@@ -325,14 +325,19 @@ def _source(out: list[str], source: ReportSource) -> None:
     if source.excluded_in:
         add(
             f"- Excluded in analysis {_ids(source.excluded_in)}: it supports nothing there; "
-            "it is cited here only by items from a revision that still included it."
+            "it is cited here only by items from a revision that still included it. "
+            "Their content is not shown."
         )
     excerpt = source.excerpt
-    cut = f", truncated from {excerpt.content_chars}" if excerpt.truncated else ""
-    add(f"- Excerpt (characters {excerpt.char_start}-{excerpt.char_end}{cut}):")
-    add("")
-    out.extend(fenced(excerpt.text))
-    add("")
+    if excerpt is None:
+        add("- Excerpt: omitted (excluded in a reported revision).")
+        add("")
+    else:
+        cut = f", truncated from {excerpt.content_chars}" if excerpt.truncated else ""
+        add(f"- Excerpt (characters {excerpt.char_start}-{excerpt.char_end}{cut}):")
+        add("")
+        out.extend(fenced(excerpt.text))
+        add("")
 
 
 def _exclusion(out: list[str], exclusion: ReportExclusion) -> None:

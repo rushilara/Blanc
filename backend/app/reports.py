@@ -14,11 +14,13 @@ Faithfulness rules the report keeps:
   timeline events come from saved revisions and are presented as AI-generated findings
   that need human review. Statuses are copied as saved; nothing is called verified.
 - **Every finding cites record IDs**, and every cited record appears once in ``sources``
-  with its file, locator, timestamp and an exact slice of its content
-  (``content[char_start:char_end]``).
+  with its file, locator and timestamp. Permitted sources also carry an exact slice of
+  content (``content[char_start:char_end]``); sources excluded in any reported revision
+  omit the excerpt.
 - **Excluded evidence is listed apart**, by record ID and locator, with no content, and
   is never counted as support. A record excluded in one revision but cited by a pinned
-  item from another revision is flagged on its source entry (``excluded_in``).
+  item from another revision is flagged on its source entry (``excluded_in``) and still
+  has no excerpt in the export.
 - **Investigator notes are kept apart** in ``investigator_notes``, attributed to their
   author, and only linked to findings by ID (``note_ids``); their text is never mixed
   into AI-generated text.
@@ -177,7 +179,9 @@ class ReportSource(_Model):
     source_locator: str
     timestamp: str | None
     timestamp_kind: str | None
-    excerpt: Excerpt
+    # Omitted when the record is excluded in any reported revision: exports must not
+    # carry excluded evidence content even if an older pin still cites the ID.
+    excerpt: Excerpt | None = None
     cited_by: list[FindingRef]
     # Revisions in this report that exclude this record (possible on a board that pins
     # items from several revisions). Empty for a single-revision export.
@@ -502,18 +506,33 @@ class _Builder:
         return cited
 
     def _exclusions(self) -> list[ReportExclusion]:
-        """Every record excluded in a reported revision, marking which were inherited."""
+        """Every record excluded in a reported revision, marking which were inherited.
+
+        ``first_excluded_in`` is the oldest ancestor in the *current continuous* exclusion
+        streak ending at this revision (walk back from the parent while the record stays
+        excluded). After a restore, a later re-exclusion starts a new streak, so
+        ``first_excluded_in == analysis_id`` whenever ``inherited`` is false.
+        """
         out: list[ReportExclusion] = []
+        cached: dict[str, AnalysisRevision] = {r.analysis_id: r for r in self.revisions}
+
+        def load(aid: str) -> AnalysisRevision:
+            if aid not in cached:
+                cached[aid] = get_revision(self.session, self.case_id, aid)
+            return cached[aid]
+
         for revision in self.revisions:
             lineage = self.lineages[revision.analysis_id]
-            ancestors = {aid: get_revision(self.session, self.case_id, aid) for aid in lineage}
+            ancestors = {aid: load(aid) for aid in lineage}
             parent = ancestors.get(revision.parent_analysis_id or "")
             inherited = set(parent.excluded_record_ids) if parent else set()
             for rid in sorted(revision.excluded_record_ids):
-                first = next(
-                    (aid for aid in lineage if rid in ancestors[aid].excluded_record_ids),
-                    revision.analysis_id,
-                )
+                first = revision.analysis_id
+                for aid in reversed(lineage[:-1]):
+                    if rid in ancestors[aid].excluded_record_ids:
+                        first = aid
+                    else:
+                        break
                 out.append(
                     ReportExclusion(
                         analysis_id=revision.analysis_id,
@@ -540,20 +559,24 @@ class _Builder:
 
 
 def _source(record: EvidenceRecord, refs: list[FindingRef], excluded_in: list[str]) -> ReportSource:
-    end = min(len(record.content), MAX_EXCERPT_CHARS)
+    # Never put excluded evidence text in an export that may leave the machine.
+    excerpt: Excerpt | None = None
+    if not excluded_in:
+        end = min(len(record.content), MAX_EXCERPT_CHARS)
+        excerpt = Excerpt(
+            text=record.content[:end],
+            char_start=0,
+            char_end=end,
+            truncated=end < len(record.content),
+            content_chars=len(record.content),
+        )
     return ReportSource(
         record_id=record.record_id,
         source_file=record.source_file,
         source_locator=record.source_locator,
         timestamp=record.timestamp,
         timestamp_kind=record.timestamp_kind,
-        excerpt=Excerpt(
-            text=record.content[:end],
-            char_start=0,
-            char_end=end,
-            truncated=end < len(record.content),
-            content_chars=len(record.content),
-        ),
+        excerpt=excerpt,
         cited_by=refs,
         excluded_in=excluded_in,
     )
@@ -644,7 +667,9 @@ def limitations(report: CaseReport, records: Iterable[EvidenceRecord]) -> list[s
                 f"Analysis {analysis.analysis_id} is marked needs review: its output still "
                 f"failed validation after one retry and holds a partial result ({reasons})."
             )
-    truncated = [s.record_id for s in report.sources if s.excerpt.truncated]
+    truncated = [
+        s.record_id for s in report.sources if s.excerpt is not None and s.excerpt.truncated
+    ]
     if truncated:
         out.append(
             f"Excerpts longer than {MAX_EXCERPT_CHARS} characters are cut to their first "
