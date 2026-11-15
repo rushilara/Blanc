@@ -26,6 +26,11 @@ Checks, per question:
 
 Exits 0 when every check passes, 1 when any fails, 2 when it cannot run.
 
+Keyword baseline (BLA-51, see `app.evaluation.baseline`): `--keyword-baseline` adds
+a table of top-k hit rates for keyword-only search next to the pipeline's, without
+changing the exit code. `--keyword-only` needs no `--results`: it runs just the
+retrieval check with keyword search in place of the pipeline.
+
 Not covered: whether an excerpt shown in the UI matches its record. Revisions
 cite record IDs, not excerpts, so that belongs to the citation audit (BLA-46).
 """
@@ -400,19 +405,43 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--questions", type=Path, required=True, help="Question set JSON.")
     parser.add_argument("--records", type=Path, required=True, help="The case's records JSON.")
-    parser.add_argument("--results", type=Path, required=True, help="Folder of saved revisions.")
+    parser.add_argument("--results", type=Path, help="Folder of saved revisions.")
     parser.add_argument("--top-k", type=int, help="Only count the first K retrieved records.")
+    parser.add_argument(
+        "--keyword-baseline",
+        action="store_true",
+        help="Also print keyword-only top-k hit rates next to the pipeline's.",
+    )
+    parser.add_argument(
+        "--keyword-only",
+        action="store_true",
+        help="Run only the retrieval check, using keyword search; --results is not needed.",
+    )
     parser.add_argument("--json", type=Path, dest="json_out", help="Also write results as JSON.")
     args = parser.parse_args(argv)
 
+    # Imported here because the baseline builds on this module.
+    from app.evaluation import baseline
+
+    comparison = None
     try:
         question_set = load_question_set(args.questions)
         records = load_records(args.records)
-        if not args.results.is_dir():
-            raise ValueError(f"results folder not found: {args.results}")
         if args.top_k is not None and args.top_k < 1:
             raise ValueError("--top-k must be at least 1")
-        checks = evaluate(question_set, records, FileResults(args.results), top_k=args.top_k)
+        k = args.top_k or baseline.DEFAULT_K
+        if args.keyword_only:
+            checks = baseline.keyword_only_checks(question_set, records, k=k)
+        else:
+            if args.results is None:
+                raise ValueError("--results is required unless --keyword-only is given")
+            if not args.results.is_dir():
+                raise ValueError(f"results folder not found: {args.results}")
+            results = FileResults(args.results)
+            checks = evaluate(question_set, records, results, top_k=args.top_k)
+            if args.keyword_baseline:
+                rows = baseline.compare_retrieval(question_set, records, results, k=k)
+                comparison = baseline.format_comparison(rows, k)
     except (ValueError, json.JSONDecodeError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
@@ -420,6 +449,9 @@ def main(argv: list[str] | None = None) -> int:
     for check in checks:
         print(check)
     print(summarize(question_set, checks))
+    if comparison is not None:
+        print()
+        print(comparison)
     if args.json_out is not None:
         payload = [
             {"question_id": c.question_id, "check": c.check, "passed": c.passed, "detail": c.detail}
