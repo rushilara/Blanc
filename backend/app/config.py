@@ -57,6 +57,19 @@ class Settings(BaseSettings):
     # Storage: one SQLite file holds tables, the sqlite-vec vector index and the FTS5 index.
     DATABASE_URL: str = "sqlite:///./data/blanc.db"
 
+    # Optional local folder of extracted original files (e.g. data/narcos), used to show a
+    # record's original image. Relative paths resolve from backend/. Never a remote URL.
+    EVIDENCE_ROOT: Path | None = None
+
+    @field_validator("EVIDENCE_ROOT", mode="before")
+    @classmethod
+    def _blank_evidence_root_is_unset(cls, value: object) -> object:
+        # `EVIDENCE_ROOT=` (as in .env.example) must mean "no images", not Path("."),
+        # which would expose image files under backend/.
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        return value
+
     # Allowed frontend origins, comma-separated in the environment.
     CORS_ORIGINS: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["http://localhost:3000"]
