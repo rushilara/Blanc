@@ -28,15 +28,33 @@ npm run build
 ## Layout
 
 - `src/app/page.tsx`: redirects to the branded landing at `/blanc/index.html`.
-- `public/blanc/`: animated landing / sign-in UI (placeholder auth until BLA-60).
-- `src/app/workspace/page.tsx`: loads the shared synthetic revision fixture (with records for citation chips), links to `/live`, and retains the backend health indicator.
-- `src/app/live/page.tsx`: live case search / analysis UI (BLA-42).
+- `public/blanc/`: animated landing / sign-in UI (placeholder auth until BLA-60). "Sign in" opens `/workspace`.
+- `src/app/workspace/`: the live investigation workspace and **demo path** (`Findings.tsx`, styles in `public/blanc/findings.css`). See "Investigation workspace" below.
+- `src/app/sample/page.tsx`: the shared synthetic revision fixture (with records for citation chips), links to `/live`, and retains the backend health indicator.
+- `src/app/live/page.tsx`: earlier live case search / analysis UI (BLA-42), with saved versions.
 - `src/lib/api.ts`: backend base URL and API helpers.
 - `src/components/`: UI components.
 
+## Investigation workspace
+
+`/workspace` is the live UI the landing's "Sign in" opens, and the demo path.
+It greets the investigator, lists cases from the backend, and asks a question of
+the selected case. Asking is allowed once the case holds at least one record
+(checked with one `GET /cases/{id}/records?limit=1`), not from `import_status`.
+Expanding a case lists its evidence files 50 records at a time, with "Show more";
+a record's full text is rendered only once it is opened.
+
+A finished analysis has four views: Findings (answer, claims with
+observed/reported/inferred/unresolved labels, unresolved questions), Connections,
+Timeline (the shared `TimelineView`, so backend-normalized ordering and the
+undated/uncertain group) and Revisions. Cited originals load through the shared
+`loadRevisionSources`; every citation opens the shared `SourceReferences` drawer,
+which fetches a record itself if it has not loaded. Follow-up questions are not
+wired up here yet (the endpoint exists since BLA-29).
+
 ## Fixture workspace (BLA-4)
 
-`/workspace` renders `../fixtures/synthetic_analysis_revision.json` without
+`/sample` renders `../fixtures/synthetic_analysis_revision.json` without
 requiring the backend. `AnalysisWorkspace` accepts an `AnalysisRevision` prop
 and has no fixture import or case-specific findings. A validated live response
 can use the same component in BLA-42. The view shows cited claims, entities and
@@ -68,7 +86,7 @@ and check the question input/source panel at phone width and in dark mode.
 
 ## Live workspace (BLA-42)
 
-Open `/live` (also linked from the synthetic preview). The page loads cases from
+Open `/live` (also linked from the synthetic preview at `/sample`). The page loads cases from
 the backend, searches only the selected case, shows exact retrieved excerpts and
 loads original records through the case-scoped record endpoint. Source content
 is rendered as text. No downloaded evidence is bundled into the frontend.

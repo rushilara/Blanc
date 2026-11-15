@@ -121,3 +121,24 @@ def test_require_case_guards_nested_routes(app: FastAPI) -> None:
         a = create(client)["case_id"]
         assert client.get(f"/cases/{a}/probe").json() == {"case_id": a}
         assert client.get("/cases/case_01JZZZZZZZZZZZZZZZZZZZZZZZ/probe").status_code == 404
+
+
+def test_a_case_with_stored_records_is_listed_as_ready(client: TestClient) -> None:
+    """The workspace only lets investigators ask about a ``ready`` case (#45)."""
+    from _paths import RAW
+
+    from app.contracts import EvidenceRecord
+    from app.embeddings import FakeEmbedder
+    from app.evidence_store import store_records
+
+    with_records, without = create(client)["case_id"], create(client)["case_id"]
+    records = [
+        EvidenceRecord.model_validate(dict(r, case_id=with_records)) for r in RAW["records"]
+    ]
+    with client.app.state.session_factory() as session:
+        store_records(session, with_records, records, FakeEmbedder())
+        session.commit()
+
+    statuses = {c["case_id"]: c["import_status"] for c in client.get("/cases").json()}
+    assert statuses == {with_records: "ready", without: "empty"}
+    assert client.get(f"/cases/{with_records}").json()["import_status"] == "ready"

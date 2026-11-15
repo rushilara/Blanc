@@ -22,6 +22,9 @@ Rules:
 - A record whose ``case_id`` is not the target case is rejected.
 - Rejections do not abort the call: the other records are stored and every rejection is
   listed in ``StoreResult.rejected``. An unknown case raises ``CaseNotFoundError``.
+- Once the case holds at least one record, its ``import_status`` is set to ``ready`` (the
+  workspace only lets investigators ask about ready cases). A call that stores nothing
+  into an empty case leaves it ``empty``.
 - All new chunks are embedded before anything is written, so an embedding failure leaves
   the database unchanged. Like other services, this flushes but does not commit; the
   caller owns the transaction.
@@ -40,7 +43,7 @@ from sqlalchemy.orm import Session
 from app.chunking import chunk_spans
 from app.contracts import EvidenceRecord
 from app.embeddings import Embedder, EmbeddingError
-from app.models import Case, EvidenceChunk, EvidenceRecordRow
+from app.models import Case, EvidenceChunk, EvidenceRecordRow, ImportStatus
 from app.search_index import (
     IndexedChunk,
     delete_vectors,
@@ -256,10 +259,24 @@ def store_records(
     session.add_all(chunks)
     session.flush()  # assigns chunk_ids
     _write_index(session, chunks, vectors)
+    mark_ready_if_stored(session, case_id)
 
     result.inserted = len(rows)
     result.chunks_created = len(chunks)
     return result
+
+
+def mark_ready_if_stored(session: Session, case_id: str) -> None:
+    """Set ``case_id`` to ``ready`` if it holds at least one record. Flushes, no commit."""
+    case = session.get(Case, case_id)
+    if case is None or case.import_status == ImportStatus.READY:
+        return
+    has_record = session.scalar(
+        select(EvidenceRecordRow.record_id).where(EvidenceRecordRow.case_id == case_id).limit(1)
+    )
+    if has_record is not None:
+        case.import_status = ImportStatus.READY
+        session.flush()
 
 
 def _stale_chunks(session: Session, case_id: str, embedder: Embedder) -> list[EvidenceChunk]:
