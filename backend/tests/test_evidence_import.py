@@ -5,8 +5,10 @@ import json
 import shutil
 from pathlib import Path
 
+import jsonschema
 import pytest
 
+from app.contracts import EvidenceRecord as ContractEvidenceRecord
 from app.evidence import (
     EvidenceImportError,
     EvidenceRecord,
@@ -31,25 +33,20 @@ def write(tmp_path: Path, name: str, text: str) -> Path:
 
 
 def assert_matches_schema(record: EvidenceRecord) -> None:
-    """Cheap structural check against the shared contract (no jsonschema dependency)."""
-    data = record.model_dump()
-    assert set(data) <= set(SCHEMA["properties"])
-    for key in SCHEMA["required"]:
-        assert key in data
-    for key in ("record_id", "case_id", "source_file", "source_locator"):
-        assert isinstance(data[key], str) and data[key]
-    assert data["timestamp_kind"] in SCHEMA["properties"]["timestamp_kind"]["enum"]
+    """The record, as it leaves the server, validates against the shared JSON Schema."""
+    jsonschema.validate(record.to_contract_json(), SCHEMA)
 
 
-# --- contract sync -------------------------------------------------------------
+# --- contract ------------------------------------------------------------------
 
 
-def test_model_fields_match_the_contract() -> None:
-    assert set(EvidenceRecord.model_fields) == set(SCHEMA["properties"])
-    required = {name for name, info in EvidenceRecord.model_fields.items() if info.is_required()}
-    assert required == set(SCHEMA["required"])
-    kinds = EvidenceRecord.model_fields["timestamp_kind"].annotation.__args__
-    assert set(kinds) == set(SCHEMA["properties"]["timestamp_kind"]["enum"])
+def test_importer_returns_the_shared_contract_model(tmp_path: Path) -> None:
+    # The same class `app.evidence_store.store_records` takes, so no conversion is needed.
+    assert EvidenceRecord is ContractEvidenceRecord
+    path = write(tmp_path, "notes.txt", "one\n")
+    (record,) = import_file(path, "case-a", source_root=tmp_path)
+    assert isinstance(record, ContractEvidenceRecord)
+    assert_matches_schema(record)
 
 
 # --- TXT -----------------------------------------------------------------------

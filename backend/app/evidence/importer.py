@@ -451,7 +451,7 @@ def _native_record(
             f"not {builder.case_id!r}"
         )
     try:
-        return EvidenceRecord(**{**item, "case_id": builder.case_id})
+        return EvidenceRecord.model_validate({**item, "case_id": builder.case_id})
     except ValidationError as error:
         problems = "; ".join(
             f"{'.'.join(str(part) for part in issue['loc'])}: {issue['msg']}"
