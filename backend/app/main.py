@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.analysis_llm import make_analysis_llm
+from app.analysis_media import AnalysisMediaConfig
 from app.auth import require_session
 from app.config import Settings, get_settings
 from app.db import init_db, make_engine, make_session_factory
@@ -32,6 +33,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.retrieval_config = RetrievalConfig.from_settings(settings)
         app.state.evidence_root = settings.EVIDENCE_ROOT
         app.state.cases_dir = settings.CASES_DIR
+        app.state.media_config = AnalysisMediaConfig.from_settings(settings)
         try:
             yield
         finally:

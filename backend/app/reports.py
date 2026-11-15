@@ -184,6 +184,20 @@ class Excerpt(_Model):
     content_chars: int  # length of the whole record content
 
 
+class ReportMedia(_Model):
+    """An image/PDF source (BLA-71): described, never embedded. The bytes stay in the
+    local case folder; a report carries no image data, base64 or PDF text."""
+
+    modality: Literal["image", "pdf"]
+    content_type: str
+    file_name: str
+    sha256: str | None  # recorded at import, to match the file in the case folder
+    # Stored import metadata (scalar values only, long text cut). Empty when the record is
+    # excluded in the scope revision, like an excerpt (``withheld``).
+    metadata: dict[str, str | int | float | bool]
+    withheld: bool
+
+
 class ReportSource(_Model):
     record_id: str
     source_file: str
@@ -191,8 +205,10 @@ class ReportSource(_Model):
     timestamp: str | None
     timestamp_kind: str | None
     # Omitted when the record is excluded in any reported revision: exports must not
-    # carry excluded evidence content even if an older pin still cites the ID.
+    # carry excluded evidence content even if an older pin still cites the ID. Always
+    # omitted for image/PDF sources, which have no text to quote (see ``media``).
     excerpt: Excerpt | None = None
+    media: ReportMedia | None = None
     cited_by: list[FindingRef]
     # Revisions in this report that exclude this record (possible on a board that pins
     # items from several revisions). Empty for a single-revision export.
@@ -607,7 +623,11 @@ def _source(
     # ``excluded_in`` still flags historical exclusions on the board; withholding follows
     # the scope revision only (active / exported).
     excerpt: Excerpt | None = None
-    if not withhold_excerpt:
+    media: ReportMedia | None = None
+    if record.modality in ("image", "pdf"):
+        # No fake character offsets for a file, and never its bytes.
+        media = _media(record, withhold=withhold_excerpt)
+    elif not withhold_excerpt:
         end = min(len(record.content), MAX_EXCERPT_CHARS)
         excerpt = Excerpt(
             text=record.content[:end],
@@ -623,8 +643,37 @@ def _source(
         timestamp=record.timestamp,
         timestamp_kind=record.timestamp_kind,
         excerpt=excerpt,
+        media=media,
         cited_by=refs,
         excluded_in=excluded_in,
+    )
+
+
+# Stored metadata keys described by their own ReportMedia fields instead.
+_MEDIA_METADATA_SKIP = frozenset({"media_sha256", "filename"})
+MAX_METADATA_VALUE_CHARS = 200
+
+
+def _media(record: EvidenceRecord, *, withhold: bool) -> ReportMedia:
+    stored = record.metadata or {}
+    metadata: dict[str, str | int | float | bool] = {}
+    if not withhold:
+        for key, value in sorted(stored.items()):
+            if key in _MEDIA_METADATA_SKIP:
+                continue
+            if isinstance(value, str):
+                metadata[key] = value[:MAX_METADATA_VALUE_CHARS]
+            elif isinstance(value, bool | int | float):
+                metadata[key] = value
+    name = stored.get("filename")
+    sha = stored.get("media_sha256")
+    return ReportMedia(
+        modality=record.modality,  # type: ignore[arg-type]
+        content_type=record.content_type or "application/octet-stream",
+        file_name=name if isinstance(name, str) and name else record.source_file,
+        sha256=sha if isinstance(sha, str) else None,
+        metadata=metadata,
+        withheld=withhold,
     )
 
 

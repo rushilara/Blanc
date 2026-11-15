@@ -160,6 +160,22 @@ def _inside(root: Path, relative: str) -> Path | None:
     return resolved
 
 
+def case_media_file(
+    record: EvidenceRecord, cases_dir: Path | None, case_id: str
+) -> Path | None:
+    """Where Blanc stored an image/PDF record's bytes at import (BLA-68):
+    ``CASES_DIR/{case_id}/{media_path}``, resolved, only if it is a regular file inside that
+    case folder. None if the record has no stored media or the file is not there. Reads
+    nothing; ``resolve_case_media`` checks type and hash."""
+    if cases_dir is None or record.media_path is None or not case_id.strip():
+        return None
+    try:
+        root = (Path(cases_dir).expanduser() / case_id).resolve(strict=True)
+    except (FileNotFoundError, OSError):
+        return None
+    return _inside(root, record.media_path)
+
+
 def resolve_case_media(
     record: EvidenceRecord, cases_dir: Path | None, case_id: str
 ) -> MediaFile | None:
@@ -168,16 +184,8 @@ def resolve_case_media(
     (``metadata.media_sha256``). None if the record has no stored media or the file is
     not there (the caller then falls back to ``EVIDENCE_ROOT``). Raises
     ``MediaIntegrityError`` if the file is the wrong type, too large or altered."""
-    if cases_dir is None or record.media_path is None or record.content_type is None:
-        return None
-    if not case_id.strip():
-        return None
-    try:
-        root = (Path(cases_dir).expanduser() / case_id).resolve(strict=True)
-    except (FileNotFoundError, OSError):
-        return None
-    path = _inside(root, record.media_path)
-    if path is None:
+    path = case_media_file(record, cases_dir, case_id)
+    if path is None or record.content_type is None:
         return None
     if path.stat().st_size > MAX_MEDIA_BYTES:
         raise MediaIntegrityError(f"{record.media_path} is larger than {MAX_MEDIA_BYTES} bytes")

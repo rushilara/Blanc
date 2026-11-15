@@ -2,9 +2,9 @@
 
 Media ranks in the same fused list as text, enters the window as a record with no text
 excerpt (the FTS sidecar is never shown as content), is capped by ``max_media``, and is
-served to the UI from the case folder. Until vision analysis (BLA-71) the analysis model
-is never given a media record; the revision's ``retrieval_coverage`` lists it as a
-``media`` skip so nothing is dropped silently.
+served to the UI from the case folder. Media the analysis model is not given (over the
+vision caps of BLA-71, see tests/test_vision_analysis.py) is listed in the revision's
+``retrieval_coverage`` so nothing is dropped silently.
 """
 
 from __future__ import annotations
@@ -44,12 +44,13 @@ class SteeredEmbedder(FakeEmbedder):
         return super().embed_query(text)
 
 
-def make_client(tmp_path: Path) -> TestClient:
+def make_client(tmp_path: Path, **settings: Any) -> TestClient:
     app = create_app(
         Settings(
             _env_file=None,
             DATABASE_URL=f"sqlite:///{tmp_path / 'media-window.db'}",
             CASES_DIR=tmp_path / "cases",
+            **settings,
         )
     )
     return TestClient(app)
@@ -137,9 +138,14 @@ def test_media_beyond_the_cap_is_skipped_not_dropped(tmp_path: Path) -> None:
     assert capped[0].modality in ("image", "pdf") and capped[0].excerpt_chars is None
     coverage = coverage_of(result, "standard", max_records=16, max_excerpt_chars=32000)
     reasons = {e.record_id: (e.reason, e.modality) for e in coverage.skipped}
-    # Both media records are listed as "media" (not analyzed): the kept one and the capped one.
+    # Without a vision selection (media_skips), the kept one is listed as "media" (not
+    # analyzed); the one over RETRIEVAL_MAX_MEDIA keeps its reason, media_limit (BLA-71).
     assert reasons[kept[0].record_id][0] == "media"
-    assert reasons[capped[0].record_id] == ("media", capped[0].modality)
+    assert reasons[capped[0].record_id] == ("media_limit", capped[0].modality)
+    sent = coverage_of(
+        result, "standard", max_records=16, max_excerpt_chars=32000, media_skips={}
+    )
+    assert {e.record_id for e in sent.skipped if e.modality} == {capped[0].record_id}
     assert [r.modality for r in none.records] == ["text"]
     assert {s.record_id for s in none.skipped if s.reason == "media_limit"} == {
         r.record_id for r in records
@@ -207,7 +213,8 @@ def test_media_over_the_cap_does_not_push_text_out_of_the_window(tmp_path: Path)
     assert [s.reason for s in result.skipped] == ["media_limit"] * 4
     assert result.dropped_by_limit == 0
     coverage = coverage_of(result, "standard", max_records=4, max_excerpt_chars=32000)
-    assert all(s.reason == "media" for s in coverage.skipped)
+    # Over RETRIEVAL_MAX_MEDIA: media_limit; the kept one, with no vision selection: media.
+    assert sorted(s.reason for s in coverage.skipped) == ["media"] + ["media_limit"] * 4
 
 
 def test_media_first_does_not_block_truncating_the_first_text_excerpt(tmp_path: Path) -> None:
@@ -223,11 +230,13 @@ def test_media_first_does_not_block_truncating_the_first_text_excerpt(tmp_path: 
     assert text.excerpts[0].text == TEXT[:5] and text.excerpts[0].truncated
 
 
-# --- Analysis: media is retrieved but not shown to the model (until BLA-71) -------------
+# --- Analysis: media the model is not shown is listed and cannot be cited ---------------
+# Vision analysis (BLA-71) sends retrieved media inline; tests/test_vision_analysis.py
+# covers that. With the image cap at 0 nothing is sent, which is the BLA-70 behaviour.
 
 
-def test_analysis_never_gives_media_to_the_model_and_lists_it(tmp_path: Path) -> None:
-    with make_client(tmp_path) as client:
+def test_analysis_never_gives_unsent_media_to_the_model_and_lists_it(tmp_path: Path) -> None:
+    with make_client(tmp_path, ANALYSIS_MAX_IMAGES=0) as client:
         case_id, (image,) = seed(client, tmp_path)
         fake = FakeAnalysisLLM(responses=[output()])
         client.app.state.analysis_llm = fake
@@ -239,16 +248,16 @@ def test_analysis_never_gives_media_to_the_model_and_lists_it(tmp_path: Path) ->
     assert [r["record_id"] for r in prompt["source_records"]] == ["rec-text"]
     assert image.record_id not in json.dumps(fake.calls[-1])
     assert body["retrieved_record_ids"] == ["rec-text"]
-    media = [s for s in body["retrieval_coverage"]["skipped"] if s["reason"] == "media"]
+    media = [s for s in body["retrieval_coverage"]["skipped"] if "modality" in s]
     assert media == [
-        {"record_id": image.record_id, "rank": 1, "reason": "media", "vector_rank": 1,
+        {"record_id": image.record_id, "rank": 1, "reason": "media_limit", "vector_rank": 1,
          "keyword_rank": 1, "modality": "image"}
     ]
     assert body["retrieval_coverage"]["offer_expanded_window"] is False
 
 
 def test_the_model_cannot_cite_media_it_was_not_shown(tmp_path: Path) -> None:
-    with make_client(tmp_path) as client:
+    with make_client(tmp_path, ANALYSIS_MAX_IMAGES=0) as client:
         case_id, (image,) = seed(client, tmp_path)
         fake = FakeAnalysisLLM(responses=[output(image.record_id), output(image.record_id)])
         client.app.state.analysis_llm = fake

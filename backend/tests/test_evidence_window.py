@@ -436,7 +436,7 @@ def test_skipped_records_cannot_be_excluded_or_cited(app, client) -> None:
     errors = validate_revision(records, AnalysisRevision.model_validate(data))
     assert any("lists retrieved records as skipped: rec-c" in e for e in errors)
     assert any("lists cited records as skipped: rec-c" in e for e in errors)
-    assert any("but 2 records were retrieved" in e for e in errors)
+    assert any("but 2 text records were retrieved" in e for e in errors)
 
 
 def test_contract_shape_is_strict_and_omits_unknown_ranks() -> None:
