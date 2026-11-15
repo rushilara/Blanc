@@ -21,7 +21,7 @@
 | 4–7 | End-to-end first question | Question → hybrid retrieval → structured JSON → cited answer/graph/timeline for one verified case. | Use one LLM pass; skip extra retrieval hops. |
 | 7–10 | Persistent workspace + follow-up | Save/reload a revision, ask follow-up, add new sourced elements to board; original saved version remains intact. | Save snapshots rather than complex automated graph merging. |
 | 10–12.5 | Exclusion and comparison | Exclude record; retrieval and LLM both respect exclusion; show changed/unresolved finding; restore or branch. | Use deterministic changed/unchanged/unsupported diff if LLM comparison is unreliable. |
-| 12.5–15 | QA, second-case check, presentation | Fresh-start **localhost** demo (`make backend` + `make frontend` + local Gemini key), verify citations/locators, demonstrate saving and evidence sensitivity. If time permits, load second case unchanged. Do not spend MVP time on cloud-hosting the case DB. | Prefer one truly real, reliable case over two shallow or fabricated ones; optional static landing host only. |
+| 12.5–15 | QA, second-case check, presentation | Fresh-start **localhost** demo (`make backend` + `make import` + `make frontend` + local Gemini key), verify citations/locators, demonstrate saving and evidence sensitivity. If time permits, load second case unchanged. Do not spend MVP time on cloud-hosting the case DB. | Prefer one truly real, reliable case over two shallow or fabricated ones; optional static landing host only. |
 
 ## Hard priorities under time pressure
 
@@ -34,6 +34,7 @@
 ## Demo acceptance checklist
 
 - [ ] Demo runs locally (backend + frontend on localhost); case DB and evidence files are on the demo machine, not a hosted volume.
+- [ ] The case is loaded on the demo machine with `make import EVIDENCE=... TITLE=...` and shows as ready in the workspace.
 - [ ] Team can state clearly: Gemini is used for embeddings/LLM (evidence text leaves the machine for those calls); storage is local-first, not fully offline.
 - [ ] A case is opened and at least several unrelated records are also indexed.
 - [ ] Investigator asks a question whose answer requires at least two real records.
