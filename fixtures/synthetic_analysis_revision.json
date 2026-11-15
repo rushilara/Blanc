@@ -108,5 +108,9 @@
   "unresolved_questions": [
     "Whether the proposed meeting actually happened is not established by these two messages."
   ],
+  "suggested_followups": [
+    "Did Casey or Jordan confirm the proposed meeting in any later message?",
+    "What document did Alex ask Jordan to deliver?"
+  ],
   "created_at": "2026-11-14T20:00:00Z"
 }

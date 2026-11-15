@@ -213,7 +213,8 @@ def validate_revision(records: Sequence[EvidenceRecord], analysis: AnalysisRevis
     1 to 5: records are unique and same-case, retrieved IDs are in the corpus and disjoint
     from excluded IDs, every claim/edge/event cites at least one permitted record (and node
     evidence, when present, is permitted too), edges reference existing nodes, and no event
-    claims an exact timestamp without one.
+    claims an exact timestamp without one. Also invariants 12 (``retrieval_coverage``) and
+    13 (no suggested follow-up names an excluded record).
     """
     errors = _corpus_errors(records, analysis)
     errors.extend(_duplicate_item_errors(analysis))
@@ -249,7 +250,20 @@ def validate_revision(records: Sequence[EvidenceRecord], analysis: AnalysisRevis
         if r.case_id == analysis.case_id and r.modality in ("image", "pdf")
     }
     errors.extend(_coverage_errors(analysis, known, media))
+    errors.extend(_followup_errors(analysis))
     return errors
+
+
+def _followup_errors(analysis: AnalysisRevision) -> list[str]:
+    """Suggested follow-ups (BLA-54) never name an excluded record (invariant 13). The
+    analysis path drops such suggestions before validating, so this only guards saves."""
+    excluded = [rid for rid in analysis.excluded_record_ids if rid]
+    return [
+        f"suggested follow-up {index + 1} names excluded record {rid}"
+        for index, text in enumerate(analysis.suggested_followups or [])
+        for rid in excluded
+        if rid in text
+    ]
 
 
 def _coverage_errors(

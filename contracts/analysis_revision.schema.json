@@ -273,6 +273,19 @@
         "type": "string"
       }
     },
+    "suggested_followups": {
+      "type": "array",
+      "description": "Model-generated follow-up questions offered to the investigator (BLA-54). Not findings and not evidence: never cited, never run automatically. The investigator chooses whether to send one as a follow-up. Omitted (not empty) when there are none.",
+      "minItems": 1,
+      "maxItems": 3,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 300,
+        "pattern": "\\S"
+      }
+    },
     "needs_review": {
       "type": "boolean",
       "description": "Set by the server when LLM output still failed schema/source validation after one retry and this revision holds a partial result for investigator review. Absent or false means validation passed."

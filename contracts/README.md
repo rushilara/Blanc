@@ -28,6 +28,16 @@ Optional review fields:
 
 The frontend must show a review banner when `needs_review` is `true`.
 
+### Suggested follow-ups (`suggested_followups`, BLA-54)
+
+Optional array of 1 to 3 unique, non-blank strings of at most 300 characters each; omitted (never empty, never null) when there are none. Added in BLA-54 (additive; `schema_version` unchanged).
+
+- **Model-generated suggestions, not findings and not evidence.** They come from the same single analysis call as the answer: short questions about what the answer left open (an unresolved question, an entity worth checking). They carry no `evidence_ids`, are never cited, never pinned to a board, never included in reports and never sent back to the model as context.
+- **Never run automatically.** No server code path executes a suggestion. The UI shows them as clearly labeled AI-generated chips; clicking one only fills the follow-up input, and the investigator decides whether to send it. A sent suggestion is an ordinary follow-up question (a child revision via the follow-up endpoint).
+- Stored on the revision so the history records what was offered.
+- Server-trimmed, never a failure: non-strings, blank, overlong and duplicate (case-insensitive) items, and items that name an excluded record ID, are dropped, and only the first 3 are kept. Suggestions never cause the validation retry or `needs_review`.
+- Rendered as plain text only (no HTML or Markdown): like evidence, they derive from untrusted content.
+
 ### Evidence window (`retrieval_coverage`, BLA-64)
 
 Optional, server-assigned, never produced by the LLM. Absent on revisions saved before it existed: treat those as the `standard` window with no offer.
@@ -116,7 +126,8 @@ These schemas are minimal cross-team contracts. The server must additionally enf
 10. User-authored notes remain distinct from LLM-generated conclusions.
 11. Date-time fields are parsed as offset-aware instants before comparison; a board snapshot's `updated_at` is not before its `created_at`, and no item `added_at` or note `created_at` is after its `updated_at`.
 12. `retrieval_coverage`, when present, agrees with its revision: skipped records exist in the case and are never retrieved, excluded or cited; `record_limit` skips rank beyond `max_records`, and `budget` skips before the first `record_limit` skip (images and PDFs never take a text slot, so media skips — `media`, `media_limit`, `media_too_large` — have no rank bound); media skips name a `modality` and `budget` skips never do; no more than `max_records` text records are retrieved (images/PDFs sent to the model are on top); `budget_substituted` needs a budget skip; `left_out_record_ids` and `offer_expanded_window` follow from the skips as defined above.
+13. `suggested_followups` never names an excluded record ID; suggestions are model text, never findings, and never cite or carry evidence.
 
-`starter/validate_fixture.py` implements cheap versions of checks 1 to 4, 7 to 9, 11 and 12 against the fixtures; CI runs them on every PR.
+`starter/validate_fixture.py` implements cheap versions of checks 1 to 4, 7 to 9, 11 to 13 against the fixtures; CI runs them on every PR.
 
-For AI generation, prefer a separate subset of the schema containing only answer/claims/graph/events; assign analysis IDs, excluded IDs, retrieved IDs, `needs_review`, `validation_errors` and creation timestamps on the trusted server.
+For AI generation, prefer a separate subset of the schema containing only answer/claims/graph/events; assign analysis IDs, excluded IDs, retrieved IDs, `needs_review`, `validation_errors` and creation timestamps on the trusted server. `suggested_followups` is part of the generated subset but is sanitized server-side before it is stored.

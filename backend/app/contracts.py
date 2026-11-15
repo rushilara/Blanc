@@ -118,6 +118,19 @@ EvidenceIds = Annotated[list[NonEmptyStr], Field(min_length=1)]
 Rank = Annotated[int, Field(ge=1)]
 UniqueEvidenceIds = Annotated[list[NonEmptyStr], Field(min_length=1), AfterValidator(_unique)]
 
+# Suggested follow-up questions (BLA-54): model-generated, shown to the investigator, never
+# findings or evidence. ``app.analysis_llm.sanitize_followups`` trims model output to fit.
+MAX_SUGGESTED_FOLLOWUPS = 3
+MAX_FOLLOWUP_CHARS = 300
+FollowupText = Annotated[
+    str, StringConstraints(min_length=1, max_length=MAX_FOLLOWUP_CHARS, pattern=r"\S")
+]
+SuggestedFollowups = Annotated[
+    list[FollowupText],
+    Field(min_length=1, max_length=MAX_SUGGESTED_FOLLOWUPS),
+    AfterValidator(_unique),
+]
+
 
 def _reject_null(value: object) -> object:
     if value is None:
@@ -293,6 +306,9 @@ class AnalysisRevision(ContractModel):
     graph: Graph
     timeline_events: list[TimelineEvent]
     unresolved_questions: list[str]
+    # Model-generated questions for the investigator to choose from (BLA-54). Not findings,
+    # never cited, never run automatically. Omitted when there are none.
+    suggested_followups: Omittable[SuggestedFollowups] = None
     needs_review: Omittable[bool] = None
     validation_errors: Omittable[list[NonEmptyStr]] = None
     retrieval_coverage: Omittable[RetrievalCoverage] = None

@@ -44,6 +44,12 @@ def validate_revision(records: list[dict], analysis: dict) -> list[str]:
             errors.append(f"edge {edge['id']} references unknown graph node")
     media = {r['record_id'] for r in records if r.get('modality') in ('image', 'pdf')}
     errors += _coverage_errors(analysis, known, media)
+    # Invariant 13: suggested follow-ups (BLA-54) are model text, never findings; they must
+    # not name an excluded record.
+    for i, text in enumerate(analysis.get('suggested_followups', [])):
+        for rid in excluded:
+            if rid and rid in text:
+                errors.append(f"suggested follow-up {i + 1} names excluded record {rid}")
     return errors
 
 

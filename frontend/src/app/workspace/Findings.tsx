@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { EvidenceWindowNotice, FollowUpWindowChoice } from "@/components/EvidenceWindowNotice";
 import { InvestigationNavigation } from "@/components/InvestigationNavigation";
+import { SuggestedFollowups } from "@/components/SuggestedFollowups";
 import { windowLabel } from "@/lib/evidence-window";
 import { investigationTitle } from "@/lib/investigation-navigation";
 import { SpatialConnections } from "@/components/SpatialConnections";
@@ -70,6 +71,7 @@ export function Findings() {
   const [followWindowFor, setFollowWindowFor] = useState<{ id: string; choice: "inherit" | "standard" } | null>(null);
   const request = useRef<AbortController | null>(null);
   const questionRef = useRef<HTMLTextAreaElement>(null);
+  const followUpRef = useRef<HTMLInputElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
   const retryAskRef = useRef<HTMLButtonElement>(null);
   const caseTitle = cases?.find(item => item.case_id === caseId)?.title ?? caseId;
@@ -537,7 +539,7 @@ export function Findings() {
   return <div className="blanc-workspace">
     {/* The static sheet avoids the missing workspace styles in the CSS pipeline. */}
     {/* eslint-disable-next-line @next/next/no-css-tags */}
-    <link rel="stylesheet" href="/blanc/findings.css?v=evidence-window" precedence="blanc" />
+    <link rel="stylesheet" href="/blanc/findings.css?v=suggested-followups" precedence="blanc" />
     <header className="blanc-header">
       <Link href="/" aria-label="Blanc home"><svg width="92" height="37" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="210 168 1460 570"><defs>
     <filter id="ink-alpha" colorInterpolationFilters="sRGB">
@@ -664,9 +666,17 @@ export function Findings() {
       </>}
       {view === "Findings" && <section className="blanc-ruled">
         <h3>Follow-ups</h3>
+        <SuggestedFollowups
+          suggestions={shown.suggested_followups}
+          disabled={!!working}
+          onPick={question => {
+            setFollowUp(question);
+            followUpRef.current?.focus();
+          }}
+        />
         <form className="blanc-followup" onSubmit={event => { event.preventDefault(); void submitFollowUp(); }}>
           <FollowUpWindowChoice coverage={shown.retrieval_coverage} value={followWindow} onChange={choice => setFollowWindowFor({ id: shown.analysis_id, choice })} />
-          <input aria-label="Ask a follow-up" placeholder="Ask a follow-up…" value={followUp} disabled={!!working} onChange={event => setFollowUp(event.target.value)} />
+          <input ref={followUpRef} aria-label="Ask a follow-up" placeholder="Ask a follow-up…" value={followUp} disabled={!!working} onChange={event => setFollowUp(event.target.value)} />
           <button type="submit" disabled={!!working || !followUp.trim()}>Ask follow-up</button>
         </form>
       </section>}

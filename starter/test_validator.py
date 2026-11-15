@@ -37,6 +37,16 @@ class TestEvidenceGrounding(unittest.TestCase):
         broken_records[0]['case_id']='other-case'
         self.assertTrue(validate_revision(broken_records,revision))
 
+class TestSuggestedFollowups(unittest.TestCase):
+    def test_suggestions_are_not_citations(self):
+        self.assertTrue(revision['suggested_followups'])
+        self.assertEqual(validate_revision(records,revision),[])
+
+    def test_suggestion_cannot_name_an_excluded_record(self):
+        broken=deepcopy(child)
+        broken['suggested_followups']=['What else does rec-02 say?']
+        self.assertTrue(any('excluded record rec-02' in e for e in validate_revision(records,broken)))
+
 def covered():
     # rec-02 left out of a one-record standard window although the vector search ranked it first.
     r=deepcopy(revision)

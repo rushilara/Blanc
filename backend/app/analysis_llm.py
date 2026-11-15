@@ -5,8 +5,10 @@
 depth), makes exactly one ``AnalysisLLM.generate`` call and returns the parsed output.
 
 ``AnalysisOutput`` is the LLM-authored part of an ``AnalysisRevision``: ``answer``, ``claims``,
-``graph`` (nodes, edges), ``timeline_events`` and ``unresolved_questions``. It reuses the item
-models from ``app.contracts``, so it cannot drift from ``contracts/analysis_revision.schema.json``.
+``graph`` (nodes, edges), ``timeline_events``, ``unresolved_questions`` and the optional
+``suggested_followups`` (BLA-54: 1-3 questions offered to the investigator, never run). It
+reuses the item models from ``app.contracts``, so it cannot drift from
+``contracts/analysis_revision.schema.json``.
 Revision metadata (IDs, retrieved/excluded sets, timestamps) is assigned by the server, and
 cross-reference checks (cited IDs were retrieved and not excluded, edge endpoints exist) live
 in ``app.validation``; this module only guarantees schema-shaped output or an
@@ -28,13 +30,22 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
-from pydantic import ValidationError
+from pydantic import ValidationError, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.analysis_media import MediaPart, media_inputs
 from app.config import Settings
-from app.contracts import Claim, ContractModel, Graph, TimelineEvent
+from app.contracts import (
+    MAX_FOLLOWUP_CHARS,
+    MAX_SUGGESTED_FOLLOWUPS,
+    Claim,
+    ContractModel,
+    Graph,
+    Omittable,
+    SuggestedFollowups,
+    TimelineEvent,
+)
 from app.models import EvidenceRecordRow
 from app.retrieval import RetrievalResult, RetrievedRecord
 from evidence_prompt import build_evidence_messages
@@ -78,6 +89,49 @@ class AnalysisOutput(ContractModel):
     graph: Graph
     timeline_events: list[TimelineEvent]
     unresolved_questions: list[str]
+    suggested_followups: Omittable[SuggestedFollowups] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _clean_followups(cls, data: Any) -> Any:
+        """Suggestions are optional extras: invalid ones are trimmed or dropped here, so they
+        never fail the analysis or trigger the validation retry (BLA-54)."""
+        if isinstance(data, dict) and "suggested_followups" in data:
+            data = dict(data)
+            cleaned = sanitize_followups(data.pop("suggested_followups"))
+            if cleaned:
+                data["suggested_followups"] = cleaned
+        return data
+
+
+def sanitize_followups(value: Any, *, excluded_record_ids: Iterable[str] = ()) -> list[str]:
+    """Model-suggested follow-up questions, made contract-valid by dropping, never failing.
+
+    Keeps strings only, collapses whitespace (so the UI shows one plain line), drops empty
+    and overlong items (over ``MAX_FOLLOWUP_CHARS``; cutting a question could change what
+    it asks), drops any that name an ``excluded_record_ids`` value, removes duplicates
+    (ignoring case) and keeps the first ``MAX_SUGGESTED_FOLLOWUPS``. Anything that is not a
+    list gives ``[]``.
+    """
+    if not isinstance(value, list | tuple):
+        return []
+    excluded = [rid for rid in excluded_record_ids if rid]
+    kept: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        text = " ".join(item.split())
+        key = text.casefold()
+        if not text or len(text) > MAX_FOLLOWUP_CHARS or key in seen:
+            continue
+        if any(rid in text for rid in excluded):
+            continue
+        seen.add(key)
+        kept.append(text)
+        if len(kept) == MAX_SUGGESTED_FOLLOWUPS:
+            break
+    return kept
 
 
 def parse_analysis_output(text: str | None) -> AnalysisOutput:
@@ -117,12 +171,13 @@ def _readable_errors(exc: ValidationError) -> list[str]:
 
 # Keywords kept in the schema sent to Gemini. Dropped: ``$defs``/``$ref`` (inlined),
 # ``title``/``default``/``description`` (Pydantic fills these from class names and
-# docstrings), ``minLength``/``uniqueItems`` (not in Gemini's supported subset) and
+# docstrings), ``minLength``/``maxLength``/``pattern``/``uniqueItems`` (not in Gemini's
+# supported subset) and
 # ``additionalProperties`` (google-genai rejects it on the Developer API for
 # ``response_schema``; constrained decoding only emits declared properties anyway).
 # Pydantic still enforces all of them.
 _GEMINI_KEYWORDS = frozenset(
-    {"type", "enum", "items", "minItems", "properties", "required", "anyOf"}
+    {"type", "enum", "items", "minItems", "maxItems", "properties", "required", "anyOf"}
 )
 
 
