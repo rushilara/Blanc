@@ -322,3 +322,18 @@
 .blanc-source-derived { font-weight: 500; text-transform: none; letter-spacing: 0; color: #a3937f; }
 /* The panel heading takes focus when it opens (for screen readers) but shows no ring. */
 .blanc-source-panel h2:focus, .blanc-source-panel h2:focus-visible { outline: none; }
+
+/* Original images from local evidence, shown in the source panel. */
+.blanc-source-media { margin: 0 0 14px; }
+.blanc-source-media > button { display: block; width: 100%; padding: 6px; border: 1px solid #d3c7b2; border-radius: 6px; background: #fbf6ec; cursor: zoom-in; }
+.blanc-source-media > button:disabled { cursor: default; }
+.blanc-source-media[data-state="loading"] > button { min-height: 120px; background: repeating-linear-gradient(135deg, #f5eddf 0 10px, #efe5d4 10px 20px); }
+.blanc-source-media img { display: block; max-width: 100%; max-height: 320px; margin: 0 auto; object-fit: contain; border-radius: 3px; }
+.blanc-source-media figcaption { margin-top: 6px; font: 11px/1.4 system-ui, sans-serif; color: #8a7a68; }
+.blanc-source-offline { margin: 0 0 14px; padding: 9px 12px; border: 1px dashed #c9bda8; border-radius: 6px; font: 12.5px/1.45 system-ui, sans-serif; color: #665548; }
+/* Tailwind's preflight zeroes dialog margins; centre the viewer explicitly. */
+.blanc-media-viewer { position: fixed; inset: 0; margin: auto; width: fit-content; height: fit-content; max-width: min(92vw, 1100px); max-height: 92vh; padding: 14px; border: 1px solid #c9bda8; border-radius: 8px; background: #f5eddf; color: #372416; }
+.blanc-media-viewer::backdrop { background: rgb(32 27 24 / 55%); }
+.blanc-media-viewer img { display: block; max-width: 100%; max-height: calc(92vh - 90px); margin: 0 auto; object-fit: contain; }
+.blanc-media-viewer button { float: right; margin-bottom: 8px; color: #822b33; text-decoration: underline; cursor: pointer; font: 600 12px system-ui, sans-serif; }
+.blanc-media-viewer p { clear: both; margin: 8px 0 0; font: 12px system-ui, sans-serif; color: #7a6a5a; text-align: center; }
