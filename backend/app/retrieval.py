@@ -27,6 +27,11 @@ record are merged into one excerpt.
 Case isolation: both index searches filter by ``case_id`` inside the query (see
 ``app.search_index``), and record/chunk rows are loaded by ``(case_id, ...)``. Retrieval is
 read-only: it never deletes or changes records, chunks or index rows.
+
+Record exclusion (BLA-14) happens at two points, per the architecture doc: every chunk of an
+excluded record is filtered before ranking (inside both index queries, then again in
+``retrieve``), and ``permitted_records`` checks the result again before the LLM prompt is
+built.
 """
 
 from __future__ import annotations
@@ -291,12 +296,12 @@ def retrieve(
     ``config.max_excerpt_chars`` for this call. ``config`` defaults to the module defaults;
     the app passes ``RetrievalConfig.from_settings(settings)``.
 
-    ``excluded_record_ids``: chunks of these records are dropped from both candidate lists
-    before fusion and ranking, so they never appear in the result.
-    TODO(BLA-14): push the exclusion into the index queries so excluded chunks do not use up
-    the ``k`` candidates (vec0 pushes ``record_id != ?`` metadata constraints into the KNN,
-    but not ``NOT IN``; FTS5 can take ``record_id NOT IN (...)`` before ``LIMIT``), and own
-    the exclusion semantics (revision excluded sets, re-check before prompt building).
+    ``excluded_record_ids`` (the revision's excluded set): every chunk of these records is
+    left out inside both index queries, so the ``vector_candidates`` / ``keyword_candidates``
+    slots go to permitted chunks; the hit lists are filtered once more here, so an excluded
+    chunk can never reach fusion or ranking. The records stay in the corpus and the indexes
+    and are found again once no longer excluded. Before building the LLM prompt, re-check
+    the result with ``permitted_records``.
 
     There is no relevance threshold: the vector KNN always returns its ``k`` nearest chunks,
     so in a small case every record can land in the window, ranked low.
@@ -342,13 +347,19 @@ def retrieve(
     vector_hits = [
         h
         for h in vector_search(
-            session, case_id, embedder.embed_query(question), k=cfg.vector_candidates
+            session,
+            case_id,
+            embedder.embed_query(question),
+            k=cfg.vector_candidates,
+            excluded_record_ids=excluded,
         )
         if h.record_id not in excluded
     ]
     keyword_hits = [
         h
-        for h in keyword_search(session, case_id, fts_query, k=cfg.keyword_candidates)
+        for h in keyword_search(
+            session, case_id, fts_query, k=cfg.keyword_candidates, excluded_record_ids=excluded
+        )
         if h.record_id not in excluded
     ]
 
@@ -445,3 +456,40 @@ def retrieve(
             "excerpt_chars": budget - remaining,
         }
     )
+
+
+# --- Re-check before prompt building ----------------------------------------------------
+
+
+class ExcludedRecordLeakError(RuntimeError):
+    """An excluded record reached prompt building. ``retrieve`` filters exclusions before
+    ranking, so this is a bug upstream, never a user error."""
+
+
+def permitted_records(
+    retrieved: RetrievalResult | Iterable[RetrievedRecord],
+    excluded_record_ids: Iterable[str],
+) -> list[RetrievedRecord]:
+    """Second exclusion check, between retrieval and building the LLM prompt (BLA-20).
+
+    Returns the records (in order) once it has checked that none of them is in
+    ``excluded_record_ids`` (the revision's excluded set). Given a ``RetrievalResult``, also
+    checks that retrieval ran with at least that excluded set, since otherwise the excluded
+    records took part in ranking. Raises ``ExcludedRecordLeakError`` instead of quietly
+    dropping anything: a leak means the analysis would rest on the wrong evidence.
+    """
+    excluded = set(excluded_record_ids)
+    if isinstance(retrieved, RetrievalResult):
+        not_applied = excluded - set(retrieved.excluded_record_ids)
+        if not_applied:
+            raise ExcludedRecordLeakError(
+                f"retrieval did not exclude {sorted(not_applied)}; rerun it with the "
+                "revision's excluded set"
+            )
+        records = list(retrieved.records)
+    else:
+        records = list(retrieved)
+    leaked = sorted({r.record_id for r in records} & excluded)
+    if leaked:
+        raise ExcludedRecordLeakError(f"excluded records reached prompt building: {leaked}")
+    return records
