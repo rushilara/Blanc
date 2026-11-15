@@ -10,6 +10,7 @@ import { investigationTitle } from "@/lib/investigation-navigation";
 import { SpatialConnections } from "@/components/SpatialConnections";
 import { presentSource } from "@/lib/source-presentation";
 import { SourcePanel } from "./SourcePanel";
+import { RevisionHistoryView } from "@/components/RevisionHistoryView";
 import { TimelineView } from "@/components/TimelineView";
 import { Component, useEffect, useRef, useSyncExternalStore, useState, type ReactNode } from "react";
 import type { AnalysisRevision, EvidenceRecord } from "@/lib/analysis";
@@ -596,7 +597,6 @@ export function Findings() {
         <details className="blanc-original-question"><summary>View question</summary><p>{shown.question}</p></details>
       </div>
       {(working || feedback) && <p role="status">{working || feedback}</p>}
-      <EvidenceWindowNotice key={shown.analysis_id} coverage={shown.retrieval_coverage} busy={!!working} onExpand={() => void expandEvidence()} />
       {shown.needs_review && <p>This analysis needs investigator review.</p>}
       {revision?.parent_analysis_id && <p className="blanc-revision-switch">
         <button type="button" onClick={() => void togglePrevious()} disabled={!!working}>
@@ -646,8 +646,8 @@ export function Findings() {
       /></details></>}
       {view === "Timeline" && <><h2>Timeline</h2><TimelineView key={shown.analysis_id} events={shown.timeline_events} caseId={shown.case_id} records={sources} excludedRecordIds={shown.excluded_record_ids} eventSupport={supportMap("event")} /></>}
       {view === "Revisions" && <>
-        <h2>{showingPrevious ? "Previous revision" : "This revision"}</h2>
-        <p className="blanc-meta">{shown.analysis_id}</p>
+        <RevisionHistoryView history={history} revision={shown} busy={!!working} onOpen={id => { void openSaved(id).then(() => setView("Revisions")); }} />
+        <h2>Evidence in this version</h2>
         <p>Excluded records: {shown.excluded_record_ids.length === 0 ? "None" : shown.excluded_record_ids.map(id => <button key={id} type="button" className="blanc-excluded-link" onClick={() => setOpen(id)}>{citationTitle(id)}</button>)}</p>
         {comparison && comparison.compared_analysis_id === revision?.analysis_id && <>
           <h2>What changed</h2>
@@ -665,6 +665,7 @@ export function Findings() {
           </ul>
         </>}
       </>}
+      <EvidenceWindowNotice key={shown.analysis_id} coverage={shown.retrieval_coverage} busy={!!working} onExpand={() => void expandEvidence()} />
       {view === "Findings" && <section className="blanc-ruled">
         <h3>Follow-ups</h3>
         <form className="blanc-followup" onSubmit={event => { event.preventDefault(); void submitFollowUp(); }}>
