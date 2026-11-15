@@ -175,7 +175,9 @@ class AnalysisLLM(Protocol):
     def generate(self, messages: Sequence[Message]) -> AnalysisOutput: ...
 
 
-DEFAULT_TEMPERATURE = 0.2
+# Google recommends 1.0 for Gemini 3 models; lower values can cause looping or repetitive
+# output. Structure and grounding are enforced by the response schema and server validation.
+DEFAULT_TEMPERATURE = 1.0
 
 
 class GeminiAnalysisLLM:

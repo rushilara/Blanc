@@ -14,6 +14,7 @@ from google.genai import types
 from sqlalchemy.orm import Session
 
 from app.analysis_llm import (
+    DEFAULT_TEMPERATURE,
     EMPTY_OUTPUT,
     EXCERPT_SEPARATOR,
     AnalysisLLM,
@@ -355,7 +356,7 @@ def test_gemini_builds_structured_request() -> None:
     assert config.response_json_schema == gemini_response_schema()
     assert config.response_schema is None
     assert config.system_instruction == SYSTEM_PROMPT
-    assert config.temperature is not None and config.temperature <= 0.3
+    assert config.temperature == DEFAULT_TEMPERATURE == 1.0
     (content,) = call["contents"]
     assert content.role == "user"
     assert payload(build_analysis_messages(RETRIEVAL)) == json.loads(content.parts[0].text)
