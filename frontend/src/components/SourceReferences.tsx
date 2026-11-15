@@ -15,11 +15,12 @@ type SourceReferencesProps = {
   autoOpen?: boolean;
   /** When set, render this label as the open control instead of citation chips (timeline events). */
   triggerLabel?: string;
+  /** When true, render only the evidence dialog, with no chips or label (graph click-to-open). */
+  hideTriggers?: boolean;
   excludedRecordIds?: string[];
   onExclude?: (recordId: string) => void;
   onAnnotate?: (recordId: string) => void;
-  /** Hide the built-in chips when the caller renders its own citation controls. */
-  hideTriggers?: boolean;
+  /** Called after the dialog closes, so a caller that opened it can reset. */
   onClose?: () => void;
 };
 
@@ -224,10 +225,10 @@ export function SourceReferences({
   records,
   autoOpen = false,
   triggerLabel,
+  hideTriggers = false,
   excludedRecordIds = [],
   onExclude,
   onAnnotate,
-  hideTriggers = false,
   onClose,
 }: SourceReferencesProps) {
   const dialog = useRef<HTMLDialogElement>(null);

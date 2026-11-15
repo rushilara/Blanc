@@ -4,6 +4,7 @@ import revisionSchema from "../../../contracts/analysis_revision.schema.json";
 import recordSchema from "../../../contracts/evidence_record.schema.json";
 import { API_BASE_URL } from "./api";
 import type { AnalysisRevision, EvidenceRecord } from "./analysis";
+import { citedRecordIds } from "./citations";
 
 const ajv = new Ajv2020({ allErrors: true });
 addFormats(ajv);
@@ -160,11 +161,8 @@ export async function getRevision(caseId: string, analysisId: string, signal?: A
 }
 
 export async function loadRevisionSources(revision: AnalysisRevision, signal?: AbortSignal): Promise<EvidenceRecord[]> {
-  const ids = [...new Set([
-    ...[...revision.claims, ...revision.graph.edges, ...revision.timeline_events, ...revision.graph.nodes]
-      .flatMap(finding => finding.evidence_ids ?? []),
-    ...revision.excluded_record_ids,
-  ])];
+  // Every cited original (claims, nodes, edges, events) plus excluded ones for the excluded list.
+  const ids = [...new Set([...citedRecordIds(revision), ...revision.excluded_record_ids])];
   const responses = await Promise.allSettled(ids.map(recordId => getSource(revision.case_id, recordId, signal)));
   return responses.flatMap(r => r.status === "fulfilled" ? [r.value] : []);
 }
