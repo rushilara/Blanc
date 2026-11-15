@@ -2,6 +2,7 @@
 acceptance criteria. Each test mutates the raw fixture JSON, parses it through the contract
 models (as the server would) and runs the app.validation checks."""
 
+import copy
 import json
 from typing import Any
 
@@ -398,12 +399,60 @@ class TestPossibleMatches:
         assert model is None
         assert_error(errors, "possible_matches is only for items with one ref ID null")
 
-    def test_shared_records_must_be_cited_by_both(self, linked: Raw) -> None:
+    def test_shared_must_equal_new_item_citations(self, linked: Raw) -> None:
         for item in self.items(linked):
             item["possible_matches"][0]["shared_evidence_ids"] = ["rec-02"]
         errors = check_comparison(linked)
-        assert_error(errors, "possible match claim-x shares records not cited by both")
+        assert_error(errors, "shared_evidence_ids must equal the new item's unique cited records")
         assert_error(errors, "possible match claim-x shares excluded records")
+
+    def test_new_item_citations_must_be_permitted_base_subset(self, linked: Raw) -> None:
+        # Hand-written link: new claim also cites rec-04, which the base never cited.
+        before, after = self.items(linked)
+        after["compared_evidence_ids"] = ["rec-01", "rec-04"]
+        linked["child"]["claims"][-1]["evidence_ids"] = ["rec-01", "rec-04"]
+        for item in (before, after):
+            item["possible_matches"][0]["shared_evidence_ids"] = ["rec-01"]
+        assert_error(
+            check_comparison(linked),
+            "cites records that are not among the base item's still-permitted citations",
+        )
+
+    def test_edge_link_requires_same_direction_endpoints(self, raw: Raw) -> None:
+        # Base edge-1 cites rec-01+rec-02; exclude rec-02; child adds a reversed edge on rec-01.
+        raw["revision"]["graph"]["edges"][0]["evidence_ids"] = ["rec-01", "rec-02"]
+        edge = copy.deepcopy(raw["revision"]["graph"]["edges"][0])
+        edge["id"] = "edge-rev"
+        edge["source"], edge["target"] = edge["target"], edge["source"]
+        edge["evidence_ids"] = ["rec-01"]
+        raw["child"]["graph"]["edges"] = [
+            e for e in raw["child"]["graph"]["edges"] if e["id"] != "edge-1"
+        ] + [edge]
+        base, child = revisions_of(raw)
+        raw["comparison"] = compare_revisions(base, child).to_contract_json()
+        # compare_revisions must not link them; a hand-written link must be rejected.
+        before = next(
+            i
+            for i in raw["comparison"]["items"]
+            if i["kind"] == "edge" and i["base_ref_id"] == "edge-1" and i["compared_ref_id"] is None
+        )
+        after = next(
+            i
+            for i in raw["comparison"]["items"]
+            if i["kind"] == "edge" and i["compared_ref_id"] == "edge-rev"
+        )
+        assert "possible_matches" not in before and "possible_matches" not in after
+        link = {
+            "shared_evidence_ids": ["rec-01"],
+            "remaining_sources": 1,
+            "original_sources": 2,
+        }
+        before["possible_matches"] = [{"ref_id": "edge-rev", **link}]
+        after["possible_matches"] = [{"ref_id": "edge-1", **link}]
+        assert_error(
+            check_comparison(raw),
+            "edge endpoints must match in the same direction",
+        )
 
     def test_counts_must_match_the_base_item(self, linked: Raw) -> None:
         for item in self.items(linked):

@@ -393,17 +393,32 @@ def validate_comparison(
             errors.append(f"{label} newly_supported needs only compared_ref_id")
         if status == "not_supported" and (b is None or item.compared_evidence_ids):
             errors.append(f"{label} not_supported needs base_ref_id and no compared evidence")
-    errors += _possible_match_errors(comparison)
+    errors += _possible_match_errors(comparison, base, compared)
     return errors
 
 
 _LINKABLE_BASE_STATUSES = ("unresolved", "not_supported")
 
 
-def _possible_match_errors(comparison: RevisionComparison) -> list[str]:
+def _edge_ends(revision: AnalysisRevision, edge_id: str) -> tuple[str, str] | None:
+    """Directed endpoints (source id, target id) for an edge, or None if missing."""
+    edge = next((e for e in revision.graph.edges if e.id == edge_id), None)
+    return None if edge is None else (edge.source, edge.target)
+
+
+def _possible_match_errors(
+    comparison: RevisionComparison,
+    base: AnalysisRevision,
+    compared: AnalysisRevision,
+) -> list[str]:
     """``possible_matches`` (BLA-63) links an unmatched base item that lost at least one cited
     source to this exclusion and a newly supported item of the same kind, listed on both,
-    with consistent shared records and counts (remaining < original)."""
+    with consistent shared records and counts (remaining < original).
+
+    The new item's unique cited records must be a subset of the base item's citations that
+    are still permitted, and ``shared_evidence_ids`` must equal that cited set. Edge links
+    must join the same endpoints in the same direction (same as ``compare_revisions``).
+    """
     errors: list[str] = []
     excluded = set(comparison.excluded_record_ids)
     vanished = {
@@ -440,15 +455,20 @@ def _possible_match_errors(comparison: RevisionComparison) -> list[str]:
                 continue
             base_item, new_item = (item, other) if on_base else (other, item)
             shared = set(match.shared_evidence_ids)
-            if not shared <= set(base_item.base_evidence_ids) or not shared <= set(
-                new_item.compared_evidence_ids
-            ):
+            child_cited = set(new_item.compared_evidence_ids)
+            remaining = set(base_item.base_evidence_ids) - excluded
+            if not child_cited or not child_cited <= remaining:
                 errors.append(
-                    f"{label} possible match {match.ref_id} shares records not cited by both"
+                    f"{label} possible match {match.ref_id} cites records that are not among "
+                    "the base item's still-permitted citations"
+                )
+            if shared != child_cited:
+                errors.append(
+                    f"{label} possible match {match.ref_id} shared_evidence_ids must equal "
+                    "the new item's unique cited records"
                 )
             if shared & excluded:
                 errors.append(f"{label} possible match {match.ref_id} shares excluded records")
-            remaining = set(base_item.base_evidence_ids) - excluded
             if len(remaining) == len(base_item.base_evidence_ids):
                 errors.append(
                     f"{label} possible match {match.ref_id} links a base item that lost no "
@@ -466,6 +486,14 @@ def _possible_match_errors(comparison: RevisionComparison) -> list[str]:
                     f"{label} possible match {match.ref_id} source counts do not match the "
                     f"base item: expected {len(remaining)} of {len(base_item.base_evidence_ids)}"
                 )
+            if item.kind == "edge":
+                base_ends = _edge_ends(base, base_item.base_ref_id or "")
+                new_ends = _edge_ends(compared, new_item.compared_ref_id or "")
+                if base_ends is None or new_ends is None or base_ends != new_ends:
+                    errors.append(
+                        f"{label} possible match {match.ref_id} edge endpoints must match "
+                        "in the same direction"
+                    )
             mirrored = [m for m in other.possible_matches or [] if m.ref_id == own[1]]
             if [m.model_copy(update={"ref_id": match.ref_id}) for m in mirrored] != [match]:
                 errors.append(

@@ -197,14 +197,24 @@ def validate_comparison(revisions: list[dict], comparison: dict) -> list[str]:
             errors.append(f"{label} newly_supported needs only compared_ref_id")
         if status == 'not_supported' and (b is None or item['compared_evidence_ids']):
             errors.append(f"{label} not_supported needs base_ref_id and no compared evidence")
-    errors += _possible_match_errors(comparison)
+    errors += _possible_match_errors(comparison, base, compared)
     return errors
 
 
-def _possible_match_errors(comparison: dict) -> list[str]:
+def _edge_ends(revision: dict, edge_id: str) -> tuple[str, str] | None:
+    edge = next((e for e in revision['graph']['edges'] if e['id'] == edge_id), None)
+    return None if edge is None else (edge['source'], edge['target'])
+
+
+def _possible_match_errors(comparison: dict, base: dict, compared: dict) -> list[str]:
     """Optional possible_matches (BLA-63): an advisory link, listed on both items, between an
     unmatched unresolved/not_supported base item that lost at least one cited source to this
-    exclusion and a newly_supported item of the same kind (so remaining < original)."""
+    exclusion and a newly_supported item of the same kind (so remaining < original).
+
+    Every record the new item cites must be among the base item's still-permitted citations,
+    shared_evidence_ids must equal that cited set, and edge links must keep the same
+    endpoints in the same direction.
+    """
     errors: list[str] = []
     excluded = set(comparison['excluded_record_ids'])
     items = comparison['items']
@@ -232,8 +242,18 @@ def _possible_match_errors(comparison: dict) -> list[str]:
                 continue
             base_item, new_item = (item, other) if on_base else (other, item)
             shared = set(match['shared_evidence_ids'])
-            if not shared <= set(base_item['base_evidence_ids']) or not shared <= set(new_item['compared_evidence_ids']):
-                errors.append(f"{label} possible match {match['ref_id']} shares records not cited by both")
+            child_cited = set(new_item['compared_evidence_ids'])
+            remaining = set(base_item['base_evidence_ids']) - excluded
+            if not child_cited or not child_cited <= remaining:
+                errors.append(
+                    f"{label} possible match {match['ref_id']} cites records that are not among "
+                    "the base item's still-permitted citations"
+                )
+            if shared != child_cited:
+                errors.append(
+                    f"{label} possible match {match['ref_id']} shared_evidence_ids must equal "
+                    "the new item's unique cited records"
+                )
             if shared & excluded:
                 errors.append(f"{label} possible match {match['ref_id']} shares excluded records")
             cited = set(base_item['base_evidence_ids'])
@@ -243,6 +263,14 @@ def _possible_match_errors(comparison: dict) -> list[str]:
                 errors.append(f"{label} possible match {match['ref_id']} must have fewer remaining than original sources")
             if match['original_sources'] != len(cited) or match['remaining_sources'] != len(cited - excluded):
                 errors.append(f"{label} possible match {match['ref_id']} source counts do not match the base item")
+            if item['kind'] == 'edge':
+                base_ends = _edge_ends(base, base_item['base_ref_id'] or '')
+                new_ends = _edge_ends(compared, new_item['compared_ref_id'] or '')
+                if base_ends is None or new_ends is None or base_ends != new_ends:
+                    errors.append(
+                        f"{label} possible match {match['ref_id']} edge endpoints must match "
+                        "in the same direction"
+                    )
             back = [dict(m, ref_id=match['ref_id']) for m in other.get('possible_matches', []) if m['ref_id'] == own[1]]
             if back != [match]:
                 errors.append(f"{label} possible match {match['ref_id']} is not listed the same way on the other item")
